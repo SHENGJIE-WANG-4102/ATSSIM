@@ -1,0 +1,11 @@
+import { buildTopology } from '../src/sim/topology';
+import { computeRunTimes } from '../src/sim/dynamics';
+const t = buildTopology();
+const t0 = Date.now();
+const r = computeRunTimes(t, 186);
+console.log('ms', Date.now() - t0);
+console.log('dn', r.dn.join(' '));
+console.log('up', r.up.join(' '));
+console.log('passDn', r.passDn.join(' '));
+const sum = (a:number[]) => a.reduce((x,y)=>x+y,0);
+console.log('total dn run', sum(r.dn), 'up', sum(r.up), 'with dwell ~', sum(r.dn) + 29*38);
