@@ -320,3 +320,47 @@ export const OPERATIONS = {
   /** overnight stabling at terminal tails (approx) */
   terminalStabling: { PXL: 2, PDA: 2 } as Record<string, number>,
 };
+
+// ---------------------------------------------------------------------------
+// Environment (APPROXIMATIONS)
+// ---------------------------------------------------------------------------
+
+/**
+ * Exposed (non-tunnel) parts of the line, by chainage. The east extension
+ * leaves the tunnel east of 广兰路 and runs on viaduct through 唐镇 … 海天三路,
+ * reaching 浦东1号2号航站楼 at grade. Exact portal positions are not public;
+ * the ranges below are approximations (see README).
+ */
+export const EXPOSED: { from: number; to: number; kind: 'elevated' | 'ground'; name: string }[] = [
+  { from: 37400, to: 60900, kind: 'elevated', name: '广兰路以东—海天三路 高架段' },
+  { from: 60900, to: 63000, kind: 'ground', name: '浦东1号2号航站楼 地面段' },
+];
+
+/**
+ * Weather restrictions for exposed sections (approximation of typical
+ * operating rules): wind level index 1..4 ≈ 7/8/9/≥10 级 (Beaufort), rain = 暴雨.
+ * 0 km/h = service suspended on viaducts.
+ */
+export const WEATHER_RULES = {
+  wind: [
+    { level: 1, label: '大风蓝色（7级）', kmh: 60, elevatedOnly: true },
+    { level: 2, label: '大风黄色（8级）', kmh: 45, elevatedOnly: true },
+    { level: 3, label: '大风橙色（9级）', kmh: 25, elevatedOnly: true },
+    { level: 4, label: '大风红色（≥10级）', kmh: 0, elevatedOnly: true },
+  ],
+  rain: { label: '暴雨', kmh: 60, elevatedOnly: false },
+};
+
+/**
+ * Night engineering possessions (施工封锁): candidate station intervals
+ * (west station index; the interval runs to the next station) and the
+ * usual time window. Approximation — real 施工计划 are not public.
+ */
+export const POSSESSIONS = {
+  candidates: [5, 6, 9, 13, 17, 20, 23, 24, 26],
+  /** possessions active at the start of the operating day, released before the first trains */
+  morningUntil: 4 * 3600 + 20 * 60,
+  /** late-night window (must finish before the 03:45 day rollover) */
+  nightFrom: 24 * 3600 + 50 * 60,
+  nightTo: 27 * 3600 + 30 * 60,
+};

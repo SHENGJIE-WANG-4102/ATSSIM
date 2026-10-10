@@ -6,6 +6,7 @@
 import type { Sim } from './engine';
 import type { StopTask, Train } from './model';
 import { STATIONS, LINE_INFO } from '../data/line2';
+import { callCrowd } from './radio';
 
 const WEEKDAY: [number, number][] = [
   [4.5, 0], [5.4, 0.12], [6.2, 0.45], [6.9, 1.1], [7.5, 1.8], [8.1, 2.2], [8.8, 1.9], [9.6, 1.0], [11, 0.75], [13, 0.8],
@@ -41,9 +42,15 @@ export function passengersTick(sim: Sim, dt: number) {
     const towardsEnd = (p.track === 'DN' && p.station === STATIONS.length - 1) || (p.track === 'UP' && p.station === 0);
     if (towardsEnd) { ps.waiting = 0; continue; }
     const lambda = BASE_RATE * st.demand * prof * ps.surge;
-    ps.waiting += lambda * dt * (0.85 + 0.3 * sim.rng());
+    const inflow = lambda * dt * (0.85 + 0.3 * sim.rng());
+    if (ps.limitUntil > sim.t) {
+      // station inflow control (限流): part of the demand is held outside the station
+      ps.waiting += inflow * 0.6;
+      sim.metrics.limited += inflow * 0.4;
+    } else ps.waiting += inflow;
     if (ps.waiting > 1200 && !sim.alarms.has(`crowd-${p.station}`)) {
       sim.log('B', '客流', `${st.name} 站台客流拥挤（候车约 ${Math.round(ps.waiting)} 人）`, { key: `crowd-${p.station}` });
+      callCrowd(sim, p.station, ps.waiting);
     } else if (ps.waiting < 600 && sim.alarms.has(`crowd-${p.station}`)) {
       const other = topo.stations[p.station].platforms;
       if (sim.plat[other.DN].waiting < 600 && sim.plat[other.UP].waiting < 600) sim.clearAlarm(`crowd-${p.station}`);
@@ -78,5 +85,7 @@ export function boardAndAlight(sim: Sim, tr: Train, platform: number, task: Stop
   const rate = 40 * (crowded ? 0.55 : 0.9);
   let dwell = 12 + (alight + board) / rate;
   if (crowded) dwell += 8;
-  return Math.min(90, dwell);
+  // a surge (大客流) at the platform: boarding takes longer still
+  if (ps.surge > 1) dwell += Math.min(30, (ps.surge - 1) * 6);
+  return Math.min(ps.surge > 1 ? 150 : 90, dwell);
 }

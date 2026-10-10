@@ -6,6 +6,7 @@ import type { Fault, FaultKind } from './model';
 import { STATIONS } from '../data/line2';
 import { cancelRoute } from './interlocking';
 import { failTrain, recoverTrain, trainLabel } from './ats';
+import { callRescue, callPecu, callTrackPerson } from './radio';
 
 export const FAULT_LABELS: Record<FaultKind, string> = {
   trainComm: '列车车地通信中断',
@@ -16,13 +17,27 @@ export const FAULT_LABELS: Record<FaultKind, string> = {
   psd: '站台门故障',
   trainFail: '列车故障',
   surge: '车站大客流',
+  pecu: '车厢乘客紧急报警',
+  trackPerson: '人员侵入轨道',
 };
 
 export function injectFault(sim: Sim, kind: FaultKind, target: number, duration: number, param?: number, recoverable?: boolean): { ok: boolean; msg: string } {
   const { topo } = sim;
   const repairAt = duration > 0 ? sim.t + duration : Infinity;
   const f: Fault = { id: sim.nextFaultId++, kind, target, since: sim.t, repairAt, repaired: false, text: '', param, recoverable };
+  sim.metrics.faults++;
   switch (kind) {
+    case 'pecu': {
+      const tr = sim.trains.get(target);
+      if (!tr) return { ok: false, msg: '列车不存在' };
+      callPecu(sim, tr);
+      return { ok: true, msg: `已触发：列车 ${trainLabel(tr)} 乘客紧急报警（司机将呼叫调度）` };
+    }
+    case 'trackPerson': {
+      if (!topo.platforms[target]) return { ok: false, msg: '站台不存在' };
+      callTrackPerson(sim, target);
+      return { ok: true, msg: `已触发：${topo.platforms[target].name} 人员侵入轨道（车站将呼叫调度）` };
+    }
     case 'trainComm': {
       const tr = sim.trains.get(target);
       if (!tr) return { ok: false, msg: '列车不存在' };
@@ -113,8 +128,9 @@ export function faultsTick(sim: Sim) {
         recoverTrain(sim, tr);
         f.repaired = true;
         sim.clearAlarm(`tf-${tr.id}`);
-      } else if (!tr.failRecoverable && sim.t - f.since > 240 && !sim.alarms.has(`tfr-${tr.id}`)) {
+      } else if (!tr.failRecoverable && sim.t - f.since > 240 && !sim.alarms.has(`tfr-${tr.id}`) && tr.rescueBy < 0) {
         sim.log('A', '列车', `列车 ${trainLabel(tr)} 故障无法排除，请求救援（选择故障列车→“组织救援”）`, { key: `tfr-${tr.id}` });
+        callRescue(sim, tr);
       }
       if (sim.t >= f.repairAt && f.repairAt !== Infinity && tr.failed) {
         recoverTrain(sim, tr);

@@ -36,14 +36,18 @@ export function trySetRoute(sim: Sim, rid: number, opts: { manual?: boolean; fle
     return { ok: false, msg: `${sname} 已有其他进路` };
   }
   if (sg.failed && !opts.guide) return { ok: false, msg: `${sname} 信号机故障，无法开放（可办理引导进路）` };
+  for (const { sw } of r.switches) if (sim.sw[sw].blocked) return { ok: false, msg: `道岔 ${topo.switches[sw].name} 已封锁` };
   for (const s of r.sections) {
     const st = sim.sec[s];
+    if (st.blocked) return { ok: false, msg: `区段 ${topo.sections[s].name} ${st.poss >= 0 ? '施工封锁' : '已封锁'}` };
+    if (st.envTsr < 0) return { ok: false, msg: `区段 ${topo.sections[s].name} 大风停运` };
     if (st.lockRoute >= 0) return { ok: false, msg: `区段 ${topo.sections[s].name} 已被进路锁闭（敌对进路）` };
     if (!opts.guide && (st.disturbed || st.preset)) return { ok: false, msg: `区段 ${topo.sections[s].name} 故障占用` };
   }
   for (const { sw, pos } of r.switches) {
     const st = sim.sw[sw];
     const name = topo.switches[sw].name;
+    if (st.blocked) return { ok: false, msg: `道岔 ${name} 已封锁` };
     if (st.failed) {
       if (!(opts.guide && st.fieldLock && st.pos === pos)) return { ok: false, msg: `道岔 ${name} 失表${opts.guide ? '（需现场钩锁到所需位置）' : ''}` };
       continue;

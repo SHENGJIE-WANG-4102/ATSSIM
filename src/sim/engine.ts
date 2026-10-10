@@ -10,7 +10,8 @@ import {
 } from './timetable';
 import type {
   ActiveRoute, AlarmLevel, Command, DayType, Fault, Plan, PlatformState, SectionState, SignalState, SimConfig,
-  SimEvent, Snapshot, SwitchState, Train, TrainSnap, ZoneState, StopTask,
+  SimEvent, Snapshot, SwitchState, Train, TrainSnap, ZoneState, StopTask, RadioCall, Possession, EnvState, YardState,
+  Metrics, ScenarioState, ScenarioReport, StopScore, Bookmark,
 } from './model';
 import { SEC, SW, SIGF, PLT, SIG_ASPECT } from './model';
 import {
@@ -19,8 +20,14 @@ import {
 import { updateTrainMotion, indexBodies } from './movement';
 import {
   buildRouteTable, type RouteTable, spawnDue, updateTrainTasks, runARS, updateLevels, driverRM, recordTrace,
-  cmdTrainHold, cmdSkip, cmdTurnback, cmdWithdraw, cmdAuthRM, cmdRescue, resetVehicles, trainLabel,
+  cmdTrainHold, cmdSkip, cmdTurnback, cmdWithdraw, cmdAuthRM, cmdRescue, trainLabel,
 } from './ats';
+import { stopError } from './movement';
+import { initYards, vehicleName } from './yard';
+import { radioTick, answerCall, type CallSpec } from './radio';
+import { exposureOf, envTick, initPossessions, setWeather } from './env';
+import { newMetrics, scenarioTick, startScenario, endScenario, randomTick, setRandomFaults } from './scenario';
+import { computePis } from './pis';
 import { passengersTick } from './passengers';
 import { injectFault, repairFault, faultsTick, FAULT_LABELS } from './faults';
 import { LINE_INFO, STATIONS } from '../data/line2';
@@ -90,8 +97,38 @@ export class Sim {
   depTotal = 0;
   depOnTime = 0;
   tripsDone = 0;
-  rng: () => number;
-  private secAcc = 0;
+  rngState = 0;
+  rng = (): number => {
+    this.rngState = (this.rngState + 0x6d2b79f5) >>> 0;
+    let t = this.rngState;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+  secAcc = 0;
+
+  // ---- revision 2 state
+  yards: YardState[] = [];
+  stabledPool: string[] = [];
+  calls: RadioCall[] = [];
+  nextCallId = 1;
+  pendingCalls: { at: number; spec: CallSpec }[] = [];
+  autoRadio = true;
+  env: EnvState = { wind: 0, rain: false, windUntil: 0, rainUntil: 0 };
+  exposure: Uint8Array;
+  possessions: Possession[] = [];
+  metrics: Metrics;
+  scenario: ScenarioState | null = null;
+  scenarioFired = 0;
+  reportReady: ScenarioReport | null = null;
+  randomLevel = 0;
+  nextRandomAt = Infinity;
+  drivingStops: StopScore[] = [];
+  bookmarks: Bookmark[] = [];
+  nextBookmarkId = 1;
+  pisStation = -1;
+  /** bumped on every structural plan change (replay checkpoints) */
+  planRev = 0;
   stepsThisSecond = 0;
   stepsPerSec = 0;
 
@@ -105,23 +142,45 @@ export class Sim {
     this.topo = sharedTopo;
     this.rt = sharedRt!;
     this.routeTable = sharedTable!;
-    this.rng = mulberry32(config.seed);
+    this.rngState = config.seed >>> 0;
+    this.autoRadio = config.autoRadio ?? true;
+    this.metrics = newMetrics(config.startTime);
     this.planCtx = { topo: this.topo, rt: this.rt, dayType: config.dayType };
     this.plan = generatePlan(this.planCtx);
     const { topo } = this;
-    this.sw = topo.switches.map(() => ({ pos: 'N', target: 'N', moveUntil: 0, failed: false, fieldLock: false, singleLock: false, lockCount: 0 }));
-    this.sec = topo.sections.map(() => ({ occ: false, trainOcc: false, commOnly: false, disturbed: false, preset: false, presetSeen: false, lockRoute: -1, tsr: 0 }));
+    this.sw = topo.switches.map(() => ({ pos: 'N', target: 'N', moveUntil: 0, failed: false, fieldLock: false, singleLock: false, lockCount: 0, blocked: false }));
+    this.sec = topo.sections.map(() => ({ occ: false, trainOcc: false, commOnly: false, disturbed: false, preset: false, presetSeen: false, lockRoute: -1, tsr: 0, blocked: false, poss: -1, envTsr: 0 }));
     this.sig = topo.signals.map(() => ({ aspect: 'R', route: -1, failed: false, ars: true, autoPass: true }));
-    this.plat = topo.platforms.map(() => ({ hold: false, skip: false, esp: false, psd: 'closed', psdFault: false, psdBypass: false, waiting: 0, surge: 1, stranded: 0, lastDep: 0, lastArr: 0 }));
+    this.plat = topo.platforms.map(() => ({ hold: false, skip: false, esp: false, psd: 'closed', psdFault: false, psdBypass: false, waiting: 0, surge: 1, stranded: 0, lastDep: 0, lastArr: 0, limitUntil: 0 }));
     this.zoneState = topo.zones.map(() => 'CBTC');
+    this.exposure = exposureOf(this);
     this.depotStock = this.initialDepotStock();
-    resetVehicles();
+    // vehicles: the first numbers stand overnight at the terminals, the rest in the depot yards
+    const stabled = this.plan.blocks.filter((b) => b.start.kind === 'stable').length;
+    for (let i = 1; i <= stabled; i++) this.stabledPool.push(vehicleName(i));
+    this.yards = initYards(this, this.depotStock, stabled + 1);
     this.t = this.dayStart;
+    // night possessions use their own random stream so the passenger model is unaffected
+    {
+      const keep = this.rngState;
+      this.rngState = (config.seed ^ 0x5eed1234) >>> 0;
+      initPossessions(this);
+      this.rngState = keep;
+    }
     // set the automatic (fleeting) routes
     for (const r of topo.routes) if (r.fleeting && this.sig[r.start].route < 0) trySetRoute(this, r.id, { fleeting: true });
     for (const s of this.sw) s.moveUntil = 0;
     this.log('I', '系统', `ATS 启动：${config.dateLabel}（${config.dayType === 'weekday' ? '工作日' : '双休日/节假日'}运行图，计划车次 ${this.plan.trips.length}，最大上线 ${this.plan.fleetPeak} 列）`);
+    for (const p of this.possessions) if (p.state === 'active') this.log('B', '施工', `${p.name} 施工封锁中（计划 ${String(Math.floor(p.to / 3600)).padStart(2, '0')}:${String(Math.floor((p.to % 3600) / 60)).padStart(2, '0')} 销点）`, { key: `poss-${p.id}` });
+    if (config.randomFaults) setRandomFaults(this, config.randomFaults);
     spawnDue(this);
+  }
+
+  bookmark(label: string, auto: boolean): Bookmark {
+    const b: Bookmark = { id: this.nextBookmarkId++, t: this.t, label, auto };
+    this.bookmarks.push(b);
+    if (this.bookmarks.length > 200) this.bookmarks.splice(0, this.bookmarks.length - 200);
+    return b;
   }
 
   private initialDepotStock(): number[] {
@@ -162,7 +221,8 @@ export class Sim {
     this.trains.delete(tr.id);
     this.trainList = this.trainList.filter((x) => x.id !== tr.id);
     for (const [b, t] of this.berthRes) if (t === tr.id) this.berthRes.delete(b);
-    for (const k of ['eb', 'comm', 'tf', 'tfr', 'spad']) this.clearAlarm(`${k}-${tr.id}`);
+    for (const k of ['eb', 'comm', 'tf', 'tfr', 'spad', 'late']) this.clearAlarm(`${k}-${tr.id}`);
+    for (const c of this.calls) if (c.state === 'ringing' && c.train === tr.id) c.state = 'expired';
   }
 
   log(level: AlarmLevel, cat: string, text: string, opts: { key?: string; manual?: boolean } = {}) {
@@ -174,6 +234,7 @@ export class Sim {
       ev.ack = false;
       this.alarms.set(opts.key, ev);
       this.alarmsDirty = true;
+      if (level === 'A' || level === 'B') this.bookmark(text, true);
     }
     this.events.push(ev);
     if (this.events.length > 20000) this.events.splice(0, 5000);
@@ -205,6 +266,7 @@ export class Sim {
   // ------------------------------------------------------------ stepping
 
   step(dt = FIXED_DT) {
+    if (this.config.scenario && !this.scenario && this.t >= this.config.startTime - 1e-6) startScenario(this, this.config.scenario);
     this.t += dt;
     indexBodies(this);
     for (const tr of this.trainList) updateTrainMotion(this, tr, dt);
@@ -228,6 +290,10 @@ export class Sim {
     runARS(this);
     passengersTick(this, dt);
     faultsTick(this);
+    envTick(this);
+    radioTick(this);
+    scenarioTick(this);
+    randomTick(this);
     for (const tr of this.trainList) {
       recordTrace(this, tr);
       this.trackDelay(tr);
@@ -362,9 +428,9 @@ export class Sim {
       }
       case 'addTrain': {
         if (cmd.time < this.t + 120) return { ok: false, msg: '出段时刻须晚于当前时刻2分钟以上' };
+        if (this.depotStock[cmd.depot] <= 0) return { ok: false, msg: `${topo.depots[cmd.depot].name} 无可用车辆` };
         const b = addExtraTrain(this.planCtx, this.plan, cmd.depot, cmd.dir, cmd.to, cmd.time);
         if (typeof b === 'string') return { ok: false, msg: b };
-        this.depotStock[cmd.depot] = Math.max(this.depotStock[cmd.depot], 1);
         this.planDirty = true;
         return { ok: true, msg: `加开列车 表号${b.svc}：${topo.depots[cmd.depot].name} 出段 → ${STATIONS[cmd.to].name} 折返 → 回段` };
       }
@@ -373,7 +439,6 @@ export class Sim {
         if (!p) return { ok: false, msg: '无此加开模板' };
         if (cmd.from < this.t + 600) return { ok: false, msg: '加开开始时刻须晚于当前时刻10分钟以上' };
         const r = applyOverlay(this.planCtx, this.plan, { ...p, from: cmd.from, to: cmd.to, headway: cmd.headway });
-        for (let i = 0; i < this.depotStock.length; i++) this.depotStock[i] += 0;
         this.planDirty = true;
         return { ok: true, msg: `${p.label}：新增 ${r.trips} 个车次、${r.blocks} 列车底` };
       }
@@ -410,7 +475,60 @@ export class Sim {
       }
       case 'fault': return injectFault(this, cmd.kind, cmd.target, cmd.duration, cmd.param, cmd.recoverable);
       case 'repair': return repairFault(this, cmd.fault);
+      case 'sectionBlock': {
+        for (const s of cmd.sections) {
+          const st = this.sec[s];
+          if (!cmd.on && st.poss >= 0) return { ok: false, msg: `区段 ${topo.sections[s].name} 为施工封锁，须施工销点后解封` };
+          st.blocked = cmd.on;
+        }
+        const names = cmd.sections.map((s) => topo.sections[s].name).join('、');
+        if (cmd.on) this.log('B', '调度', `区段封锁：${names}`, { key: `blk-${cmd.sections[0]}` });
+        else for (const s of cmd.sections) this.clearAlarm(`blk-${s}`);
+        return { ok: true, msg: `${names} ${cmd.on ? '封锁' : '解封'}` };
+      }
+      case 'switchBlock':
+        this.sw[cmd.sw].blocked = cmd.on;
+        return { ok: true, msg: `道岔 ${topo.switches[cmd.sw].name} ${cmd.on ? '封锁（不能办理经过该道岔的进路）' : '解封'}` };
+      case 'manual': return this.withTrain(cmd.train, (tr) => this.setManual(tr, cmd.mode));
+      case 'radio': return answerCall(this, cmd.call, cmd.option);
+      case 'radioAuto':
+        this.autoRadio = cmd.on;
+        return { ok: true, msg: cmd.on ? '通话自动应答（演示）' : '通话需人工应答' };
+      case 'env': return setWeather(this, { wind: cmd.wind, rain: cmd.rain, duration: cmd.duration });
+      case 'randomFaults': return setRandomFaults(this, cmd.level);
+      case 'scenarioEnd': {
+        const r = endScenario(this);
+        return { ok: true, msg: `${r.title}评分：${r.score}` };
+      }
+      case 'bookmark': {
+        const b = this.bookmark(cmd.label || '书签', false);
+        return { ok: true, msg: `已添加书签 ${b.label}` };
+      }
     }
+  }
+
+  /** dispatcher hands a train to manual driving (CM/RM) or back to ATO (AM) */
+  setManual(tr: Train, mode: 'CM' | 'RM' | 'AM'): CmdResult {
+    if (tr.failed) return { ok: false, msg: '列车故障中' };
+    if (tr.phase === 'stabled') return { ok: false, msg: '列车已存车' };
+    if (mode === 'AM') {
+      if (!tr.manual) return { ok: false, msg: '列车未处于人工驾驶' };
+      if (tr.v > 0.1 && tr.mode === 'RM') return { ok: false, msg: 'RM 转 AM 须停车后进行' };
+      tr.manual = false;
+      tr.notch = 0;
+      tr.mode = tr.comm || tr.level === 'TBTC' ? (tr.comm ? 'AM' : 'CM') : 'CM';
+      tr.rmAuth = 0;
+      return { ok: true, msg: `列车 ${trainLabel(tr)} 恢复 ${tr.mode} 自动驾驶` };
+    }
+    if (mode === 'RM' && tr.v > 0.1) return { ok: false, msg: '转RM模式须先停车' };
+    if (mode === 'CM' && tr.level === 'CBTC' && !tr.comm) return { ok: false, msg: '车地通信中断，无ATP防护，只能以RM模式驾驶' };
+    if (mode === 'CM' && this.zoneState[this.topo.links[tr.link].zone] === 'ZCFAIL' && tr.level === 'CBTC') return { ok: false, msg: 'ZC故障区域无移动授权，只能以RM模式驾驶' };
+    tr.manual = true;
+    tr.mode = mode;
+    tr.notch = tr.v > 0.1 ? 0 : -7;
+    tr.rmAuth = 0;
+    tr.drv = { stops: [], overspeed: 0, spad: 0, since: this.t };
+    return { ok: true, msg: `列车 ${trainLabel(tr)} 转人工驾驶 ${mode}${mode === 'RM' ? '（≤25km/h，目视行车）' : '（ATP防护）'}` };
   }
 
   private withTrain(id: number, fn: (tr: Train) => CmdResult): CmdResult {
@@ -423,7 +541,7 @@ export class Sim {
 
   snapshot(): Snapshot {
     const { topo } = this;
-    const sections = new Uint8Array(this.sec.length);
+    const sections = new Uint16Array(this.sec.length);
     const sectionTsr = new Uint8Array(this.sec.length);
     this.sec.forEach((s, i) => {
       let f = 0;
@@ -431,14 +549,20 @@ export class Sim {
       if (s.commOnly) f |= SEC.COMM;
       if (s.lockRoute >= 0) {
         f |= SEC.LOCK;
-        if (this.routes.get(s.lockRoute)?.fleeting) f |= SEC.ROUTEFLEET;
+        const ar = this.routes.get(s.lockRoute);
+        if (ar?.fleeting) f |= SEC.ROUTEFLEET;
+        if (ar?.manual) f |= SEC.ROUTEMAN;
+        if (ar?.guide) f |= SEC.GUIDE;
       }
       if (s.disturbed) f |= SEC.DIST;
       if (s.preset) f |= SEC.PRESET;
       if (s.tsr > 0) f |= SEC.TSR;
       if (s.trainOcc) f |= SEC.TRAIN;
+      if (s.blocked) f |= SEC.BLOCK;
+      if (s.poss >= 0) f |= SEC.POSS;
+      if (s.envTsr !== 0) f |= SEC.ENV;
       sections[i] = f;
-      sectionTsr[i] = s.tsr;
+      sectionTsr[i] = s.tsr > 0 ? s.tsr : s.envTsr > 0 ? s.envTsr : 0;
     });
     const switches = new Uint8Array(this.sw.length);
     this.sw.forEach((s, i) => {
@@ -450,6 +574,7 @@ export class Sim {
       if (s.singleLock) f |= SW.SINGLE;
       if (s.fieldLock) f |= SW.FIELD;
       if (s.target === 'R') f |= SW.TARGET_R;
+      if (s.blocked) f |= SW.BLOCKED;
       switches[i] = f;
     });
     const signals = new Uint8Array(this.sig.length);
@@ -493,6 +618,11 @@ export class Sim {
         maReason: tr.maReason, maDist: tr.maDist, vPermit: tr.vPermit, nextSig: tr.nextSignal,
         task: t0 ? describeTask(this, t0) : '—', kind: tr.tripId >= 0 ? this.plan.trips[tr.tripId].kind : '',
         rm: tr.mode === 'RM',
+        vTarget: tr.vTarget, tgtV: tr.tgtV, tgtD: Number.isFinite(tr.tgtD) ? tr.tgtD : -1, tgtReason: tr.tgtReason,
+        stopDist: Number.isFinite(tr.stopDist) ? tr.stopDist : -1, a: tr.a, manual: tr.manual, notch: tr.notch,
+        dwellLeft: tr.phase === 'dwell' || tr.phase === 'reversing' ? Math.max(0, tr.dwellUntil - this.t) : 0,
+        nextStation: nextStopStation(tr), ebReason: tr.eb ? tr.ebReason : tr.stopUntil > this.t ? tr.stopReason : '',
+        stopErr: stopError(this, tr), drv: tr.manual || tr.drv.stops.length ? tr.drv : null, len: tr.len,
       };
     });
     const traces: { train: number; pts: number[] }[] = this.removedTraces.splice(0);
@@ -511,8 +641,24 @@ export class Sim {
       },
       activeRoutes: Array.from(this.routes.keys()),
       faults: this.faults.filter((f) => !f.repaired || this.t - f.repairAt < 600),
+      calls: this.calls.filter((c) => c.state === 'ringing' || this.t - (c.answeredAt ?? c.deadline) < 30),
+      env: { ...this.env },
+      possessions: this.possessions.filter((p) => p.state !== 'planned' && p.state !== 'done' && p.state !== 'cancelled'),
+      yards: this.yards,
+      pis: this.pisStation >= 0 ? computePis(this, this.pisStation) : null,
+      scenario: this.scenario,
+      randomLevel: this.randomLevel,
+      autoRadio: this.autoRadio,
+      metrics: this.metrics,
+      replay: { from: 0, to: 0, replaying: false, pending: 0 },
+      bookmarks: this.bookmarks.slice(-60),
     };
   }
+}
+
+function nextStopStation(tr: Train): number {
+  for (const t of tr.tasks) if (t.k === 'stop') return t.station;
+  return -1;
 }
 
 export function describeTask(sim: Sim, t: import('./model').Task): string {
@@ -557,6 +703,15 @@ export function describeCommand(sim: Sim, cmd: Command): string {
     case 'ack': return '报警确认';
     case 'fault': return `【教员】注入故障 ${FAULT_LABELS[cmd.kind]}`;
     case 'repair': return '【教员】故障修复';
+    case 'sectionBlock': return `区段${cmd.on ? '封锁' : '解封'} ${cmd.sections.map((x) => topo.sections[x].name).join('、')}`;
+    case 'switchBlock': return `道岔${cmd.on ? '封锁' : '解封'} ${topo.switches[cmd.sw].name}`;
+    case 'manual': return `${cmd.mode === 'AM' ? '恢复自动驾驶' : `人工驾驶${cmd.mode}`} ${tn(cmd.train)}`;
+    case 'radio': return '通话应答';
+    case 'radioAuto': return '通话应答方式';
+    case 'env': return '【教员】环境设置';
+    case 'randomFaults': return '【教员】随机故障';
+    case 'scenarioEnd': return '【教员】结束评估';
+    case 'bookmark': return '添加书签';
   }
 }
 

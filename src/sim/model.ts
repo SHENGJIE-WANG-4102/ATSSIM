@@ -170,7 +170,27 @@ export interface Train {
   withdrawn: boolean;
   /** psd bypass extra dwell */
   extraDwell: number;
+  // manual driving (人工驾驶接管)
+  manual: boolean;
+  /** master controller: -7..-1 brake, 0 coast, 1..4 traction; -8 = driver emergency brake */
+  notch: number;
+  /** most restrictive target ahead (DMI): speed m/s and distance m */
+  tgtV: number;
+  tgtD: number;
+  tgtReason: string;
+  /** vehicle coupled behind during a rescue move */
+  coupledVehicle: string;
+  /** per-stop accuracy records while driven manually */
+  drv: DriveRecord;
+  /** dispatcher-imposed stop in section (passenger alarm etc.), until sim time */
+  stopUntil: number;
+  stopReason: string;
+  /** set while the train has been standing at an obstacle (for driver calls) */
+  waitSince: number;
 }
+
+export interface StopScore { t: number; station: number; err: number; score: number; note: string }
+export interface DriveRecord { stops: StopScore[]; overspeed: number; spad: number; since: number }
 
 // ---------------------------------------------------------------- infrastructure state
 
@@ -182,6 +202,8 @@ export interface SwitchState {
   fieldLock: boolean;
   singleLock: boolean;
   lockCount: number;
+  /** 道岔封锁: no route may be set over it (single operation still possible) */
+  blocked: boolean;
 }
 
 export interface SectionState {
@@ -193,6 +215,12 @@ export interface SectionState {
   presetSeen: boolean;
   lockRoute: number; // active route id or -1
   tsr: number; // km/h, 0 = none
+  /** 区段封锁 (no routes, no movement authority into it) */
+  blocked: boolean;
+  /** engineering possession id holding this section (-1 = none) */
+  poss: number;
+  /** environmental speed restriction (wind / rain), km/h, 0 = none; -1 = suspended */
+  envTsr: number;
 }
 
 export interface ActiveRoute {
@@ -233,6 +261,8 @@ export interface PlatformState {
   stranded: number;
   lastDep: number;
   lastArr: number;
+  /** station inflow control (限流) until sim time */
+  limitUntil: number;
 }
 
 // ---------------------------------------------------------------- events
@@ -262,7 +292,9 @@ export type FaultKind =
   | 'signal'
   | 'psd'
   | 'trainFail'
-  | 'surge';
+  | 'surge'
+  | 'pecu'
+  | 'trackPerson';
 
 export interface Fault {
   id: number;
@@ -308,7 +340,16 @@ export type Command =
   | { c: 'zoneLevel'; zones: number[]; level: 'CBTC' | 'TBTC' }
   | { c: 'ack'; ids: number[] }
   | { c: 'fault'; kind: FaultKind; target: number; duration: number; param?: number; recoverable?: boolean }
-  | { c: 'repair'; fault: number };
+  | { c: 'repair'; fault: number }
+  | { c: 'sectionBlock'; sections: number[]; on: boolean }
+  | { c: 'switchBlock'; sw: number; on: boolean }
+  | { c: 'manual'; train: number; mode: 'CM' | 'RM' | 'AM' }
+  | { c: 'radio'; call: number; option: string }
+  | { c: 'radioAuto'; on: boolean }
+  | { c: 'env'; wind?: number; rain?: boolean; duration: number }
+  | { c: 'randomFaults'; level: number }
+  | { c: 'scenarioEnd' }
+  | { c: 'bookmark'; label: string };
 
 export interface SimConfig {
   dayType: DayType;
@@ -317,6 +358,14 @@ export interface SimConfig {
   date?: string;
   startTime: number;
   seed: number;
+  /** answer radio calls automatically with their default response (headless runs) */
+  autoRadio?: boolean;
+  /** scenario to run (instructor mode) */
+  scenario?: string;
+  /** random fault level 0..3 */
+  randomFaults?: number;
+  /** no night engineering possessions (tests) */
+  noPossessions?: boolean;
 }
 
 export type ToWorker =
@@ -325,6 +374,9 @@ export type ToWorker =
   | { type: 'pause'; paused: boolean }
   | { type: 'jump'; to: number }
   | { type: 'cmd'; id: number; cmd: Command }
+  | { type: 'drive'; train: number; notch: number }
+  | { type: 'pis'; station: number }
+  | { type: 'rewind'; to: number; replay: boolean }
   | { type: 'restart'; config: SimConfig };
 
 export interface TrainSnap {
@@ -357,7 +409,99 @@ export interface TrainSnap {
   task: string;
   kind: string;
   rm: boolean;
+  vTarget: number;
+  tgtV: number;
+  tgtD: number;
+  tgtReason: string;
+  stopDist: number;
+  a: number;
+  manual: boolean;
+  notch: number;
+  dwellLeft: number;
+  nextStation: number;
+  ebReason: string;
+  /** signed distance to the stopping point (m, + = short) when near one, else NaN */
+  stopErr: number;
+  drv: DriveRecord | null;
+  len: number;
 }
+
+export interface PisRow { dest: string; eta: number; status: 'eta' | 'arriving' | 'at' | 'departing'; trip: string; load: number }
+export interface PisData { station: number; DN: PisRow[]; UP: PisRow[]; notice: string }
+
+export interface RadioCall {
+  id: number;
+  t: number;
+  from: string;
+  kind: string;
+  text: string;
+  train?: number;
+  station?: number;
+  target?: number;
+  options: { key: string; label: string; critical?: boolean }[];
+  /** response chosen automatically in auto-answer mode / headless */
+  auto: string;
+  deadline: number;
+  state: 'ringing' | 'answered' | 'expired';
+  answer?: string;
+  answeredAt?: number;
+  repeats: number;
+}
+
+export interface Possession { id: number; name: string; sections: number[]; from: number; to: number; state: 'planned' | 'requested' | 'active' | 'releasing' | 'done' | 'cancelled' }
+
+export interface EnvState { wind: number; rain: boolean; windUntil: number; rainUntil: number }
+
+export interface YardState { tracks: string[][]; perTrack: number }
+
+export interface Metrics {
+  since: number;
+  /** final-arrival delays of revenue trips (s) */
+  tripDelays: number[];
+  tripsCompleted: number;
+  departures: number;
+  departuresLate: number;
+  boardedDelayed: number;
+  stranded: number;
+  cleared: number;
+  limited: number;
+  safety: { spad: number; overspeed: number; rmNearMiss: number; unsafeAuth: number; espIgnored: number; overrun: number };
+  callsAnswered: number;
+  callsExpired: number;
+  faults: number;
+}
+
+export interface ScenarioState {
+  id: string;
+  name: string;
+  start: number;
+  end: number;
+  objectives: string[];
+  ended: boolean;
+  report?: ScenarioReport;
+}
+
+export interface ScenarioReport {
+  title: string;
+  from: number;
+  to: number;
+  delayMinutes: number;
+  affected: number;
+  delivery: number;
+  plannedTrips: number;
+  deliveredTrips: number;
+  punctuality: number;
+  safety: Metrics['safety'];
+  safetyTotal: number;
+  callsAnswered: number;
+  callsExpired: number;
+  driving: { stops: number; avgErr: number; avgScore: number } | null;
+  score: number;
+  grade: string;
+  notes: string[];
+}
+
+export interface Bookmark { id: number; t: number; label: string; auto: boolean }
 
 export interface Snapshot {
   t: number;
@@ -365,7 +509,7 @@ export interface Snapshot {
   paused: boolean;
   dayType: DayType;
   dateLabel: string;
-  sections: Uint8Array;
+  sections: Uint16Array;
   sectionTsr: Uint8Array;
   switches: Uint8Array;
   signals: Uint8Array;
@@ -388,6 +532,17 @@ export interface Snapshot {
   };
   activeRoutes: number[];
   faults: Fault[];
+  calls: RadioCall[];
+  env: EnvState;
+  possessions: Possession[];
+  yards: YardState[];
+  pis: PisData | null;
+  scenario: ScenarioState | null;
+  randomLevel: number;
+  autoRadio: boolean;
+  metrics: Metrics;
+  replay: { from: number; to: number; replaying: boolean; pending: number };
+  bookmarks: Bookmark[];
 }
 
 export type FromWorker =
@@ -397,11 +552,14 @@ export type FromWorker =
   | { type: 'alarms'; alarms: SimEvent[] }
   | { type: 'plan'; plan: Plan }
   | { type: 'cmdResult'; id: number; ok: boolean; msg: string }
-  | { type: 'progress'; t: number; target: number };
+  | { type: 'progress'; t: number; target: number }
+  | { type: 'rewound'; t: number; nextEventId: number }
+  | { type: 'report'; report: ScenarioReport }
+  | { type: 'call'; call: RadioCall };
 
 // bit flags for packed state arrays
-export const SEC = { OCC: 1, COMM: 2, LOCK: 4, DIST: 8, PRESET: 16, TSR: 32, TRAIN: 64, ROUTEFLEET: 128 } as const;
-export const SW = { R: 1, MOVING: 2, FAILED: 4, LOCKED: 8, SINGLE: 16, FIELD: 32, TARGET_R: 64 } as const;
+export const SEC = { OCC: 1, COMM: 2, LOCK: 4, DIST: 8, PRESET: 16, TSR: 32, TRAIN: 64, ROUTEFLEET: 128, BLOCK: 256, POSS: 512, ENV: 1024, ROUTEMAN: 2048, GUIDE: 4096 } as const;
+export const SW = { R: 1, MOVING: 2, FAILED: 4, LOCKED: 8, SINGLE: 16, FIELD: 32, TARGET_R: 64, BLOCKED: 128 } as const;
 export const SIG_ASPECT: Aspect[] = ['R', 'G', 'Y', 'GUIDE', 'DARK', 'FAIL'];
 export const SIGF = { ROUTE: 8, ARSOFF: 16, AUTOPASS: 32, FAILED: 64, MANUAL: 128 } as const;
 export const PLT = { HOLD: 1, SKIP: 2, ESP: 4, PSDOPEN: 8, PSDFAULT: 16, BYPASS: 32, TRAIN: 64, SURGE: 128 } as const;

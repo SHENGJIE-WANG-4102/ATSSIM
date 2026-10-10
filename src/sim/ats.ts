@@ -8,7 +8,9 @@ import type { Block, StopTask, Task, Train, Trip, TrackDir } from './model';
 import type { Dir, Topology } from './topology';
 import { nextLink } from './topology';
 import { cancelRoute, swPos, trySetRoute, releaseRoute, approachLocked } from './interlocking';
-import { computeBody, reverseTrain, goalBerth, triggerEB } from './movement';
+import { computeBody, reverseTrain, goalBerth, triggerEB, stopError, moveBack } from './movement';
+import { takeVehicle, putVehicle } from './yard';
+import { callDegrade, callRmPreset, callPsd } from './radio';
 import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation } from './timetable';
 import { STATIONS, LINE_INFO } from '../data/line2';
 import { boardAndAlight } from './passengers';
@@ -109,19 +111,32 @@ function berthBusy(sim: Sim, berth: number, self: number): boolean {
   return false;
 }
 
-function resolveChoice(sim: Sim, tr: Train, task: Task) {
+/**
+ * Task objects are shared with replay checkpoints (structural sharing), so
+ * they are never mutated in place: a changed task replaces its array slot.
+ */
+export function cowTask<T extends Task>(tr: Train, task: T): T {
+  const i = tr.tasks.indexOf(task);
+  const copy = { ...task };
+  if (i >= 0) tr.tasks[i] = copy;
+  return copy;
+}
+
+function resolveChoice(sim: Sim, tr: Train, task0: Task): Task {
+  let task = task0;
   if (task.k === 'reverse') {
     const cur = sim.berthRes.get(task.chosen);
-    if (cur === tr.id) return;
+    if (cur === tr.id) return task;
     const free = task.berths.filter((b) => !berthBusy(sim, b, tr.id));
     const pick = free[0] ?? task.berths[0];
-    task.chosen = pick;
+    if (task.chosen !== pick) { task = cowTask(tr, task); task.chosen = pick; }
     if (!berthBusy(sim, pick, tr.id)) sim.berthRes.set(pick, tr.id);
   } else if (task.k === 'stable' && task.berth < 0) {
     const st = sim.topo.stations[tr.lastStation >= 0 ? tr.lastStation : 0];
     const opts = st.turnbackBerths.filter((b) => !berthBusy(sim, b, tr.id));
-    if (opts.length) { task.berth = opts[0]; sim.berthRes.set(opts[0], tr.id); }
+    if (opts.length) { task = cowTask(tr, task); task.berth = opts[0]; sim.berthRes.set(opts[0], tr.id); }
   }
+  return task;
 }
 
 function taskGoal(sim: Sim, task: Task | undefined): number {
@@ -146,16 +161,9 @@ function plannedTime(task: Task | undefined, now: number): number {
 
 // ---------------------------------------------------------------- spawning
 
-let vehicleSeq = 0;
-export function nextVehicle(): string {
-  vehicleSeq = (vehicleSeq % LINE_INFO.fleet) + 1;
-  return `02${String(vehicleSeq).padStart(2, '0')}`;
-}
-export function resetVehicles() { vehicleSeq = 0; }
-
-export function newTrain(sim: Sim, block: Block | null, link: number, off: number, dir: Dir, hist: { link: number; dir: Dir }[]): Train {
+export function newTrain(sim: Sim, block: Block | null, link: number, off: number, dir: Dir, hist: { link: number; dir: Dir }[], vehicle: string): Train {
   const tr: Train = {
-    id: sim.nextTrainId++, vehicle: nextVehicle(), svc: block?.svc ?? '---', tripNo: '----', tripId: -1, block: block?.id ?? -1,
+    id: sim.nextTrainId++, vehicle, svc: block?.svc ?? '---', tripNo: '----', tripId: -1, block: block?.id ?? -1,
     destText: '', destStation: -1,
     link, off, dir, hist, body: [], len: LINE_INFO.trainLength, v: 0, a: 0,
     level: 'CBTC', comm: true, mode: 'AM', eb: false, ebReason: '', ebSince: 0,
@@ -166,6 +174,8 @@ export function newTrain(sim: Sim, block: Block | null, link: number, off: numbe
     rescueBy: -1, rescuing: -1, coupledLen: 0, inService: true, nextSignal: -1, nextSignalDist: Infinity,
     lastStation: -1, trace: [], lastTraceT: -1e9, lastTraceCh: NaN, stopsMade: 0, overspeedEvents: 0, passedRed: 0,
     withdrawn: false, extraDwell: 0,
+    manual: false, notch: 0, tgtV: 0, tgtD: Infinity, tgtReason: '', coupledVehicle: '',
+    drv: { stops: [], overspeed: 0, spad: 0, since: sim.t }, stopUntil: 0, stopReason: '', waitSince: 0,
   };
   computeBody(sim, tr);
   sim.addTrain(tr);
@@ -196,11 +206,11 @@ export function spawnDue(sim: Sim) {
       continue;
     }
     sim.clearAlarm(`short-${b.id}`);
-    sim.depotStock[b.start.depot]--;
+    const vehicle = takeVehicle(sim, b.start.depot)!;
     // head on the transfer link next to the exit signal, heading towards the main line
     const exitLink = topo.links[topo.nodes[t1.a].links.find((l) => l !== dp.gateLink)!];
     // exitLink runs j1 → j2 (a = j1). Train heads -1 on it.
-    const tr = newTrain(sim, b, exitLink.id, 15, -1, [{ link: dp.gateLink, dir: -1 }, { link: exitLink.id, dir: -1 }]);
+    const tr = newTrain(sim, b, exitLink.id, 15, -1, [{ link: dp.gateLink, dir: -1 }, { link: exitLink.id, dir: -1 }], vehicle);
     tr.tasks = blockTasks(topo, sim.plan, b);
     b.train = tr.id;
     tr.phase = 'run';
@@ -220,7 +230,7 @@ function spawnStabled(sim: Sim, b: Block) {
   const l = topo.links[berth.link];
   // place body ending at the berth, then reverse so the head faces the platform
   const headOff = berth.offset;
-  const tr = newTrain(sim, b, berth.link, headOff, berth.dir, [{ link: berth.link, dir: berth.dir }]);
+  const tr = newTrain(sim, b, berth.link, headOff, berth.dir, [{ link: berth.link, dir: berth.dir }], sim.stabledPool.shift() ?? '0200');
   void l;
   reverseTrain(sim, tr);
   tr.tasks = blockTasks(topo, sim.plan, b);
@@ -268,14 +278,17 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
         return;
       }
     }
-    if (task.k === 'reverse' || (task.k === 'stable' && task.berth < 0)) resolveChoice(sim, tr, task);
-    const goal = taskGoal(sim, task);
-    if (goal >= 0 && tr.v < 0.05 && tr.stopDist < 0.8) {
-      arriveAtBerth(sim, tr, task);
+    const cur = task.k === 'reverse' || (task.k === 'stable' && task.berth < 0) ? resolveChoice(sim, tr, task) : task;
+    const goal = taskGoal(sim, cur);
+    if (tr.manual) {
+      if (goal >= 0 && tr.v < 0.05) manualArrival(sim, tr, cur);
+    } else if (goal >= 0 && tr.v < 0.05 && tr.stopDist < 0.8) {
+      arriveAtBerth(sim, tr, cur);
     }
-    if (task.k === 'depot') {
-      const b = topo.berths[topo.depots[task.depot].berth];
-      if (tr.link === b.link && Math.abs(tr.off - b.offset) < 1.5 && tr.v < 0.05) enterDepot(sim, tr, task.depot);
+    if (cur.k === 'depot') {
+      const b = topo.berths[topo.depots[cur.depot].berth];
+      const near = tr.manual ? tr.off <= b.offset + 1 && tr.off >= b.offset - 40 : Math.abs(tr.off - b.offset) < 1.5;
+      if (tr.link === b.link && near && tr.v < 0.05) enterDepot(sim, tr, cur.depot);
     }
     if (task.k === 'rescue') rescueStep(sim, tr, task.target);
     return;
@@ -294,6 +307,7 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
         if (ps.psd !== 'fault') {
           ps.psd = 'fault';
           sim.log('A', '车站', `${topo.platforms[p].name} 站台门无法关闭锁紧，列车 ${trainLabel(tr)} 无法发车`, { key: `psd-${p}` });
+          callPsd(sim, p);
         }
         return;
       }
@@ -310,6 +324,15 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
     tr.phaseSince = sim.t;
     if (st.dep !== null) tr.delay = sim.t - st.dep;
     sim.noteDeparture(st);
+    if (st.dep !== null && st.trip >= 0 && st.revenue) {
+      sim.metrics.departures++;
+      if (sim.t - st.dep > 120) sim.metrics.departuresLate++;
+      // passengers left behind by a full train
+      if (ps.waiting > 30 && tr.load >= LINE_INFO.crushCapacity - 5) {
+        sim.metrics.stranded += ps.waiting;
+        sim.passengersStranded += ps.waiting;
+      }
+    }
     recordTrace(sim, tr, true);
     if (sim.berthRes.get(st.berth) === tr.id) sim.berthRes.delete(st.berth);
     setTripFromTasks(sim, tr);
@@ -346,23 +369,31 @@ function arriveAtBerth(sim: Sim, tr: Train, task: Task) {
     tr.stopsMade++;
     ps.lastArr = sim.t;
     if (task.arr !== null) tr.delay = sim.t - task.arr;
-    if (task.dep === null && task.trip >= 0 && sim.plan.trips[task.trip].revenue) sim.tripsDone++;
+    if (task.dep === null && task.trip >= 0 && sim.plan.trips[task.trip].revenue) {
+      sim.tripsDone++;
+      sim.metrics.tripsCompleted++;
+      sim.metrics.tripDelays.push(task.arr !== null ? sim.t - task.arr : 0);
+    }
     recordTrace(sim, tr, true);
     let dwell = 10;
     if (task.doors) {
       tr.doorsOpen = true;
       ps.psd = ps.psdFault ? 'fault' : 'open';
+      const before = tr.load;
       const paxDwell = boardAndAlight(sim, tr, p, task);
+      if (tr.delay > 120) sim.metrics.boardedDelayed += Math.max(0, tr.load - before) + Math.round(before * 0.3);
       dwell = Math.max(task.minDwell ?? 18, paxDwell);
     } else if (!task.revenue && tr.load > 0) {
       // clear-out (清客)
       tr.doorsOpen = true;
       ps.psd = ps.psdFault ? 'fault' : 'open';
       sim.passengersCleared += tr.load;
+      sim.metrics.cleared += tr.load;
       tr.load = 0;
       dwell = Math.max(task.minDwell ?? 60, 60);
     }
     if (task.minDwell) dwell = Math.max(dwell, task.minDwell);
+    if (tr.extraDwell > 0) { dwell += tr.extraDwell; tr.extraDwell = 0; }
     // regulation: hold early trains to the timetable, shorten dwell for late ones
     let ready = sim.t + dwell;
     if (task.dep !== null) ready = Math.max(ready, task.dep);
@@ -393,9 +424,59 @@ function arriveAtBerth(sim: Sim, tr: Train, task: Task) {
   }
 }
 
+/** stopping-accuracy score for a manually driven stop */
+export function stopScore(err: number): number {
+  const a = Math.abs(err);
+  if (a <= 0.3) return 100;
+  if (a <= 0.5) return 90;
+  if (a <= 0.75) return 75;
+  if (a <= 1.0) return 60;
+  return 0;
+}
+
+/** a manually driven train has come to a stand: check the stopping position */
+function manualArrival(sim: Sim, tr: Train, task: Task) {
+  const err = stopError(sim, tr);
+  if (Number.isNaN(err)) return;
+  if (task.k !== 'stop') {
+    // turnback / stabling berths: within a few metres is fine
+    if (err <= 5 && err >= -3) arriveAtBerth(sim, tr, task);
+    return;
+  }
+  if (err > 1.0) return; // short of the mark: move up
+  const rec = (score: number, note: string) => {
+    const r = { t: sim.t, station: task.station, err, score, note };
+    tr.drv.stops.push(r);
+    sim.drivingStops.push(r);
+  };
+  if (err >= -1.0) {
+    rec(stopScore(err), '');
+    sim.log('I', '列车', `列车 ${trainLabel(tr)} 人工驾驶 ${STATIONS[task.station].name} 停车，对标误差 ${err >= 0 ? '欠' : '过'}${Math.abs(err).toFixed(2)} m`);
+    arriveAtBerth(sim, tr, task);
+    return;
+  }
+  if (err >= -15 || task.dep === null) {
+    // overrun: back up to the mark (needs dispatcher permission in reality; granted automatically here)
+    rec(0, '过标退行');
+    sim.metrics.safety.overrun += err < -5 ? 1 : 0;
+    sim.log('C', '列车', `列车 ${trainLabel(tr)} ${STATIONS[task.station].name} 过标 ${(-err).toFixed(1)} m，退行对标`);
+    moveBack(sim, tr, -err);
+    arriveAtBerth(sim, tr, task);
+    tr.dwellUntil += 20;
+    tr.depReadyAt += 20;
+    return;
+  }
+  // far overrun at a through station: the stop is lost (越站)
+  rec(0, '越站');
+  sim.metrics.safety.overrun++;
+  sim.log('B', '列车', `列车 ${trainLabel(tr)} ${STATIONS[task.station].name} 过标 ${(-err).toFixed(0)} m，越站（未办理客运）`);
+  tr.tasks.shift();
+}
+
 function enterDepot(sim: Sim, tr: Train, depot: number) {
   const dp = sim.topo.depots[depot];
-  sim.depotStock[depot] += tr.coupledLen > 0 ? 2 : 1;
+  putVehicle(sim, depot, tr.vehicle);
+  if (tr.coupledVehicle) putVehicle(sim, depot, tr.coupledVehicle);
   sim.log('I', '车辆', `列车 ${tr.svc}（${tr.vehicle}）入${dp.name}`);
   finishBlock(sim, tr);
   sim.removeTrain(tr);
@@ -417,7 +498,7 @@ export function recordTrace(sim: Sim, tr: Train, force = false) {
   if (!force && sim.t - tr.lastTraceT < 20) return;
   if (!force && Math.abs(ch - tr.lastTraceCh) < 1 && sim.t - tr.lastTraceT < 120) return;
   // break the line when the train is out of revenue/position jumps
-  tr.trace.push(sim.t, ch, tr.inService ? 1 : 0);
+  tr.trace.push(sim.t, ch, tr.inService ? 1 : 0, Math.round(tr.inService ? tr.delay : 0));
   tr.lastTraceT = sim.t;
   tr.lastTraceCh = ch;
 }
@@ -552,7 +633,7 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
     return null;
   }
   if (!goalTask) return null;
-  if (goalTask.k === 'reverse' || (goalTask.k === 'stable' && goalTask.berth < 0)) resolveChoice(sim, tr, goalTask);
+  if (goalTask.k === 'reverse' || (goalTask.k === 'stable' && goalTask.berth < 0)) goalTask = resolveChoice(sim, tr, goalTask);
   let goal = taskGoal(sim, goalTask);
   if (goal === -2 && goalTask.k === 'rescue') {
     // rescue: head for the failed train — route towards its next berth in our direction
@@ -748,7 +829,7 @@ export function updateLevels(sim: Sim) {
     }
     if (tr.pendingMode) continue;
     // RM authorisation finished → back to supervised modes
-    if (tr.mode === 'RM' && tr.rmAuth <= 0 && tr.coupledLen === 0 && tr.tasks[0]?.k !== 'rescue') {
+    if (tr.mode === 'RM' && tr.rmAuth <= 0 && tr.coupledLen === 0 && tr.tasks[0]?.k !== 'rescue' && !tr.manual) {
       tr.mode = tr.level === 'CBTC' || (zone === 'TBTC') ? 'AM' : 'CM';
       if (!tr.comm) tr.mode = 'CM';
       sim.log('I', '列车', `列车 ${trainLabel(tr)} 结束RM，恢复 ${tr.mode} 模式`);
@@ -765,10 +846,8 @@ export function updateLevels(sim: Sim) {
         // stuck until the area is switched to TBTC (or RM authorised)
       }
     } else if (tr.level === 'CBTC' && tr.v < 0.05 && tr.mode !== 'RM') {
-      tr.pendingMode = 'CM';
-      tr.pendingLevel = 'TBTC';
-      tr.pendingModeAt = sim.t + 30;
-      sim.log('C', '列车', `列车 ${trainLabel(tr)} 司机申请降级：30秒后以 TBTC 后备 CM 模式运行（区段占用防护）`);
+      // the driver asks the dispatcher for permission to degrade
+      callDegrade(sim, tr);
     }
   }
 }
@@ -777,7 +856,7 @@ export function updateLevels(sim: Sim) {
 export function driverRM(sim: Sim) {
   const { topo } = sim;
   for (const tr of sim.trainList) {
-    if (tr.phase !== 'run' || tr.v > 0.05 || tr.mode === 'RM' || tr.failed || tr.pendingMode) continue;
+    if (tr.phase !== 'run' || tr.v > 0.05 || tr.mode === 'RM' || tr.failed || tr.pendingMode || tr.manual) continue;
     if (tr.maDist > 35) continue;
     if (tr.nextSignal >= 0 && tr.nextSignalDist < 40 && sim.sig[tr.nextSignal].aspect === 'GUIDE') {
       const rid = sim.sig[tr.nextSignal].route;
@@ -786,7 +865,7 @@ export function driverRM(sim: Sim) {
       continue;
     }
     if (tr.maReason === '计轴预复位区段') {
-      grantRM(sim, tr, 450 + tr.len, '预复位区段压道');
+      callRmPreset(sim, tr);
     }
   }
 }
@@ -922,12 +1001,12 @@ export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
   const tasks: Task[] = [];
   const next = ahead[0];
   if (tr.phase === 'dwell') {
-    const cur = curStop(tr)!;
+    const cur = cowTask(tr, curStop(tr)!);
     cur.revenue = false;
     cur.doors = true;
     cur.dep = null;
     cur.minDwell = 60;
-    if (tr.load > 0) { sim.passengersCleared += tr.load; tr.load = 0; }
+    if (tr.load > 0) { sim.passengersCleared += tr.load; sim.metrics.cleared += tr.load; tr.load = 0; }
     tasks.push(cur);
   } else if (next !== undefined && tr.inService) {
     tasks.push({ k: 'stop', berth: platformBerth(topo, next, d), station: next, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 60, note: '清客' });
@@ -980,7 +1059,7 @@ export function cmdRescue(sim: Sim, failed: Train, rescuer: Train) {
   if (rescuer.inService && rescuer.phase !== 'dwell' && nextSt !== undefined) {
     tasks.push({ k: 'stop', berth: platformBerth(topo, nextSt, d), station: nextSt, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 90, note: '救援清客' });
   } else if (rescuer.phase === 'dwell') {
-    const cur = curStop(rescuer)!;
+    const cur = cowTask(rescuer, curStop(rescuer)!);
     cur.revenue = false; cur.dep = null; cur.minDwell = 90;
     tasks.push(cur);
   }
@@ -1058,6 +1137,7 @@ function completeCoupling(sim: Sim, tr: Train) {
   tr.hist = merged;
   tr.len = tr.len + f.len + 1;
   tr.coupledLen = f.len;
+  tr.coupledVehicle = f.vehicle;
   tr.load += f.load;
   computeBody(sim, tr);
   sim.passengersStranded += 0;
