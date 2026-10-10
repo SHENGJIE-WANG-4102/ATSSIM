@@ -17,7 +17,7 @@ import { SEC, SW, SIGF, PLT, SIG_ASPECT } from './model';
 import {
   computeOccupancy, updateInterlocking, trySetRoute, cancelRoute, moveSwitch, sectionUnlock, signalPassed, type CmdResult,
 } from './interlocking';
-import { updateTrainMotion, indexBodies } from './movement';
+import { updateTrainMotion, indexBodies, refreshAuthority } from './movement';
 import {
   buildRouteTable, type RouteTable, spawnDue, updateTrainTasks, runARS, updateLevels, driverRM, recordTrace,
   cmdTrainHold, cmdSkip, cmdTurnback, cmdWithdraw, cmdAuthRM, cmdRescue, trainLabel,
@@ -28,6 +28,7 @@ import { radioTick, answerCall, type CallSpec } from './radio';
 import { exposureOf, envTick, initPossessions, setWeather } from './env';
 import { newMetrics, scenarioTick, startScenario, endScenario, randomTick, setRandomFaults } from './scenario';
 import { computePis } from './pis';
+import { computeDmi, dmiTick } from './dmi';
 import { passengersTick } from './passengers';
 import { injectFault, repairFault, faultsTick, FAULT_LABELS } from './faults';
 import { LINE_INFO, STATIONS } from '../data/line2';
@@ -127,6 +128,8 @@ export class Sim {
   bookmarks: Bookmark[] = [];
   nextBookmarkId = 1;
   pisStation = -1;
+  /** train whose cab DMI is open in the UI, -1 none */
+  dmiTrain = -1;
   /** bumped on every structural plan change (replay checkpoints) */
   planRev = 0;
   stepsThisSecond = 0;
@@ -202,9 +205,13 @@ export class Sim {
     }
     const stabled = plan.blocks.filter((b) => b.start.kind === 'stable').length;
     let total = stock.reduce((a, b) => a + b, 0) + stabled;
-    // distribute the remaining fleet as spares
-    let i = 0;
-    while (total < LINE_INFO.fleet) { stock[i % stock.length]++; total++; i++; }
+    // distribute the remaining fleet as spares, each to the yard with the most free places
+    while (total < LINE_INFO.fleet) {
+      let best = 0;
+      for (let k = 1; k < stock.length; k++) if (topo.depots[k].capacity - stock[k] > topo.depots[best].capacity - stock[best]) best = k;
+      stock[best]++;
+      total++;
+    }
     return stock;
   }
 
@@ -284,6 +291,7 @@ export class Sim {
   }
 
   private secondTick(dt: number) {
+    refreshAuthority(this);
     spawnDue(this);
     updateLevels(this);
     driverRM(this);
@@ -292,6 +300,7 @@ export class Sim {
     faultsTick(this);
     envTick(this);
     radioTick(this);
+    dmiTick(this);
     scenarioTick(this);
     randomTick(this);
     for (const tr of this.trainList) {
@@ -646,6 +655,7 @@ export class Sim {
       possessions: this.possessions.filter((p) => p.state !== 'planned' && p.state !== 'done' && p.state !== 'cancelled'),
       yards: this.yards,
       pis: this.pisStation >= 0 ? computePis(this, this.pisStation) : null,
+      dmi: this.dmiTrain >= 0 ? computeDmi(this, this.dmiTrain) : null,
       scenario: this.scenario,
       randomLevel: this.randomLevel,
       autoRadio: this.autoRadio,

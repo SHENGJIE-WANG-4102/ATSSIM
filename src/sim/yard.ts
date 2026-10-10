@@ -5,10 +5,11 @@
  */
 import type { Sim } from './engine';
 import type { YardState } from './model';
-import { LINE_INFO } from '../data/line2';
+import { FLEET, LINE_INFO } from '../data/line2';
 
+/** real train number of the i-th train of the fleet (1-based, number order) */
 export function vehicleName(i: number): string {
-  return `02${String(i).padStart(2, '0')}`;
+  return FLEET[(i - 1) % FLEET.length].no;
 }
 
 /** distribute the initial depot stock (vehicle numbers in order) over the stabling tracks */

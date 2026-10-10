@@ -66,7 +66,31 @@ export const SOURCES: SourceRef[] = [
     id: 'china-emu-02a05',
     title: '02A05 型列车资料（6M2T，8辆编组，最高运营速度80 km/h）',
     url: 'https://www.china-emu.cn/Trains/Cityrails/Model/M-203-T.html',
-    used: '8辆A型车编组、最高运营速度 80 km/h',
+    used: '8辆A型车编组、最高运营速度 80 km/h；02A05 编号 02086—02116（31列）',
+  },
+  {
+    id: 'wiki-02a01',
+    title: '上海地铁02A01型电动列车 — 维基百科',
+    url: 'https://zh.wikipedia.org/zh-hans/%E4%B8%8A%E6%B5%B7%E5%9C%B0%E9%93%8102A01%E5%9E%8B%E7%94%B5%E5%8A%A8%E5%88%97%E8%BD%A6',
+    used: '02A01（原AC02）16列，编号 0201—0216',
+  },
+  {
+    id: 'wiki-02a02',
+    title: '上海地铁02A02型电动列车 — 维基百科',
+    url: 'https://zh.wikipedia.org/zh-hans/%E4%B8%8A%E6%B5%B7%E5%9C%B0%E9%93%8102A02%E5%9E%8B%E7%94%B5%E5%8A%A8%E5%88%97%E8%BD%A6',
+    used: '02A02（原AC08）21列，编号 0233—0253',
+  },
+  {
+    id: 'wiki-02a03-04',
+    title: '上海地铁02A03型、02A04型电动列车 — 维基百科',
+    url: 'https://zh.wikipedia.org/wiki/%E4%B8%8A%E6%B5%B7%E5%9C%B0%E9%93%8102A03%E5%9E%8B%E3%80%8102A04%E5%9E%8B%E7%94%B5%E5%8A%A8%E5%88%97%E8%BD%A6',
+    used: '02A03（原AC17a）16列，编号 0254—0269；02A04（原AC17b，已扩编为8辆）16列，编号 0270—0285',
+  },
+  {
+    id: 'whb-100th',
+    title: '文汇报：地铁2号线喜提第100列列车（2020-06-02）',
+    url: 'https://wenhui.whb.cn/third/zaker/202006/02/352215.html',
+    used: '2号线配属列车总数 100 列（末列增购车 02116）',
   },
 ];
 
@@ -154,9 +178,36 @@ export const LINE_INFO = {
   /** rated / crush capacity of an 8-car A-type train (approx, 6 / 9 p/m²) */
   capacity: 2480,
   crushCapacity: 3200,
-  /** total fleet size (the 2024 cut-over involved 76 trains; approx) */
-  fleet: 76,
+  /** total fleet size: 100 trains, see FLEET */
+  fleet: 100,
 };
+
+/**
+ * Line 2 fleet by type with the real train numbers (sources: wiki-02a01,
+ * wiki-02a02, wiki-02a03-04, china-emu-02a05, whb-100th). The older types
+ * are numbered in the 4-digit form (0201), 02A05 in the 5-digit form (02086).
+ * All types are 8-car A-type trains with an 80 km/h maximum operating speed
+ * (the sim uses one performance model for all of them).
+ */
+export const FLEET_TYPES: { type: string; from: number; to: number; digits: 4 | 5; source: string }[] = [
+  { type: '02A01', from: 1, to: 16, digits: 4, source: 'wiki-02a01' },
+  { type: '02A02', from: 33, to: 53, digits: 4, source: 'wiki-02a02' },
+  { type: '02A03', from: 54, to: 69, digits: 4, source: 'wiki-02a03-04' },
+  { type: '02A04', from: 70, to: 85, digits: 4, source: 'wiki-02a03-04' },
+  { type: '02A05', from: 86, to: 116, digits: 5, source: 'china-emu-02a05' },
+];
+
+/** every train of the fleet in number order: { no: '0201' | '02086', type } */
+export const FLEET: { no: string; type: string; n: number }[] = FLEET_TYPES.flatMap((ft) =>
+  Array.from({ length: ft.to - ft.from + 1 }, (_, i) => {
+    const n = ft.from + i;
+    return { no: ft.digits === 5 ? `02${String(n).padStart(3, '0')}` : `02${String(n).padStart(2, '0')}`, type: ft.type, n };
+  }));
+
+/** fleet entry for a train number, or undefined */
+export function fleetEntry(no: string): { no: string; type: string; n: number } | undefined {
+  return FLEET.find((f) => f.no === no);
+}
 
 /**
  * 上行 / 下行 convention used throughout the UI. The real Shanghai Metro
@@ -250,7 +301,7 @@ export const LAYOUT = {
   depots: [
     {
       id: 'BZL', name: '北翟路车辆段', short: '北翟路', station: 4, junctionOffset: -1300,
-      stablingTracks: 14, capacity: 34, exitTime: 240, source: 'wiki-depots（接轨淞虹路，淞虹路西北）',
+      stablingTracks: 14, capacity: 40, exitTime: 240, source: 'wiki-depots（接轨淞虹路，淞虹路西北）',
     },
     {
       id: 'LYD', name: '龙阳路车辆段', short: '龙阳路', station: 19, junctionOffset: 700,
@@ -258,7 +309,7 @@ export const LAYOUT = {
     },
     {
       id: 'CSD', name: '川沙停车场', short: '川沙', station: 28, junctionOffset: 900,
-      stablingTracks: 8, capacity: 20, exitTime: 200, source: 'wiki-depots（接轨远东大道，远东大道东）',
+      stablingTracks: 8, capacity: 30, exitTime: 200, source: 'wiki-depots（接轨远东大道，远东大道东）',
     },
   ] as DepotDef[],
   /** ZC (zone controller) / TBTC control areas, by station index boundaries */

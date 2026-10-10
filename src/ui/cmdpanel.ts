@@ -34,6 +34,8 @@ export class CommandPanel {
   private key = '';
   private live: (() => void) | null = null;
   dmi: Dmi;
+  /** train whose DMI data the worker is sending, -1 none */
+  private dmiTrain = -1;
 
   constructor(store: Store, hooks: PanelHooks) {
     this.store = store;
@@ -70,6 +72,7 @@ export class CommandPanel {
     this.live = null;
     this.hooks.previewRoute(null);
     clear(this.el);
+    if (sel?.kind !== 'train' && this.dmiTrain >= 0) { this.dmiTrain = -1; this.store.send({ type: 'dmi', train: -1 }); }
     if (!snap) return;
     if (!sel) return this.renderSystem();
     switch (sel.kind) {
@@ -331,6 +334,8 @@ export class CommandPanel {
         ]),
     );
     this.el.append(drive);
+    if (this.dmiTrain !== id) { this.dmi.reset(); this.dmiTrain = id; }
+    this.store.send({ type: 'dmi', train: id });
     this.dmi.showLever(t0.manual);
     this.el.append(this.dmi.el);
     if (t0.manual) this.el.append(h('div', { class: 'keys' }, '手柄：', h('b', {}, '↑ W'), ' 加牵引 · ', h('b', {}, '↓ S'), ' 加制动 · ', h('b', {}, 'X'), ' 惰行 · ', h('b', {}, 'E'), ' 紧急制动 · 鼠标滚轮/点击手柄档位'));
@@ -348,7 +353,8 @@ export class CommandPanel {
     }, () => {
       const t = this.store.snap!.trains.find((x) => x.id === id);
       if (!t) return;
-      this.dmi.draw(t);
+      const snap = this.store.snap!;
+      this.dmi.draw(t, snap.dmi?.train === id ? snap.dmi : null, snap.t);
       if (t.drv) {
         clear(scores);
         const st = t.drv.stops.slice(-8);

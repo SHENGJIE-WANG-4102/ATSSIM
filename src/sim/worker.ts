@@ -37,8 +37,14 @@ function post(msg: FromWorker, transfer: Transferable[] = []) {
   self.postMessage(msg, transfer);
 }
 
+/** UI subscriptions that survive a restart */
+let wantPis = -1;
+let wantDmi = -1;
+
 function start(config: SimConfig) {
   sim = new Sim(config);
+  sim.pisStation = wantPis;
+  sim.dmiTrain = wantDmi;
   speed = 1;
   paused = false;
   acc = 0;
@@ -235,7 +241,13 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       cmdLog.push({ t: sim.t, drive: { train: m.train, notch: m.notch } });
       break;
     case 'pis':
+      wantPis = m.station;
       if (sim) sim.pisStation = m.station;
+      break;
+    case 'dmi':
+      wantDmi = m.train;
+      if (sim) sim.dmiTrain = m.train;
+      sendSnapshot();
       break;
     case 'rewind':
       rewind(m.to, m.replay);

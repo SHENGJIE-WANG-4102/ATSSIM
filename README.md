@@ -116,14 +116,16 @@ Esc steps back (pending start → function → overview).
 
 ### Following a train and driving it
 
-**跟踪列车** keeps the camera on the train and shows its driver display (DMI) in the
-side panel. The DMI shows:
+**跟踪列车** keeps the camera on the train and shows its cab display (DMI) in the
+side panel, modelled on the Casco DMI in the 02A05 cabs (see [Cab DMI](#cab-dmi)).
+It shows:
 
-* the speedometer with the permitted speed and the target speed;
-* the target distance bar;
-* the movement-authority limit and its reason;
-* the next station and the remaining dwell;
-* mode and level, door state and EB.
+* terminus, next station, trip, train ID and the departure time;
+* the speedometer with the permitted speed in red on the rim;
+* mode and level, door mode, platform and train doors;
+* the highest available mode and the stopping-window indicator;
+* a timestamped message log;
+* the target and movement-authority readout.
 
 **人工驾驶 CM** (supervised) or **RM** (restricted, ≤ 25 km/h, on sight; ★, train must be
 at a stand) hands the train to you. The lever has traction P1–P4, coast, brake B1–B7
@@ -332,7 +334,118 @@ blocks by FIFO matching at each terminal (minimum turnback 5 min, layover ≤ 25
 terminal capacity respected). Missing trains are supplied by revenue insertion trips
 from the nearest depot placed into gaps of the stream (e.g. peak insertion from
 龙阳路车辆段 for small-route trains at 广兰路), surplus trains withdraw the same way.
-Weekday peak uses 65 trains, within the 76-train fleet.
+Weekday peak uses 65 trains, within the 100-train fleet.
+
+## Cab DMI
+
+The DMI in the side panel follows four reference photos in `reference/dmi/`. The files are
+`.png`, not the `.jpg` named in the brief.
+
+| File | Shows | Used as |
+|---|---|---|
+| `line2_blurry_1.png`, `line2_blurry_2.png` | the DMI in a Line 2 02A05 cab | authority for Line 2 content wherever legible |
+| `casco_am_clear.png` | a clear Casco DMI in AM (another Shanghai line) | authority for colours, typography, icon shapes, log style, proportions |
+| `casco_fam_clear.png` | a clear Casco DMI on another city's GoA4 line | layout cross-check only |
+
+No vendor logo or bezel is drawn.
+
+### Layout
+
+* **Background and colours.** Navy background (`#161d49`), white primary text, blue labels,
+  green for normal / closed, yellow for open doors and warnings, red for the permitted
+  speed and emergencies.
+* **Top bar.**
+  * Three blue label-over-value fields: 终点站, 下一站, 车次.
+  * `T` + 4 digits, then the service number.
+  * Two white buttons on the right.
+  * `DEP hh:mm:ss` under the train ID.
+* **Speedometer.**
+  * Range 0–120 km/h, labelled every 20, minor ticks every 2 km/h, long ticks every 10, as on the Line 2 photos.
+  * Digital speed in the hub circle, `km/h` beneath.
+  * Permitted speed shown as a red arc on the rim from the permitted speed up to 120, plus a red triangle marker.
+* **Right column.**
+  * Large mode and level: `DTO CBTC` / `DTO TBTC` / `CM …` / `RM …`.
+  * Departure countdown bar and train-front icon.
+  * Platform screen door leaves.
+  * Door mode `AA` / `MM` with its white bar, and the train door bars.
+* **Row below the dial.** Wheel icon, highest available mode (`DTO-C`, `DTO-T`, `CM-C`, `CM-T`, `RM`),
+  train / door status icon, stopping-window hexagon.
+* **Bottom.**
+  * Date (YYYY/MM/DD) and time on the left.
+  * Message log: `hh:mm text`, newest first. The selected row is highlighted in light cyan; up / down scroll buttons sit on the right.
+  * Clicking a row selects it; the buttons scroll the log.
+
+### What drives it
+
+* **Movement authority.**
+  * The MA ends at the nearer of:
+    * the rear of the preceding train, minus 20 m when both trains are communicating CBTC trains, 25 m otherwise;
+    * the end of the set route (6 m before the first signal without a locked route).
+  * Other protections can only shorten it: blocked or disturbed sections, platform emergency close, an unlocked platform door, ZC failure, link loss.
+  * It is never a fixed length:
+    * The 10 Hz supervision scan covers 1400 m, which is further than any braking curve under 80 km/h can reach.
+    * The full-length MA is recomputed for every train once a second (ZC cycle) and shifted by the train's own travel in between.
+    * `tests/features.test.ts` checks it against an independent track walker.
+* **Permitted speed.**
+  * The guaranteed-emergency-brake curve to the MA end and to each speed restriction.
+  * Capped at the 80 km/h line / train ceiling (02A05 design speed), whatever the dial range.
+  * Emergency brake intervention sits 5 km/h above it.
+  * The platform stopping point is an ATO target, not an ATP limit.
+* **Target.** On a station approach the target is the stopping point at 0 km/h.
+* **Modes.**
+  * Behaviour stays AM / CM / RM on CBTC / TBTC.
+  * Only the wording follows the photos: AM is shown as `DTO`, and the door mode is `AA` in AM, `MM` in CM / RM.
+* **States covered.**
+  * AM traction / coasting / braking, station approach, stopped and aligned.
+  * Doors open (yellow) / closed (green), departure countdown.
+  * CM, RM.
+  * Communication loss with emergency brake.
+  * Alarms in the log.
+* **Train IDs.** Real Line 2 fleet numbers per type, 100 trains:
+
+  | Type | Numbers | Count |
+  |---|---|---|
+  | 02A01 | 0201–0216 | 16 |
+  | 02A02 | 0233–0253 | 21 |
+  | 02A03 | 0254–0269 | 16 |
+  | 02A04 | 0270–0285 | 16 |
+  | 02A05 | 02086–02116 | 31 |
+
+  Sources are under [Data sources](#data-sources). The DMI ID is `T` + the last four digits of the five-digit form: 0213 → T2013, 02086 → T2086.
+
+### Decisions where the photos are not legible
+
+| Element | What the photos show | What is drawn |
+|---|---|---|
+| Third top-bar field | blue label and value, unreadable | 车次 with the trip number |
+| Small number after the train ID ("25") | a 1–2 digit number | service (表号) number without leading zeros |
+| Two white buttons, top right | captions unreadable | blank buttons; no function |
+| Glyph inside the wheel icon | scalloped ring with a letter, looks like "B" | "B" inside the ring, on the Casco axle line |
+| Level wording in TBTC | only `CBTC` is ever visible | `TBTC` |
+| Grey bar under the mode | a grey rounded bar | departure countdown (fills during the dwell, seconds beside it) |
+| Train-front icon right of the bar | white train-front icon with a mark under it | traction (green ▲), braking (yellow ▼), emergency brake (red icon) |
+| Two square icons above AA | white / grey squares | platform screen doors: grey none, green closed, yellow open, red fault, orange bypass |
+| Bars right of AA | yellow bars in the Line 2 photo | train doors: green closed, yellow and apart when open |
+| Hexagon colours | green / white vertical hexagon | green tips approaching a stop, green body when aligned, yellow tip short / over, white otherwise |
+| AA / MM mapping | `AA` on Line 2, `MM` on the clear photo | AA in AM, MM in CM / RM |
+
+### Extrapolations (states the references do not show)
+
+* **Target / authority readout** (bottom right, same blue-label / white-value style):
+  * the target reason, distance and speed;
+  * the MA length;
+  * the stopping error when stopped off the mark.
+
+  It replaces an ETCS-style target distance bar, which none of the references has.
+* **Status line** under the door mode: 紧急制动 (red), 超速 / 扣车 (yellow), 人工驾驶 (white).
+* **Overspeed** turns the hub digits yellow; an emergency brake turns them red.
+* **Log messages taken from the photos:** `DMI激活`, `连接丢失`, `ATO/ATP模式可用`, `CM/AM模式可用`.
+* **Log messages added in the same style:**
+  * `连接恢复`, `CM模式可用`, `仅RM模式可用`
+  * `紧急制动 <reason>`, `紧急制动缓解`, `超速报警`
+  * `扣车`, `扣车取消`, `区间停车 <reason>`, `列车故障`
+  * `<mode> <level>模式` on every mode change
+  * Warnings are drawn yellow and alarms red; the clear photo shows only white entries.
 
 ## Data sources
 
@@ -343,7 +456,11 @@ Weekday peak uses 65 trains, within the 76-train fleet.
 | Renaming 徐泾东→国家会展中心, 东昌路→浦东南路, 浦东国际机场→浦东1号2号航站楼 | [澎湃新闻 2024-09-21](https://www.thepaper.cn/newsDetail_forward_28825374) |
 | CBTC primary + TBTC backup with switchover | [上海市政府 2024-02-27](https://www.shanghai.gov.cn/nw4411/20240227/180dcb4ed7aa4c48b38cf0761062580c.html), [上海市交通委 2024-01-29](https://jtw.sh.gov.cn/xydt/20240129/723ad1281785433db88e237f2c0748a0.html) |
 | Depot junction stations (北翟路→淞虹路, 龙阳路→龙阳路, 川沙→远东大道) | [上海轨道交通车辆基地 — 维基百科](https://zh.wikipedia.org/zh-hans/%E4%B8%8A%E6%B5%B7%E8%BD%A8%E9%81%93%E4%BA%A4%E9%80%9A%E8%BD%A6%E8%BE%86%E5%9F%BA%E5%9C%B0) |
-| 8-car trains, 80 km/h operating speed | [02A05 车型资料](https://www.china-emu.cn/Trains/Cityrails/Model/M-203-T.html) |
+| 8-car trains, 80 km/h operating speed; 02A05 numbers 02086–02116 | [02A05 车型资料](https://www.china-emu.cn/Trains/Cityrails/Model/M-203-T.html) |
+| 02A01 numbers 0201–0216 | [上海地铁02A01型电动列车 — 维基百科](https://zh.wikipedia.org/zh-hans/%E4%B8%8A%E6%B5%B7%E5%9C%B0%E9%93%8102A01%E5%9E%8B%E7%94%B5%E5%8A%A8%E5%88%97%E8%BD%A6) |
+| 02A02 numbers 0233–0253 | [上海地铁02A02型电动列车 — 维基百科](https://zh.wikipedia.org/zh-hans/%E4%B8%8A%E6%B5%B7%E5%9C%B0%E9%93%8102A02%E5%9E%8B%E7%94%B5%E5%8A%A8%E5%88%97%E8%BD%A6) |
+| 02A03 numbers 0254–0269, 02A04 numbers 0270–0285 | [上海地铁02A03型、02A04型电动列车 — 维基百科](https://zh.wikipedia.org/wiki/%E4%B8%8A%E6%B5%B7%E5%9C%B0%E9%93%8102A03%E5%9E%8B%E3%80%8102A04%E5%9E%8B%E7%94%B5%E5%8A%A8%E5%88%97%E8%BD%A6) |
+| 100 trains in total (the 100th is 02116) | [文汇报 2020-06-02](https://wenhui.whb.cn/third/zaker/202006/02/352215.html) |
 
 The 蟠祥路·国家会计学院 → 国家会展中心 distance (1640 m) is derived from the constant
 1640 m offset between the table's chainage (zero at 蟠祥路) and the pre-extension
@@ -364,8 +481,8 @@ Everything below is plausible but **not** taken from a public source.
 * Depot junction geometry: each depot has a grade-separated double connection (exit and
   entry turnouts on each main, the DN legs on a flyover) at 1300 m west of 淞虹路
   (北翟路), 700 m east of 龙阳路 (龙阳路) and 900 m east of 远东大道 (川沙). Only the junction
-  station is sourced. Depot capacity, stabling tracks and the 4-minute exit preparation
-  are approximations; depot-internal movements are not simulated.
+  station is sourced. Depot capacity (北翟路 40, 龙阳路 30, 川沙 30, sized for the 100-train
+  fleet), stabling tracks and the 4-minute exit preparation are approximations; depot-internal movements are not simulated.
 * Axle-counter sections: one per platform, one per turnout, plain line split into ≤450 m
   sections.
 * Signal placement and naming (X/S + station number + sequence, odd for eastbound),
@@ -411,7 +528,8 @@ Everything below is plausible but **not** taken from a public source.
   proportional to the remaining demand along the line, 40 doors × 0.9 pax/s exchange
   rate, capacity 2480 (rated) / 3200 (crush).
 * Trip numbering (1xxx big, 2xxx small, 3xxx late, 4xxx insertion/withdrawal, 5xxx
-  added, 0xxx empty, 6xxx adjusted; odd eastbound) and train set numbers 0201–0276.
+  added, 0xxx empty, 6xxx adjusted; odd eastbound). Train set numbers are the real
+  ones (see [Cab DMI](#cab-dmi)); which set runs which block is invented.
 * Added-service presets (routes, periods and headways) for CIIE and the Hongqiao hub.
 
 **Revision features**

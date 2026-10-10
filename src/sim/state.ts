@@ -42,6 +42,8 @@ function cloneTrain(tr: Train): Train {
     skipStations: new Set(tr.skipStations),
     trace: [],
     drv: { ...tr.drv, stops: tr.drv.stops.slice() },
+    dmiLog: tr.dmiLog.slice(),
+    dmiPrev: tr.dmiPrev && { ...tr.dmiPrev },
   };
 }
 

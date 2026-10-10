@@ -126,6 +126,9 @@ export interface Train {
   ebSince: number;
   maDist: number;
   maReason: string;
+  /** full-length MA from the last 1 s refresh, reduced by the distance travelled since */
+  maFar: number;
+  maFarReason: string;
   vTarget: number;
   vPermit: number;
   stopDist: number;
@@ -187,6 +190,40 @@ export interface Train {
   stopReason: string;
   /** set while the train has been standing at an obstacle (for driver calls) */
   waitSince: number;
+  /** emergency brake intervention speed (permitted speed + ATP tolerance), m/s */
+  vEbi: number;
+  /** cab DMI message log (oldest first) and the state it was last compared against */
+  dmiLog: DmiMsg[];
+  dmiPrev: DmiPrev | null;
+}
+
+export interface DmiMsg { t: number; m: string; k: 'info' | 'warn' | 'alarm' }
+export interface DmiPrev { avail: string; comm: boolean; mode: string; eb: boolean; hold: boolean; stop: boolean; failed: boolean; over: boolean }
+
+/** what the cab DMI needs beyond the train snapshot */
+export interface DmiData {
+  train: number;
+  /** "T" + 4 digits */
+  trainNo: string;
+  vehicleType: string;
+  dest: string;
+  next: string;
+  /** newest first */
+  log: DmiMsg[];
+  /** departure time at the current / next stop (sim s), -1 when none */
+  dep: number;
+  /** total dwell (s) while dwelling, for the countdown bar, else 0 */
+  dwellTotal: number;
+  /** highest mode the equipment could offer now */
+  avail: { mode: Mode; level: Level };
+  psd: 'none' | 'closed' | 'open' | 'fault' | 'bypass';
+  /** stopping window indicator (hexagon) */
+  stopWin: 'none' | 'ahead' | 'aligned' | 'short' | 'over';
+  vEbi: number;
+  /** movement authority length (m), -1 when not supervised */
+  maDist: number;
+  /** calendar date of the current sim time, YYYY/MM/DD ('' when unknown) */
+  date: string;
 }
 
 export interface StopScore { t: number; station: number; err: number; score: number; note: string }
@@ -376,6 +413,7 @@ export type ToWorker =
   | { type: 'cmd'; id: number; cmd: Command }
   | { type: 'drive'; train: number; notch: number }
   | { type: 'pis'; station: number }
+  | { type: 'dmi'; train: number }
   | { type: 'rewind'; to: number; replay: boolean }
   | { type: 'takeover' }
   | { type: 'restart'; config: SimConfig };
@@ -538,6 +576,7 @@ export interface Snapshot {
   possessions: Possession[];
   yards: YardState[];
   pis: PisData | null;
+  dmi: DmiData | null;
   scenario: ScenarioState | null;
   randomLevel: number;
   autoRadio: boolean;

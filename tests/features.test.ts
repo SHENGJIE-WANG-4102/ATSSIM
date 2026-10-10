@@ -9,7 +9,10 @@ import { makeSim, runFor, runUntil, assertNoCollision, dirOf } from './helpers';
 import { capture, restore, fingerprint } from '../src/sim/state';
 import { computePis } from '../src/sim/pis';
 import { yardCount } from '../src/sim/yard';
-import { LINE_INFO } from '../src/data/line2';
+import { LINE_INFO, FLEET, fleetEntry } from '../src/data/line2';
+import { nextLink } from '../src/sim/topology';
+import { scanAhead, goalBerth, refreshAuthority, MA_NEAR } from '../src/sim/movement';
+import { dmiTrainNo } from '../src/sim/dmi';
 import { PERF } from '../src/sim/dynamics';
 import { platformBerth } from '../src/sim/timetable';
 
@@ -253,5 +256,142 @@ describe('scenario & replay', () => {
   it('platform berth of a station is reachable for PIS / stop logic', () => {
     const sim = makeSim('weekday', H);
     expect(platformBerth(sim.topo, 12, 'DN')).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('DMI logic: movement authority, permitted speed, fleet, message log', () => {
+  /** independent walk: rear of the first train ahead (minus safety margin) or the end of the set route */
+  const expectedMa = (sim: Sim, tr: import('../src/sim/model').Train) => {
+    const { topo } = sim;
+    let link = tr.link;
+    let dir = tr.dir;
+    let d = dir === 1 ? topo.links[link].len - tr.off : tr.off;
+    const ahead = (lk: number, dr: number, base: number, sameLink: boolean) => {
+      let best = Infinity;
+      const len = topo.links[lk].len;
+      for (const s of sim.linkBodies.get(lk) ?? []) {
+        if (s.train === tr.id) continue;
+        const near = dr === 1 ? s.from : len - s.to;
+        const dist = base + near;
+        if (sameLink && dist < -0.5) continue;
+        const o = sim.trains.get(s.train)!;
+        best = Math.min(best, dist - (o.comm && o.level === 'CBTC' ? 20 : 25));
+      }
+      return best;
+    };
+    const first = ahead(link, dir, -(dir === 1 ? tr.off : topo.links[link].len - tr.off), true);
+    if (first < Infinity) return { d: first, why: 'train' };
+    for (let guard = 0; guard < 600 && d < 25000; guard++) {
+      const nx = nextLink(topo, link, dir, (sw) => sim.sw[sw].pos);
+      const lk = topo.links[link];
+      if (!nx) return { d: Infinity, why: 'end' };
+      const sid = topo.signalByEntry.get((dir === 1 ? lk.b : lk.a) * 65536 + nx.link);
+      if (sid !== undefined) {
+        const sg = sim.sig[sid];
+        const ar = sg.route >= 0 ? sim.routes.get(sg.route) : undefined;
+        const set = ar && ar.state === 'locked' && ar.cancelAt === 0 && !(ar.entered && !ar.fleeting) && !ar.guide && !sg.failed;
+        if (!set) return { d: d - 6, why: 'route' };
+      }
+      const t = ahead(nx.link, nx.dir, d, false);
+      if (t < Infinity) return { d: t, why: 'train' };
+      d += topo.links[nx.link].len;
+      link = nx.link;
+      dir = nx.dir;
+    }
+    return { d: Infinity, why: 'cap' };
+  };
+
+  it('MA runs to the preceding train rear or the end of the set route, never a fixed length', () => {
+    const sim = makeSim('weekday', H);
+    let matched = 0;
+    let checked = 0;
+    let beyondOld = 0;
+    const lengths = new Set<number>();
+    for (let k = 0; k < 40; k++) {
+      runFor(sim, 15, check);
+      for (const tr of sim.trainList) {
+        if (tr.phase !== 'run' || tr.mode !== 'AM' || tr.level !== 'CBTC' || !tr.comm || tr.failed || tr.manual) continue;
+        const e = expectedMa(sim, tr);
+        if (!Number.isFinite(e.d)) continue;
+        checked++;
+        const ma = scanAhead(sim, tr, goalBerth(tr)).maDist;
+        expect(Number.isFinite(ma)).toBe(true);
+        // within the per-step supervision range tr.maDist comes from this step's scan,
+        // taken before the step's movement (own and preceding train: ≤ 25 m/s × 0.1 s)
+        if (ma < MA_NEAR - 50) expect(Math.abs(ma - tr.maDist)).toBeLessThan((tr.v + 25) * 0.1 + 1);
+        // other protections (occupied non-CBTC sections, platform doors…) can only shorten it
+        expect(ma).toBeLessThanOrEqual(Math.max(0, e.d) + 0.01);
+        if (Math.abs(ma - Math.max(0, e.d)) < 0.01) matched++;
+        lengths.add(Math.round(ma));
+        if (ma > 1400) beyondOld++;
+      }
+      // the 1 Hz ZC refresh carries the full-length MA for every train
+      refreshAuthority(sim);
+      for (const tr of sim.trainList) {
+        if (tr.phase !== 'run' || tr.manual) continue;
+        const full = scanAhead(sim, tr, goalBerth(tr)).maDist;
+        expect(tr.maFar).toBeCloseTo(full, 6);
+      }
+    }
+    expect(checked).toBeGreaterThan(300);
+    expect(matched / checked).toBeGreaterThan(0.95);
+    expect(lengths.size).toBeGreaterThan(100);
+    expect(beyondOld).toBeGreaterThan(0);
+  });
+
+  it('permitted speed never exceeds 80 km/h and the station approach target is the stopping point at 0 km/h', () => {
+    const sim = makeSim('weekday', H);
+    let approaches = 0;
+    let maxP = 0;
+    for (let k = 0; k < 1200; k++) {
+      sim.step();
+      for (const tr of sim.trainList) {
+        maxP = Math.max(maxP, tr.vPermit);
+        if (tr.phase !== 'run' || tr.mode !== 'AM' || tr.v < 0.1) continue;
+        expect(tr.vPermit).toBeLessThanOrEqual(tr.vEbi + 1e-9);
+        if (Number.isFinite(tr.stopDist) && tr.stopDist < 120 && tr.stopDist < tr.maDist - 1 && tr.tgtReason !== '限速') {
+          approaches++;
+          expect(tr.tgtReason).toBe('停车点');
+          expect(tr.tgtV).toBe(0);
+          expect(Math.abs(tr.tgtD - tr.stopDist)).toBeLessThan(0.01);
+        }
+      }
+    }
+    expect(maxP).toBeLessThanOrEqual(80 / 3.6 + 1e-9);
+    expect(maxP).toBeGreaterThan(75 / 3.6);
+    expect(approaches).toBeGreaterThan(50);
+  });
+
+  it('fleet numbers are the real Line 2 numbers per type', () => {
+    expect(FLEET.length).toBe(100);
+    expect(new Set(FLEET.map((f) => f.no)).size).toBe(100);
+    const a05 = FLEET.filter((f) => f.type === '02A05').map((f) => f.no);
+    expect(a05[0]).toBe('02086');
+    expect(a05[a05.length - 1]).toBe('02116');
+    expect(a05.length).toBe(31);
+    expect(FLEET.filter((f) => f.type === '02A01').map((f) => f.no)).toContain('0216');
+    expect(FLEET.some((f) => f.no >= '0217' && f.no <= '0232' && f.no.length === 4)).toBe(false);
+    const sim = makeSim('weekday', H);
+    for (const tr of sim.trainList) expect(fleetEntry(tr.vehicle)).toBeDefined();
+    expect(dmiTrainNo('0213')).toBe('T2013');
+    expect(dmiTrainNo('02086')).toBe('T2086');
+  });
+
+  it('DMI log records link loss, emergency brake and availability; snapshot carries it', () => {
+    const sim = makeSim('weekday', H);
+    const tr = sim.trainList.find((t) => t.inService && t.phase === 'run' && t.v > 5 && sim.trainChain(t) > 9000 && sim.trainChain(t) < 30000)!;
+    runFor(sim, 2);
+    expect(tr.dmiLog.some((m) => m.m === 'DMI激活')).toBe(true);
+    sim.command({ c: 'fault', kind: 'trainComm', target: tr.id, duration: 3000 });
+    runFor(sim, 5, check);
+    const msgs = tr.dmiLog.map((m) => m.m);
+    expect(msgs).toContain('连接丢失');
+    expect(msgs.some((m) => m.startsWith('紧急制动'))).toBe(true);
+    expect(msgs).toContain('CM模式可用');
+    sim.dmiTrain = tr.id;
+    const d = sim.snapshot().dmi!;
+    expect(d.trainNo).toMatch(/^T\d{4}$/);
+    expect(d.log[0].t).toBeGreaterThanOrEqual(d.log[d.log.length - 1].t);
+    expect(d.avail).toEqual({ mode: 'CM', level: 'TBTC' });
   });
 });

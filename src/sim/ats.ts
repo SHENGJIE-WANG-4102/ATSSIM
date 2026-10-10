@@ -14,6 +14,7 @@ import { callDegrade, callRmPreset, callPsd } from './radio';
 import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation } from './timetable';
 import { STATIONS, LINE_INFO } from '../data/line2';
 import { boardAndAlight } from './passengers';
+import { dmiNote } from './dmi';
 
 // ---------------------------------------------------------------- route table
 
@@ -167,7 +168,7 @@ export function newTrain(sim: Sim, block: Block | null, link: number, off: numbe
     destText: '', destStation: -1,
     link, off, dir, hist, body: [], len: LINE_INFO.trainLength, v: 0, a: 0,
     level: 'CBTC', comm: true, mode: 'AM', eb: false, ebReason: '', ebSince: 0,
-    maDist: 0, maReason: '', vTarget: 0, vPermit: 0, stopDist: Infinity, rmAuth: 0, rmReason: '',
+    maDist: 0, maReason: '', maFar: 0, maFarReason: '', vTarget: 0, vPermit: 0, stopDist: Infinity, rmAuth: 0, rmReason: '',
     pendingModeAt: 0, pendingMode: null, pendingLevel: null,
     tasks: [], phase: 'run', phaseSince: sim.t, dwellUntil: 0, doorsOpen: false, arrivedAt: 0, depReadyAt: 0,
     load: 0, delay: 0, hold: false, skipStations: new Set(), failed: false, failRecoverAt: 0, failRecoverable: true,
@@ -176,6 +177,7 @@ export function newTrain(sim: Sim, block: Block | null, link: number, off: numbe
     withdrawn: false, extraDwell: 0,
     manual: false, notch: 0, tgtV: 0, tgtD: Infinity, tgtReason: '', coupledVehicle: '',
     drv: { stops: [], overspeed: 0, spad: 0, since: sim.t }, stopUntil: 0, stopReason: '', waitSince: 0,
+    vEbi: 0, dmiLog: [], dmiPrev: null,
   };
   computeBody(sim, tr);
   sim.addTrain(tr);
@@ -345,6 +347,7 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
     const t = tr.tasks.shift();
     if (t && t.k === 'reverse' && sim.berthRes.get(t.chosen) === tr.id) sim.berthRes.delete(t.chosen);
     reverseTrain(sim, tr);
+    dmiNote(sim, tr, 'DMI激活'); // cab change: the DMI at the new leading end activates
     tr.phase = 'run';
     tr.phaseSince = sim.t;
     setTripFromTasks(sim, tr);

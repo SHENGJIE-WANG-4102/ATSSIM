@@ -18,6 +18,8 @@ export const PERF = {
   bEbGuaranteed: 0.95,
   /** actual emergency brake */
   bEb: 1.25,
+  /** line / train ceiling: 02A05 design speed and the Line 2 line speed (80 km/h) */
+  vMax: 80 / 3.6,
   /** RM speed ceiling (25 km/h) */
   vRM: 25 / 3.6,
   /** coupling approach speed */
