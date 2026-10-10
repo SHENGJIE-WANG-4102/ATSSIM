@@ -6,6 +6,7 @@
  */
 import { Sim, FIXED_DT } from './engine';
 import type { FromWorker, ToWorker, SimConfig } from './model';
+import { dayTypeOf, dateLabel, parseIso, isoDate } from './calendar';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -104,6 +105,15 @@ function tick() {
     sim.stepsPerSec = Math.round(stepsWindow * 1000 / (now - windowStart));
     stepsWindow = 0;
     windowStart = now;
+  }
+  // operating-day rollover after the night shutdown (03:45)
+  if (sim.t >= 27.75 * 3600 && sim.config.date) {
+    const d = parseIso(sim.config.date);
+    d.setDate(d.getDate() + 1);
+    const keepSpeed = speed;
+    start({ dayType: dayTypeOf(d, false), dateLabel: dateLabel(d, false), date: isoDate(d), startTime: 4 * 3600, seed: sim.config.seed + 1 });
+    speed = keepSpeed;
+    return;
   }
   if (now - lastSnap >= SNAP_INTERVAL) {
     lastSnap = now;

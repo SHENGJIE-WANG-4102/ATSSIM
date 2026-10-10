@@ -313,6 +313,8 @@ export type Command =
 export interface SimConfig {
   dayType: DayType;
   dateLabel: string;
+  /** ISO date of the operating day (YYYY-MM-DD), used for the day rollover */
+  date?: string;
   startTime: number;
   seed: number;
 }

@@ -80,6 +80,11 @@ export class Store {
   private onMessage(m: FromWorker) {
     switch (m.type) {
       case 'ready':
+        // a new operating day (first start or rollover)
+        this.events = [];
+        this.alarms = [];
+        this.traces.clear();
+        this.traceVersion++;
         this.plan = m.plan;
         this.planVersion++;
         this.emit('ready');

@@ -2,19 +2,9 @@
 import { h, clear } from './dom';
 import type { Store } from './store';
 import { fmtTime } from './theme';
-import type { DayType } from '../sim/model';
 
 const SPEEDS = [1, 2, 5, 10, 30, 60, 120];
-const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
-
-export function dayTypeOf(d: Date, holiday: boolean): DayType {
-  const wd = d.getDay();
-  return holiday || wd === 0 || wd === 6 ? 'weekend' : 'weekday';
-}
-export function dateLabel(d: Date, holiday: boolean): string {
-  const s = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} 星期${WEEK[d.getDay()]}`;
-  return holiday ? `${s}（节假日）` : s;
-}
+export { dayTypeOf, dateLabel } from '../sim/calendar';
 
 export class Header {
   el: HTMLElement;

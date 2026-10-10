@@ -14,6 +14,7 @@ import { SidePanel } from './ui/side';
 import { Tooltip } from './ui/tooltip';
 import { initConfirm } from './ui/confirm';
 import { h } from './ui/dom';
+import { isoDate } from './sim/calendar';
 import { C, DESIGN_W, DESIGN_H, fmtTime } from './ui/theme';
 import type { SimConfig } from './sim/model';
 
@@ -138,7 +139,7 @@ async function main() {
   const startParam = params.get('t');
   const start = startParam ? parseTime(startParam) : 7 * 3600 + 40 * 60;
   const holiday = params.get('holiday') === '1';
-  const cfg: SimConfig = { dayType: dayTypeOf(d, holiday), dateLabel: dateLabel(d, holiday), startTime: start, seed: 20251101 };
+  const cfg: SimConfig = { dayType: dayTypeOf(d, holiday), dateLabel: dateLabel(d, holiday), date: isoDate(d), startTime: start, seed: 20251101 };
   bootMsg.textContent = `生成 ${cfg.dateLabel} 运行图并推演至 ${fmtTime(start)}…`;
   store.start(cfg);
 
@@ -153,7 +154,7 @@ async function main() {
       const [y, m, dd] = dateIn.value.split('-').map(Number);
       const nd = new Date(y, (m || 1) - 1, dd || 1);
       if (Number.isNaN(nd.getTime())) return;
-      const c: SimConfig = { dayType: dayTypeOf(nd, hol.checked), dateLabel: dateLabel(nd, hol.checked), startTime: parseTime(st.value), seed: 20251101 + nd.getDate() };
+      const c: SimConfig = { dayType: dayTypeOf(nd, hol.checked), dateLabel: dateLabel(nd, hol.checked), date: isoDate(nd), startTime: parseTime(st.value), seed: 20251101 + nd.getDate() };
       close();
       veil.textContent = '生成运行图…';
       veil.style.display = 'flex';
