@@ -87,7 +87,7 @@ export function scanAhead(sim: Sim, tr: Train, goal: number): ScanResult {
   let signalOnly = res.stopDist !== Infinity || res.maDist <= 0;
   while (d < LOOKAHEAD && guard++ < 60) {
     if (!signalOnly && (d >= res.maDist || res.stopDist !== Infinity)) signalOnly = true;
-    if (signalOnly && (res.nextSignal >= 0 || d > 1500)) break;
+    if (signalOnly && (res.nextSignal >= 0 || d > 500)) break;
     const nx = nextLink(topo, link, dir, (sw) => swPos(sim, sw));
     const lk = topo.links[link];
     const node = dir === 1 ? lk.b : lk.a;
@@ -115,7 +115,9 @@ export function scanAhead(sim: Sim, tr: Train, goal: number): ScanResult {
       if (sg.route >= 0) {
         const ar = sim.routes.get(sg.route)!;
         const consumed = ar.entered && !ar.fleeting && !ar.guide;
-        if (atp) ok = ar.state === 'locked' && ar.cancelAt === 0 && !ar.guide && !consumed && !sg.failed;
+        // a route over a switch that lost detection gives no movement authority past its signal
+        const swOk = topo.routes[sg.route].switches.every(({ sw, pos }) => swPos(sim, sw) === pos);
+        if (atp) ok = ar.state === 'locked' && ar.cancelAt === 0 && !ar.guide && !consumed && !sg.failed && swOk;
         else ok = (ar.state === 'locked' || ar.guide) && ar.cancelAt === 0 && !consumed && (sg.aspect !== 'R' && sg.aspect !== 'FAIL' || tr.rmAuth > d);
       } else if (!atp && tr.rmAuth > d && !topo.signals[sigId].routes.some((r) => topo.routes[r].switches.length > 0)) {
         ok = true; // authorised to pass a signal at danger on plain line

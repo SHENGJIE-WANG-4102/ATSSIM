@@ -161,6 +161,17 @@ export function sectionUnlock(sim: Sim, sec: number): CmdResult {
 export function moveSwitch(sim: Sim, sw: number, pos: 'N' | 'R'): CmdResult {
   const st = sim.sw[sw];
   const name = sim.topo.switches[sw].name;
+  if (st.failed && pos === st.pos) {
+    // operating a repaired switch to the position it already holds restores detection without movement
+    const f = sim.faults.find((x) => x.kind === 'switch' && x.target === sw && !x.repaired);
+    if (!f || sim.t >= f.repairAt) {
+      st.failed = false;
+      st.fieldLock = false;
+      if (f) f.repaired = true;
+      sim.clearAlarm(`sw-${sw}`);
+      return { ok: true, msg: `道岔 ${name} ${pos === 'N' ? '定位' : '反位'}表示恢复` };
+    }
+  }
   if (st.lockCount > 0) return { ok: false, msg: `道岔 ${name} 被进路锁闭` };
   if (st.singleLock) return { ok: false, msg: `道岔 ${name} 单锁，不能转换` };
   if (st.fieldLock) return { ok: false, msg: `道岔 ${name} 已现场钩锁` };
