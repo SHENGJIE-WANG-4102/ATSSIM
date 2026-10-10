@@ -192,7 +192,10 @@ export class TrainGraph {
         const chunk = Math.floor(t0 / 1800);
         let b = batches.get(chunk);
         if (!b) { b = { svc: [], non: [] }; batches.set(chunk, b); }
-        const arr = pts[i + 2] > 0 && pts[i + 5] > 0 ? b.svc : b.non;
+        const service = pts[i + 2] > 0 && pts[i + 5] > 0;
+        // stabled / standing out-of-service trains leave no actual line
+        if (!service && Math.abs(pts[i + 4] - pts[i + 1]) < 5) continue;
+        const arr = service ? b.svc : b.non;
         arr.push(this.tx(t0), this.chainY(pts[i + 1]), this.tx(t1), this.chainY(pts[i + 4]));
       }
       this.actualDrawn.set(train, pts.length);
