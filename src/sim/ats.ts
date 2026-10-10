@@ -602,20 +602,20 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
       const etaGoal = (tr.phase === 'dwell' || tr.phase === 'reversing' ? eta : 0) + (dist + (Number.isFinite(tableDist) ? tableDist : 0)) / 15 + 30;
       const terminal = topo.stations[goalTask.station].turnbackBerths.length > 0 && (goalTask.station === 0 || goalTask.station === topo.stations.length - 1 || isTurnbackOrigin(sim, goalTask));
       if (terminal) {
-        if (goalTask.dep - sim.t - eta > 240 && !isNextDeparture(sim, tr, goal, goalTask.dep) && !tailsBlocked(sim, tr, goalTask.station)) ok = false;
+        if (goalTask.dep - sim.t - eta > 240 && !isNextDeparture(sim, tr, goal, goalTask.dep) && !(tailsBlocked(sim, tr, goalTask.station) && firstInTails(sim, tr, goal, goalTask.dep, goalTask.station))) ok = false;
       }
       else if (goalTask.dep - sim.t - etaGoal > 40) ok = false;
     }
     // wrong-direction moves (station-front turnback, single-line working) are
     // only started when the whole path to the berth can be secured at once
-    const chain = routeChain(sim, sig, goal);
+    const chain = topo.berths[goal].reverse ? routeChain(sim, sig, goal) : [];
     if (chain.some((c) => topo.routes[c].wrongDir)) {
       const chainSecs = Array.from(new Set(chain.flatMap((c) => topo.routes[c].sections)));
       const free = chain.every((c) => chainRouteFree(sim, c, chain, tr.id)) && !berthBusy(sim, goal, tr.id);
       if (!free) { berthWait = ok; ok = false; }
       return { train: tr, signal: sig, route: rid, prio, eta, ready: ok, berthWait, chainSecs };
     }
-    return { train: tr, signal: sig, route: rid, prio, eta, ready: ok, berthWait: berthWait && r.wrongDir };
+    return { train: tr, signal: sig, route: rid, prio, eta, ready: ok, berthWait: berthWait && r.wrongDir && topo.berths[goal].reverse };
   }
   return null;
 }
@@ -682,7 +682,25 @@ function isNextDeparture(sim: Sim, self: Train, berth: number, dep: number): boo
 function tailsBlocked(sim: Sim, self: Train, station: number): boolean {
   const berths = sim.topo.stations[station].turnbackBerths;
   if (!berths.length || !berths.every((b) => berthBusy(sim, b, -1))) return false;
-  return sim.trainList.some((t) => t.id !== self.id && t.tasks.slice(0, 2).some((k) => k.k === 'reverse' && k.station === station) && t.phase !== 'reversing');
+  // someone is actually stuck: stopped, next task a turnback here, its chosen berth held by another train
+  return sim.trainList.some((t) => {
+    if (t.id === self.id || t.v > 0.2) return false;
+    const k = t.phase === 'dwell' ? t.tasks[1] : t.tasks[0];
+    return !!k && k.k === 'reverse' && k.station === station && berthBusy(sim, k.chosen, t.id);
+  });
+}
+
+/** among the trains standing in this station's turnback berths, we leave this platform first */
+function firstInTails(sim: Sim, self: Train, berth: number, dep: number, station: number): boolean {
+  const platform = sim.topo.berths[berth].platform;
+  const tailLinks = new Set(sim.topo.stations[station].turnbackBerths.map((b) => sim.topo.berths[b].link));
+  for (const tr of sim.trainList) {
+    if (tr.id === self.id || !tr.body.some((b) => tailLinks.has(b.link))) continue;
+    for (const t of tr.tasks.slice(0, 4)) {
+      if (t.k === 'stop' && t.dep !== null && t.dep < dep && sim.topo.berths[t.berth].platform === platform) return false;
+    }
+  }
+  return true;
 }
 
 /** origin stop reached by a turnback at this station (train is turning, not inserted) */

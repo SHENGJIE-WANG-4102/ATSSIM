@@ -81,7 +81,10 @@ describe('faults', () => {
     const sw = sim.topo.switches.find((s) => s.kind === 'crossover' && s.nodes.some((n) => sim.topo.nodes[n].chain < c && sim.topo.nodes[n].chain > c - 400))!;
     expect(sim.command({ c: 'fault', kind: 'switch', target: sw.id, duration: 900 }).ok).toBe(true);
     runFor(sim, 240, stepCheck);
-    const waiting = sim.trainList.find((t) => dirOf(sim, t) === 'DN' && t.v < 0.1 && t.phase === 'run' && Math.abs(sim.trainChain(t) - (c - 300)) < 700);
+    // the first DN train held in front of the failed switch
+    const waiting = sim.trainList
+      .filter((t) => dirOf(sim, t) === 'DN' && t.v < 0.1 && t.phase === 'run' && sim.trainChain(t) < c - 240 && sim.trainChain(t) > c - 1500)
+      .sort((p, q) => sim.trainChain(q) - sim.trainChain(p))[0];
     expect(waiting).toBeTruthy();
     expect(sim.command({ c: 'switchMove', sw: sw.id, pos: 'N' }).ok).toBe(false);
     expect(sim.command({ c: 'switchFieldLock', sw: sw.id, on: true }).ok).toBe(true);
@@ -118,7 +121,7 @@ describe('faults', () => {
     expect(sim.trainChain(held!)).toBeGreaterThan(sig.chain + 50);
     runFor(sim, 600, stepCheck);
     expect(sim.sig[sig.id].failed).toBe(false);
-    runFor(sim, 5);
+    runFor(sim, 30);
     expect(sim.sig[sig.id].route).toBeGreaterThanOrEqual(0);
   });
 

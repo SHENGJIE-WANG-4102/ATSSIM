@@ -87,7 +87,7 @@ export function scanAhead(sim: Sim, tr: Train, goal: number): ScanResult {
   let signalOnly = res.stopDist !== Infinity || res.maDist <= 0;
   while (d < LOOKAHEAD && guard++ < 60) {
     if (!signalOnly && (d >= res.maDist || res.stopDist !== Infinity)) signalOnly = true;
-    if (signalOnly && (res.nextSignal >= 0 || d > 500)) break;
+    if (signalOnly && (res.nextSignal >= 0 || d > 1500)) break;
     const nx = nextLink(topo, link, dir, (sw) => swPos(sim, sw));
     const lk = topo.links[link];
     const node = dir === 1 ? lk.b : lk.a;
