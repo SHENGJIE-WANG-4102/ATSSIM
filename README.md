@@ -202,8 +202,16 @@ Everything below is plausible but **not** taken from a public source.
 
 ## Performance
 
-The renderer keeps static geometry in GPU buffers and only updates tints, visibility and
-about 70 train objects per frame. The train graph caches planned lines in hourly chunks
-and appends actual lines at 2.5 Hz. The simulation runs off the main thread. Use a
-hardware-accelerated browser; the frame rate and simulation rate are shown at the top
-right of the graph panel.
+The renderer keeps static geometry in GPU buffers. Per frame it only changes tints,
+visibility and the train layer, and it does so only when a new 20 Hz snapshot arrives or a
+blink phase changes. The train graph caches planned lines in hourly chunks and appends
+actual lines as small batched graphics every 0.6 s. The simulation runs in its worker
+(about 70 s of CPU for a full 24-hour day headless). The frame rate and per-frame update
+cost are shown at the top of the graph panel.
+
+Measured in the development container at 3840×2160 during the 08:00 peak (65 trains,
+graph visible), headless Chromium with **software** WebGL (SwiftShader) sharing the CPU:
+schematic update ≈ 2.6 ms and graph update ≈ 3 ms per updated frame, at 1× and at 60×.
+The container has no GPU, so the frame rate there (≈10 fps) reflects software
+rasterisation, and **60 fps on real 4K hardware has not been measured**. Check it with
+the on-screen readout in a hardware-accelerated browser.

@@ -30,7 +30,9 @@ export class CommandPanel {
 
   private render(force: boolean) {
     const sel = this.store.selection;
-    const key = sel ? `${sel.kind}:${sel.id}` : 'none';
+    const sys = !sel || sel.kind === 'zone' || sel.kind === 'depot';
+    // the system view has no live part: re-render it when the ZC area states change
+    const key = (sel ? `${sel.kind}:${sel.id}` : 'none') + (sys && this.store.snap ? `|${this.store.snap.zones.join(',')}` : '');
     if (!force && key === this.key) { this.live?.(); return; }
     this.key = key;
     this.live = null;

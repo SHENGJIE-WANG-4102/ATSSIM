@@ -11,7 +11,7 @@ const sample = async (label) => {
   for (let i = 0; i < 5; i++) { await page.waitForTimeout(1100); r.push(await page.evaluate(() => window.__perf)); }
   const avg = (k) => (r.reduce((a, b) => a + b[k], 0) / r.length).toFixed(2);
   const trains = await page.evaluate(() => window.__ats.store.snap.trains.length);
-  console.log(label, 'trains', trains, 'fps', avg('fps'), 'update ms', avg('updateMs'), 'render submit ms', avg('renderMs'));
+  console.log(label, 'trains', trains, 'fps', avg('fps'), 'update ms', avg('updateMs'), 'schematic', avg('schematicMs'), 'graph', avg('graphMs'));
 };
 await sample('1x');
 await page.evaluate(() => window.__ats.header.setSpeed(60));

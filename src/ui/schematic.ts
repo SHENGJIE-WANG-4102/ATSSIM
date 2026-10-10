@@ -416,7 +416,16 @@ export class Schematic {
 
   // ---------------------------------------------------------------- per-frame
 
+  private lastBlinkPhase = -1;
+  private lastSelKey = '';
   update(snap: Snapshot, nowMs: number) {
+    // state only changes with a new snapshot (20 Hz) or a blink phase
+    const phase = Math.floor(nowMs / 250);
+    const sel = this.store.selection;
+    const selKey = sel ? `${sel.kind}:${sel.id}` : '';
+    if (snap === this.lastSnap && phase === this.lastBlinkPhase && selKey === this.lastSelKey) return;
+    this.lastBlinkPhase = phase;
+    this.lastSelKey = selKey;
     this.lastSnap = snap;
     this.blink = Math.floor(nowMs / 500) % 2 === 0;
     const blinkSlow = Math.floor(nowMs / 800) % 2 === 0;

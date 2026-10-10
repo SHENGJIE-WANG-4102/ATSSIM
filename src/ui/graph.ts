@@ -38,6 +38,7 @@ export class TrainGraph {
   private texts: Text[] = [];
   private timeLabels: Text[] = [];
   private tStart = 0;
+  private lastNowX = -1;
 
   constructor(topo: Topology, store: Store) {
     this.topo = topo;
@@ -91,7 +92,7 @@ export class TrainGraph {
     this.window = span;
     this.pxPerSec = this.plotW / span;
     this.planVersion = -1; // force rebuild
-    for (const g of this.actualG.values()) g.destroy();
+    for (const g of this.actualG.values()) g.destroy({ children: true });
     this.actualG.clear();
     this.actualDrawn.clear();
     this.buildGrid();
@@ -176,9 +177,10 @@ export class TrainGraph {
     }
   }
 
-  /** append new actual-line points (throttled) */
+  /** append new actual-line points (throttled): one small Graphics per flush, grouped per half hour */
   private flushActual() {
     const traces = this.store.traces;
+    const batches = new Map<number, { svc: number[]; non: number[] }>();
     for (const [train, pts] of traces) {
       let from = this.actualDrawn.get(train) ?? 0;
       if (from >= pts.length) continue;
@@ -186,16 +188,27 @@ export class TrainGraph {
       for (let i = from; i + 3 < pts.length; i += 3) {
         const t0 = pts[i];
         const t1 = pts[i + 3];
-        const ch0 = pts[i + 1];
-        const ch1 = pts[i + 4];
         if (t1 - t0 > 900) continue;
         const chunk = Math.floor(t0 / 1800);
-        let g = this.actualG.get(chunk);
-        if (!g) { g = new Graphics(); this.actualG.set(chunk, g); this.actualLayer.addChild(g); }
-        const service = pts[i + 2] > 0 && pts[i + 5] > 0;
-        g.moveTo(this.tx(t0), this.chainY(ch0)).lineTo(this.tx(t1), this.chainY(ch1)).stroke({ width: 2.4, color: service ? C.actual : 0xb07070, alpha: service ? 0.95 : 0.6 });
+        let b = batches.get(chunk);
+        if (!b) { b = { svc: [], non: [] }; batches.set(chunk, b); }
+        const arr = pts[i + 2] > 0 && pts[i + 5] > 0 ? b.svc : b.non;
+        arr.push(this.tx(t0), this.chainY(pts[i + 1]), this.tx(t1), this.chainY(pts[i + 4]));
       }
       this.actualDrawn.set(train, pts.length);
+    }
+    for (const [chunk, b] of batches) {
+      let c = this.actualG.get(chunk) as unknown as Container | undefined;
+      if (!c) { c = new Container(); this.actualG.set(chunk, c as unknown as Graphics); this.actualLayer.addChild(c); }
+      const g = new Graphics();
+      const draw = (a: number[], color: number, alpha: number) => {
+        if (!a.length) return;
+        for (let i = 0; i < a.length; i += 4) g.moveTo(a[i], a[i + 1]).lineTo(a[i + 2], a[i + 3]);
+        g.stroke({ width: 2.4, color, alpha });
+      };
+      draw(b.non, 0xb07070, 0.6);
+      draw(b.svc, C.actual, 0.95);
+      c.addChild(g);
     }
   }
 
@@ -207,11 +220,11 @@ export class TrainGraph {
       this.planVersion = this.store.planVersion;
       this.buildPlan(plan);
       // actual lines must be rebuilt for the new scale as well
-      for (const g of this.actualG.values()) g.destroy();
+      for (const g of this.actualG.values()) g.destroy({ children: true });
       this.actualG.clear();
       this.actualDrawn.clear();
     }
-    if (nowMs - this.lastFlush > 400) {
+    if (nowMs - this.lastFlush > 600) {
       this.lastFlush = nowMs;
       this.flushActual();
     }
@@ -228,6 +241,8 @@ export class TrainGraph {
     // time axis labels
     this.drawAxis();
     const nx = ML + this.tx(t) - this.tx(this.tStart);
+    if (this.nowLine.children.length === 0 && Math.abs(nx - this.lastNowX) < 0.5) return;
+    this.lastNowX = nx;
     this.nowLine.clear();
     for (let y = MT; y < MT + this.plotH; y += 12) this.nowLine.moveTo(nx, y).lineTo(nx, y + 6);
     this.nowLine.stroke({ width: 2, color: C.nowLine });

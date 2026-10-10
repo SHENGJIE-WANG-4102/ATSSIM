@@ -84,6 +84,8 @@ async function main() {
   const fpsEl = h('div', { style: 'position:absolute;left:1880px;top:1120px;font:15px var(--font-mono);color:#56697c;pointer-events:none' });
   overlay.append(fpsEl);
   let updMs = 0;
+  let schMs = 0;
+  let grMs = 0;
   let renderMs = 0;
   const origRender = app.render.bind(app);
   app.render = () => {
@@ -95,20 +97,25 @@ async function main() {
     const now = performance.now();
     if (store.snap) {
       schematic.update(store.snap, now);
+      const t1 = performance.now();
+      schMs += t1 - now;
       graph.update(now);
+      grMs += performance.now() - t1;
     }
     updMs += performance.now() - now;
     fpsAcc += tk.deltaMS;
     fpsN++;
     if (fpsAcc > 1000) {
       const s = store.snap;
-      const perf = { fps: (fpsN * 1000) / fpsAcc, updateMs: updMs / fpsN, renderMs: renderMs / fpsN };
+      const perf = { fps: (fpsN * 1000) / fpsAcc, updateMs: updMs / fpsN, renderMs: renderMs / fpsN, schematicMs: schMs / fpsN, graphMs: grMs / fpsN };
       (window as unknown as { __perf: unknown }).__perf = perf;
       fpsEl.textContent = `${Math.round(perf.fps)} fps · 帧更新 ${perf.updateMs.toFixed(1)}ms · 渲染提交 ${perf.renderMs.toFixed(1)}ms · 仿真 ${s ? (s.stats.stepsPerSec * 0.1).toFixed(0) : 0}×`;
       fpsAcc = 0;
       fpsN = 0;
       updMs = 0;
       renderMs = 0;
+      schMs = 0;
+      grMs = 0;
     }
   });
 
