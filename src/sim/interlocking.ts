@@ -231,7 +231,12 @@ export function updateInterlocking(sim: Sim) {
       releaseRoute(sim, ar.route);
       continue;
     }
-    if (ar.fleeting || !ar.entered) continue;
+    if (ar.fleeting) continue;
+    if (!ar.entered) {
+      // former automatic route: once the trains inside have left and nobody approaches, release it
+      if (ar.defleeted && !r.sections.some((s) => sim.sec[s].trainOcc) && !approachLocked(sim, r.start)) { releaseRoute(sim, ar.route); }
+      continue;
+    }
     // sectional release behind the owning train
     const owner = sim.trains.get(ar.owner);
     if (!owner) { releaseRoute(sim, ar.route); continue; }

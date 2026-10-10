@@ -854,7 +854,9 @@ export function buildTopology(): Topology {
     const stopOff = (LINE_INFO.platformLength / 2) + (PLAT_HALF - LINE_INFO.platformLength / 2); // head at platform end
     const normalDir: Dir = p.track === 'DN' ? 1 : -1;
     for (const dir of [1, -1] as Dir[]) {
-      const offset = dir === 1 ? l.len / 2 + LINE_INFO.platformLength / 2 - 5 : l.len / 2 - LINE_INFO.platformLength / 2 + 5;
+      // stopping points symmetric about the platform centre: after changing
+      // ends the head is exactly at the opposite-direction stopping point
+      const offset = dir === 1 ? l.len / 2 + LINE_INFO.trainLength / 2 : l.len / 2 - LINE_INFO.trainLength / 2;
       void stopOff;
       addBerth({
         kind: 'platform', link: p.link, offset, dir, platform: p.id, station: p.station, depot: -1,
@@ -1027,15 +1029,39 @@ export function buildTopology(): Topology {
     const pts = bps.filter((c) => c >= rd.chainFrom - 0.5 && c <= rd.chainTo + 0.5);
     if (rd.chainFrom !== -Infinity && pts[0] !== Math.round(rd.chainFrom)) pts.unshift(Math.round(rd.chainFrom));
     if (rd.chainTo !== Infinity && pts[pts.length - 1] !== Math.round(rd.chainTo)) pts.push(Math.round(rd.chainTo));
-    // visual weight: pad per span + scaled length (long spans compressed)
-    const w: number[] = [0];
-    for (let i = 1; i < pts.length; i++) {
-      const len = pts[i] - pts[i - 1];
-      w.push(w[i - 1] + 5 + Math.pow(len, 0.72) * 1.0);
+    // two-level mapping: each station interval gets a width from its length
+    // and the amount of trackwork in it; inside the interval breakpoints are
+    // spread with a per-span pad so switches and signals stay readable.
+    const stCh = chains.filter((c) => c > pts[0] && c < pts[pts.length - 1]);
+    const bounds = [pts[0], ...stCh, pts[pts.length - 1]];
+    const all = Array.from(new Set([...pts, ...stCh])).sort((a, b) => a - b);
+    const swPts = nodes.filter((n) => n.kind === 'switch' && n.links.some((l) => links[l].track === 'DN' || links[l].track === 'UP')).map((n) => n.chain);
+    const iw: number[] = [];
+    for (let k = 0; k + 1 < bounds.length; k++) {
+      const d = bounds[k + 1] - bounds[k];
+      const nsw = swPts.filter((c) => c > bounds[k] && c < bounds[k + 1]).length;
+      const end = k === 0 || k === bounds.length - 2;
+      const atTerminal = end && (Math.abs(bounds[k] - westBuffer) < 2000 || Math.abs(bounds[k + 1] - lastCh) < 2000) && (k === 0 ? bounds[1] === chains[0] : bounds[k] === lastCh);
+      iw.push((end && !atTerminal ? 0.5 : end ? 0.55 : 1) + 0.13 * Math.min(4, d / 1000) + 0.075 * nsw);
     }
-    const total = w[w.length - 1];
-    const xs = w.map((v) => rd.x0 + (v / total) * (rd.x1 - rd.x0));
-    return { pts, xs };
+    const tot = iw.reduce((a, b) => a + b, 0);
+    const xs: number[] = [];
+    let xAcc = rd.x0;
+    for (let k = 0; k + 1 < bounds.length; k++) {
+      const W = (iw[k] / tot) * (rd.x1 - rd.x0);
+      const inside = all.filter((c) => c >= bounds[k] && c <= bounds[k + 1]);
+      const sw = [0];
+      for (let i = 1; i < inside.length; i++) {
+        const len = inside[i] - inside[i - 1];
+        sw.push(sw[i - 1] + 4 + Math.pow(len, 0.6));
+      }
+      const total = sw[sw.length - 1] || 1;
+      for (let i = k === 0 ? 0 : 1; i < inside.length; i++) xs.push(xAcc + (sw[i] / total) * W);
+      xAcc += W;
+    }
+    const pts2 = all;
+    if (pts2.length !== xs.length) throw new Error(`x-map mismatch ${pts2.length} ${xs.length}`);
+    return { pts: pts2, xs };
   });
   const chainRow = (ch: number) => (ch < wrapChain ? 0 : 1);
   const chainToX = (ch: number, row: number) => {

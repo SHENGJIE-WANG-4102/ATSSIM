@@ -1,0 +1,76 @@
+/** Hover tooltip for schematic objects. */
+import { h, clear } from './dom';
+import type { Store } from './store';
+import { STATIONS, LINE_INFO } from '../data/line2';
+import { SEC, SW, SIG_ASPECT } from '../sim/model';
+import { fmtDelay } from './theme';
+
+export class Tooltip {
+  el = h('div', { class: 'tooltip', style: 'display:none' });
+  private store: Store;
+  private mx = 0;
+  private my = 0;
+
+  constructor(store: Store) {
+    this.store = store;
+    store.on('hover', () => this.render());
+    store.on('snap', () => { if (this.store.hover) this.render(); });
+  }
+
+  /** mouse position in design coordinates */
+  move(x: number, y: number) {
+    this.mx = x;
+    this.my = y;
+    if (this.el.style.display !== 'none') this.place();
+  }
+
+  private place() {
+    const w = this.el.offsetWidth || 360;
+    const hgt = this.el.offsetHeight || 200;
+    let x = this.mx + 22;
+    let y = this.my + 22;
+    if (x + w > 3830) x = this.mx - w - 22;
+    if (y + hgt > 2150) y = this.my - hgt - 22;
+    this.el.style.left = `${x}px`;
+    this.el.style.top = `${y}px`;
+  }
+
+  private row(k: string, v: string) {
+    return h('div', { class: 'row' }, h('span', {}, k), h('span', {}, v));
+  }
+
+  private render() {
+    const hov = this.store.hover;
+    const snap = this.store.snap;
+    if (!hov || !snap) { this.el.style.display = 'none'; return; }
+    const { topo } = this.store;
+    clear(this.el);
+    if (hov.kind === 'train') {
+      const t = snap.trains.find((x) => x.id === hov.id);
+      if (!t) { this.el.style.display = 'none'; return; }
+      this.el.append(h('div', { class: 'tt' }, `${t.svc}-${t.trip}  ${t.vehicle}`),
+        this.row('目的地', t.dest || '—'), this.row('速度', `${(t.v * 3.6).toFixed(0)} km/h`), this.row('模式/级别', `${t.mode} / ${t.level}${t.comm ? '' : ' 通信中断'}`),
+        this.row('晚点', t.inService ? fmtDelay(t.delay) : '非载客'), this.row('满载率', `${Math.round((t.load / LINE_INFO.capacity) * 100)}%`), this.row('任务', t.task),
+        ...(t.maReason ? [this.row('移动授权', `${t.maReason} ${Math.round(t.maDist)}m`)] : []));
+    } else if (hov.kind === 'signal') {
+      const s = topo.signals[hov.id];
+      const r = snap.activeRoutes.find((x) => topo.routes[x].start === hov.id);
+      this.el.append(h('div', { class: 'tt' }, s.name), this.row('车站', STATIONS[s.station].name), this.row('显示', SIG_ASPECT[snap.signals[hov.id] & 7]), this.row('进路', r !== undefined ? topo.routes[r].name : '无'));
+    } else if (hov.kind === 'section') {
+      const s = topo.sections[hov.id];
+      const f = snap.sections[hov.id];
+      this.el.append(h('div', { class: 'tt' }, s.name), this.row('位置', STATIONS[s.station].name), this.row('长度', `${Math.round(s.len)} m`),
+        this.row('状态', f & SEC.DIST ? '故障占用' : f & SEC.PRESET ? '预复位' : f & SEC.OCC ? (f & SEC.COMM ? 'CBTC列车占用' : '计轴占用') : '空闲'),
+        this.row('锁闭', f & SEC.LOCK ? (f & SEC.ROUTEFLEET ? '自动通过' : '进路锁闭') : '—'), ...(f & SEC.TSR ? [this.row('临时限速', `${snap.sectionTsr[hov.id]} km/h`)] : []));
+    } else if (hov.kind === 'switch') {
+      const s = topo.switches[hov.id];
+      const f = snap.switches[hov.id];
+      this.el.append(h('div', { class: 'tt' }, s.name), this.row('位置', f & SW.FAILED ? '失表' : f & SW.MOVING ? '转换中' : f & SW.R ? '反位' : '定位'), this.row('锁闭', f & SW.LOCKED ? '进路锁闭' : f & SW.SINGLE ? '单锁' : '—'));
+    } else if (hov.kind === 'platform') {
+      const p = topo.platforms[hov.id];
+      this.el.append(h('div', { class: 'tt' }, p.name), this.row('候车', `${snap.platformWaiting[hov.id]} 人`));
+    } else { this.el.style.display = 'none'; return; }
+    this.el.style.display = 'block';
+    this.place();
+  }
+}

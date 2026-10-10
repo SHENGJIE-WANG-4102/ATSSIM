@@ -199,6 +199,8 @@ export interface ActiveRoute {
   route: number;
   state: 'setting' | 'locked';
   fleeting: boolean;
+  /** former automatic route switched to one-shot by ARS */
+  defleeted?: boolean;
   manual: boolean;
   guide: boolean;
   guideUntil: number;
