@@ -1,0 +1,23 @@
+{
+  "name": "atssim-line2",
+  "private": true,
+  "version": "1.0.0",
+  "description": "上海轨道交通2号线 ATS 中央监视模拟器 (OCC overview screen simulator)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "simday": "vitest run tests/fullday.test.ts"
+  },
+  "dependencies": {
+    "pixi.js": "^8.22.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vite": "^7.3.7",
+    "vitest": "^3.2.7"
+  }
+}
