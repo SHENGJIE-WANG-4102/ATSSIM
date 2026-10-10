@@ -144,8 +144,11 @@ describe('radio calls', () => {
     sim.command({ c: 'fault', kind: 'pecu', target: tr.id, duration: 0 });
     runFor(sim, 50, check);
     expect(tr.stopUntil).toBeGreaterThan(sim.t);
-    runFor(sim, 10, check);
+    // service brake from line speed takes up to ~30 s
+    const t0 = sim.t;
+    while (tr.v >= 0.5 && sim.t - t0 < 40) runFor(sim, 1, check);
     expect(tr.v).toBeLessThan(0.5);
+    expect(tr.stopUntil).toBeGreaterThan(sim.t);
   });
 });
 
@@ -218,6 +221,16 @@ describe('scenario & replay', () => {
     expect(rep.score).toBeLessThanOrEqual(100);
     expect(rep.plannedTrips).toBeGreaterThan(0);
     expect(rep.delivery).toBeGreaterThan(0.5);
+  });
+
+  it('a scenario with manual radio starts on a clean line (warm-up is auto-answered)', () => {
+    const start = 7 * 3600 + 40 * 60;
+    const sim = new Sim({ dayType: 'weekday', dateLabel: 't', startTime: start, seed: 13, scenario: 'shr-switch', autoRadio: false });
+    runUntil(sim, start);
+    expect(sim.autoRadio).toBe(false);
+    expect(sim.calls.filter((c) => c.state === 'ringing').length).toBe(0);
+    expect(sim.possessions.some((p) => p.state === 'active' || p.state === 'releasing')).toBe(false);
+    expect(sim.trainList.filter((t) => t.inService && t.delay > 120).length).toBeLessThanOrEqual(2);
   });
 
   it('restoring a checkpoint and re-running reproduces the same state', () => {

@@ -5,11 +5,15 @@ import { STATIONS, LINE_INFO } from '../data/line2';
 import { SEC, SW, SIG_ASPECT } from '../sim/model';
 import { fmtDelay } from './theme';
 
+const ASPECT_CN: Record<string, string> = { R: '禁止（红）', G: '绿灯', Y: '黄灯', GUIDE: '引导（红+白）', DARK: '灭灯（CBTC）', FAIL: '故障' };
+
 export class Tooltip {
   el = h('div', { class: 'tooltip', style: 'display:none' });
   private store: Store;
   private mx = 0;
   private my = 0;
+  /** logical canvas size (for keeping the tooltip on screen) */
+  bounds = { w: 3840, h: 2160 };
 
   constructor(store: Store) {
     this.store = store;
@@ -29,8 +33,10 @@ export class Tooltip {
     const hgt = this.el.offsetHeight || 200;
     let x = this.mx + 22;
     let y = this.my + 22;
-    if (x + w > 3830) x = this.mx - w - 22;
-    if (y + hgt > 2150) y = this.my - hgt - 22;
+    if (x + w > this.bounds.w - 10) x = this.mx - w - 22;
+    if (y + hgt > this.bounds.h - 10) y = this.my - hgt - 22;
+    x = Math.max(4, x);
+    y = Math.max(4, y);
     this.el.style.left = `${x}px`;
     this.el.style.top = `${y}px`;
   }
@@ -55,20 +61,23 @@ export class Tooltip {
     } else if (hov.kind === 'signal') {
       const s = topo.signals[hov.id];
       const r = snap.activeRoutes.find((x) => topo.routes[x].start === hov.id);
-      this.el.append(h('div', { class: 'tt' }, s.name), this.row('车站', STATIONS[s.station].name), this.row('显示', SIG_ASPECT[snap.signals[hov.id] & 7]), this.row('进路', r !== undefined ? topo.routes[r].name : '无'));
+      this.el.append(h('div', { class: 'tt' }, s.name), this.row('车站', STATIONS[s.station].name), this.row('显示', ASPECT_CN[SIG_ASPECT[snap.signals[hov.id] & 7]]), this.row('进路', r !== undefined ? topo.routes[r].name : '无'));
     } else if (hov.kind === 'section') {
       const s = topo.sections[hov.id];
       const f = snap.sections[hov.id];
       this.el.append(h('div', { class: 'tt' }, s.name), this.row('位置', STATIONS[s.station].name), this.row('长度', `${Math.round(s.len)} m`),
         this.row('状态', f & SEC.DIST ? '故障占用' : f & SEC.PRESET ? '预复位' : f & SEC.OCC ? (f & SEC.COMM ? 'CBTC列车占用' : '计轴占用') : '空闲'),
-        this.row('锁闭', f & SEC.LOCK ? (f & SEC.ROUTEFLEET ? '自动通过' : '进路锁闭') : '—'), ...(f & SEC.TSR ? [this.row('临时限速', `${snap.sectionTsr[hov.id]} km/h`)] : []));
+        this.row('锁闭', f & SEC.LOCK ? (f & SEC.ROUTEFLEET ? '自动通过' : '进路锁闭') : '—'), ...(f & SEC.TSR ? [this.row('临时限速', `${snap.sectionTsr[hov.id]} km/h`)] : []),
+        ...(f & SEC.ENV ? [this.row('天气限速', snap.sectionTsr[hov.id] > 0 ? `${snap.sectionTsr[hov.id]} km/h` : '停运')] : []),
+        ...(f & SEC.BLOCK ? [this.row('封锁', f & SEC.POSS ? '施工封锁' : '调度封锁')] : []));
     } else if (hov.kind === 'switch') {
       const s = topo.switches[hov.id];
       const f = snap.switches[hov.id];
-      this.el.append(h('div', { class: 'tt' }, s.name), this.row('位置', f & SW.FAILED ? '失表' : f & SW.MOVING ? '转换中' : f & SW.R ? '反位' : '定位'), this.row('锁闭', f & SW.LOCKED ? '进路锁闭' : f & SW.SINGLE ? '单锁' : '—'));
+      this.el.append(h('div', { class: 'tt' }, s.name), this.row('位置', f & SW.FAILED ? '失表' : f & SW.MOVING ? '转换中' : f & SW.R ? '反位' : '定位'), this.row('锁闭', f & SW.LOCKED ? '进路锁闭' : f & SW.SINGLE ? '单锁' : '—'),
+        ...(f & SW.BLOCKED ? [this.row('封锁', '已封锁')] : []), ...(f & SW.FIELD ? [this.row('钩锁', '现场钩锁')] : []));
     } else if (hov.kind === 'platform') {
       const p = topo.platforms[hov.id];
-      this.el.append(h('div', { class: 'tt' }, p.name), this.row('候车', `${snap.platformWaiting[hov.id]} 人`));
+      this.el.append(h('div', { class: 'tt' }, p.name), this.row('候车', `${snap.platformWaiting[hov.id]} 人`), this.row('提示', '点击查看详情与 PIS'));
     } else { this.el.style.display = 'none'; return; }
     this.el.style.display = 'block';
     this.place();

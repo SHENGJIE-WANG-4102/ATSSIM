@@ -275,9 +275,13 @@ export function radioTick(sim: Sim) {
     const p = sim.pendingCalls[i];
     if (sim.t >= p.at) { sim.pendingCalls.splice(i, 1); openCall(sim, p.spec); }
   }
+  // the warm-up before the requested start time is always auto-answered:
+  // nobody sits at the desk then (otherwise night possessions are never
+  // signed off and a scenario would start on a gridlocked line)
+  const auto = sim.autoRadio || sim.t < sim.config.startTime;
   for (const c of sim.calls) {
     if (c.state !== 'ringing') continue;
-    if (sim.autoRadio && sim.t - c.t >= AUTO_DELAY) { answerCall(sim, c.id, c.auto, true); continue; }
+    if (auto && sim.t - c.t >= AUTO_DELAY) { answerCall(sim, c.id, c.auto, true); continue; }
     if (sim.t >= c.deadline) expire(sim, c);
   }
   // drivers standing at an obstacle for a long time ask for instructions

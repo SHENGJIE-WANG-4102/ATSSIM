@@ -377,6 +377,7 @@ export type ToWorker =
   | { type: 'drive'; train: number; notch: number }
   | { type: 'pis'; station: number }
   | { type: 'rewind'; to: number; replay: boolean }
+  | { type: 'takeover' }
   | { type: 'restart'; config: SimConfig };
 
 export interface TrainSnap {

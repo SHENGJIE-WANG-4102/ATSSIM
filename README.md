@@ -10,58 +10,249 @@ and fault injection. The UI is in Simplified Chinese and laid out for a 3840×21
 
 ```bash
 npm install
-npm run dev          # http://localhost:5173  (opens at 07:40 on a weekday)
+npm run dev          # http://localhost:5173  (opens at 07:40 on the next weekday)
 npm run build        # type-check + production build into dist/
 npm run preview      # serve the production build
-npm test             # headless simulation tests (full days + fault/command scenarios, ~10 min)
+npm test             # headless simulation tests (full days, faults, commands, features; ~15 min)
 ```
 
 URL options: `?t=17:30` sets the start time (the day is simulated from 04:00 at full
 speed up to that time first), `?holiday=1` uses the weekend/holiday timetable.
-Use browser full-screen (F11) on a 4K display; the layout scales uniformly to any
-smaller window.
 
-Keyboard: `Space` pause/resume, `+`/`-` simulation speed.
+On the first start a short guided tour opens (F1 or **?** reopens it). It has six pages:
+screen areas, basic operation, colours and symbols, following and driving a train,
+instructor/replay, and a glossary of every signalling term used on screen.
 
-## What you see
+## Screen size and UI scale
 
-* **Header**: clock, operating day and current timetable period, simulation speed
-  (1×–120×, pause, fast-forward to a time, restart with another date), the level of each
-  ZC area (CBTC / TBTC / ZC故障), KPIs (trains on line, in service, late, punctuality,
-  completed trips, boardings) and A/B/C alarm counters.
-* **Line overview** (two rows: 蟠祥路·国家会计学院→陆家嘴, 浦东南路→浦东1号2号航站楼):
-  every axle-counter section coloured by state (free, automatic route, locked route,
-  CBTC occupancy, non-communicating occupancy, fault, preset), switches with their
-  position/loss of detection, signals with aspects (red/green/yellow/guide/CBTC dark/
-  failed), platforms with screen-door state, hold/skip/ESP badges and waiting passengers,
-  the three depots with trains in depot, ZC area boundaries (TBTC areas tinted), TSRs,
-  and every train as a body on the track plus a train-number window (表号-车次) whose
-  border shows punctuality and flags (H hold, C/R mode, T backup level, × no
-  communication, E emergency brake, ! failed).
-* **Train graph**: planned lines (big route, small route, depot runs, added trains,
-  adjusted trips) and actual lines, scrolling with the clock; 1 h / 3 h / 6 h / whole-day
-  windows.
-* **Right panels**: live alarm list (click to acknowledge), and tabs for 命令 (commands for
-  the selected object), 事件 (event log with filters), 列车 (train list), 教员台 (fault
-  injection) and 计划 (timetable templates and day plan).
+The whole UI is laid out on a logical 3840×2160 canvas and scaled uniformly to the
+window. On top of that, **界面缩放** (A− / A+ in the header, or Ctrl + / Ctrl −) applies a
+global scale of 75 %–200 %, which is remembered in the browser. At 100 % on a 4K wall the
+minimum sizes are: text ≥ 20 px, station names ≥ 40 px, train windows ≥ 30 px, panel body
+text ≥ 24 px and controls ≥ 56 px. The default scale depends on the window: 100 % on a 4K
+display, up to 150 % on smaller screens so text stays readable at 1080p.
 
-## Dispatcher commands (select → command → confirm)
+Header and toolbars wrap when they don't fit, and the layout measures them, so nothing
+is cut off at any scale.
 
-Click an object on the overview, choose a command in **命令**, confirm in the dialog.
-Safety-critical commands need a second, timed confirmation with swapped buttons.
+## Layout
+
+* **Header**: clock, operating day and timetable period, simulation speed (pause,
+  1×–120×, fast-forward to a time, new operating day), ZC area levels (CBTC / TBTC /
+  ZC故障), KPIs (trains in service/on line, late > 2 min, punctuality, completed trips),
+  A/B/C alarm counters, UI scale, sound on/off, help.
+* **Line overview** (≥ 55 % of the screen height): the line folded into as many rows as
+  give the largest drawing for the window (3 rows at 16:9). Wheel zooms and drag pans;
+  zoomed out you see the whole line, zoomed in you see detail.
+  * **Level of detail**: signal names, section names and kilometre posts appear only when
+    zoomed in, or when forced on with the layer buttons (信号机 / 区段 / 公里标 / 客流).
+  * **No overlaps**: labels go through a greedy placement index (station names first,
+    then train windows by priority: selected, faulty, degraded, held, late, rest), and
+    anything that doesn't fit is dropped instead of drawn on top.
+  * **Colours**: normal states are muted. CBTC occupancy is slate, plain line is
+    dark grey, and CBTC wayside signals are small dark rings rather than red lamps. Red
+    is reserved for faults and alarms; amber marks things that need attention (axle-counter
+    occupancy by non-communicating trains, TSR, preset).
+  * **Depots** are drawn as yards with their stabling tracks and the trains standing on
+    them; clicking one opens the yard view.
+* **Train graph** (下方条带): strip (~20 % of the height), collapsed to its toolbar, or
+  maximised (it then takes the place of the overview). Windows of 1 h / 3 h / 6 h / the whole day. Planned
+  lines are thin and muted (big route, small route, depot runs, added, adjusted). Actual
+  lines are thick and coloured by deviation: green ≤ 2 min, yellow 2–5 min, orange
+  > 5 min, grey for non-revenue runs.
+* **Right side**:
+  * The **alarm list** collapses to one line when there is nothing active and expands and
+    flashes when a new alarm arrives. Clicking a row acknowledges it and locates the
+    object.
+  * The **dispatcher phone/radio** (调度电话·无线) queue sits below the alarms.
+  * Tabs: **详情** (the selected object and its commands), **列车** (train table),
+    **事件** (event log with filters), **教员** (scenarios, random faults, fault
+    injection, weather) and **回放** (rewind/replay and bookmarks).
+  * All controls are at least 56 px high.
+
+## Interaction
+
+### Selecting and commanding
+
+Click any object (train window, signal, switch, section, platform, station name, depot)
+and the **详情** tab shows its state and commands. Routine commands execute at once.
+Safety-relevant ones (guide route, axle-counter preset, fault release, TSR, blocking,
+TBTC switchover, RM authorisation, rescue) need a second, timed confirmation with the
+buttons swapped.
 
 | Object | Commands |
 |---|---|
 | Signal | 办理进路 (route list with preview), 取消进路 (30 s delayed release when approach-locked), 引导进路 ★, 自动通过 on/off, 自动排列(ARS) on/off |
-| Switch | 单操定位/反位, 单锁/单解, 钩锁确认 ★, 取消钩锁 |
-| Section | 计轴预复位 ★, 区段故障解锁 ★, 设置/取消临时限速 ★ (one section or the whole station interval) |
-| Platform | 扣车/取消扣车, 跳停/取消跳停, 紧急关闭/取消 ★, 站台门互锁解除 ★ |
-| Train | 扣车/放行, 跳停 (chosen station), 人工折返 (stations ahead with front/rear turnback), 退出服务 (clear passengers, return to depot), 授权RM ★, 组织救援 ★ (failed train only) |
-| System (nothing selected) | 切换TBTC / 恢复CBTC per ZC area or whole line ★, 加开列车 (depot → turnback station → depot at a given time), 加开运行图 templates (进博会保障, 虹桥枢纽大客流) |
+| Switch | 单操定位/反位, 单锁/单解, 封锁/解封 ★, 钩锁确认 ★, 取消钩锁 |
+| Section | 计轴预复位 ★, 区段故障解锁 ★, 封锁/解封 ★, 设置/取消临时限速 ★ (one section or the whole station interval) |
+| Platform | 扣车/取消扣车, 跳停/取消跳停, 紧急关闭/取消 ★, 站台门互锁解除 ★, PIS preview |
+| Train | 跟踪列车, 人工驾驶 CM / RM ★, 恢复 AM, 扣车/放行, 跳停, 人工折返, 退出服务, 授权RM ★, 组织救援 ★ (failed train only) |
+| Station | 打开车站图 (interlocking view), PIS preview |
+| Depot | 车场图 (yard view), 加开列车 from that depot |
+| System (nothing selected) | 切换TBTC / 恢复CBTC per ZC area or whole line ★, 加开列车, 加开运行图 templates (进博会保障, 虹桥枢纽大客流) |
 
 ★ = two-step confirmation.
 
-## Faults (教员台) and recovery
+### Station interlocking view (车站图)
+
+Opens from a station's details or the 车站图 menu and replaces the overview with that
+station at full detail: every signal, switch and section with its name. It works like a
+real workstation: pick the **function** first (button or key), then click the
+**device**.
+
+| Key | Function | Click |
+|---|---|---|
+| Q | 选择 | any device → details |
+| R | 排列进路 | start signal, then end signal / track / depot (valid ends are highlighted) |
+| G | 引导进路 ★ | start signal, then end |
+| C | 取消进路 | start signal |
+| N / V | 定位 / 反位 | switch |
+| L | 单锁/单解 | switch |
+| B | 封锁/解封 ★ | switch or section |
+| U | 区故解 ★ | section |
+| X | 计轴预复位 ★ | faulty section |
+
+Esc steps back (pending start → function → overview).
+
+### Following a train and driving it
+
+**跟踪列车** keeps the camera on the train and shows its driver display (DMI) in the
+side panel. The DMI shows:
+
+* the speedometer with the permitted speed and the target speed;
+* the target distance bar;
+* the movement-authority limit and its reason;
+* the next station and the remaining dwell;
+* mode and level, door state and EB.
+
+**人工驾驶 CM** (supervised) or **RM** (restricted, ≤ 25 km/h, on sight; ★, train must be
+at a stand) hands the train to you. The lever has traction P1–P4, coast, brake B1–B7
+and emergency:
+
+| Input | Effect |
+|---|---|
+| ↑ / W | more traction |
+| ↓ / S | more brake |
+| X | coast |
+| E | emergency brake |
+| mouse | click a notch, or scroll on the lever |
+
+ATP supervises all the time:
+
+* Overspeed in CM triggers EB and counts as a safety violation.
+* Passing a stop signal in RM is a SPAD.
+* Each station stop is scored on stopping accuracy: ±0.3 m scores 100, ±0.5 m 90, ±0.75 m 75, ±1 m 60.
+* Overrunning by up to 15 m means backing up to the mark (> 5 m counts as a violation); further than that, the train skips the station.
+
+**恢复自动驾驶 AM** returns the train to ATO.
+
+### Radio and phone calls (调度电话·无线)
+
+Drivers, station staff and possession leaders call the dispatcher. Every call offers
+a few responses and has a countdown. Each call type, and what happens if it isn't
+answered in time:
+
+| Call type | If unanswered |
+|---|---|
+| Train stuck at an obstacle > 3 min | It waits and calls again |
+| CBTC degradation | |
+| RM preset sweep | |
+| Rescue | |
+| PSD failure | |
+| Platform crowding | |
+| PECU passenger alarm | |
+| Person on the track | |
+| ESP clear request | The platform stays closed |
+| Possession request (请点) | The possession is not given |
+| Possession release (销点) | The line does not open in the morning |
+
+Missed calls are counted in the report. In free play, **来电自动应答** (教员 tab) answers
+every call with its default response after 15 s. Scenarios switch it off. The warm-up
+before any start time is always auto-answered.
+
+### Passengers and PIS
+
+Waiting passengers are shown per platform. With the 客流 layer on, train windows also
+show a load bar (blue → yellow → orange). Crowding raises alarms, lengthens dwells and
+fills trains. Selecting a station or platform shows a **PIS preview**: the next two
+trains with destination and countdown, plus notices (skip, hold, delays, weather).
+
+### Weather and night possessions
+
+The elevated east section (广兰路以东—海天三路) and the at-grade airport section are
+exposed:
+
+| Condition | Restriction |
+|---|---|
+| 大风 7 级 | elevated ≤ 60 km/h |
+| 大风 8 级 | elevated ≤ 45 km/h |
+| 大风 9 级 | elevated ≤ 25 km/h |
+| 大风 ≥ 10 级 | elevated service suspended |
+| 暴雨 | elevated and at grade ≤ 60 km/h |
+
+Restricted stretches are shown with blue dashes and badges, and a banner shows the
+current weather. Night possessions (施工封锁) are requested and released by phone. The
+morning possessions must be released (销点) before the first trains can run.
+
+### Instructor tab (教员), scenarios and scoring
+
+* **Scenarios** (each loads its own day and time and runs at 1×):
+
+| Scenario | Weekday start | Length |
+|---|---|---|
+| 龙阳路早高峰加车 | 06:52 | 45 min |
+| 淞虹路道岔故障 | 07:40 | 40 min |
+| 人民广场大客流 | 17:25 | 40 min |
+| CBTC→TBTC 降级切换 | 09:55 | 45 min |
+| 故障列车救援 | 09:05 | 45 min |
+| 东段雷暴大风 | 16:30 | 50 min |
+
+  Each scenario has objectives and timed events.
+* **Random faults**: off, 初级, 中级 or 高级. A fault arrives about every 25, 14 or 8
+  minutes, and the higher levels draw from a wider set (up to ZC failures, wind and
+  persons on the track).
+* **Manual fault injection** and **weather**.
+* **Report** (评分报告 at the end of a scenario, or on demand) covers:
+  * total delay minutes and affected passengers;
+  * trip delivery and on-time departures;
+  * calls answered;
+  * manual-driving stop scores;
+  * safety violations (SPAD, overspeed EB, RM near-miss, unsafe authorisation, ignored ESP, overrun).
+
+  The result is a 0–100 score and a grade. A ≥ 90, B ≥ 80, C ≥ 65; any safety violation
+  caps the grade at C.
+
+### Replay (回放)
+
+The worker keeps a checkpoint every simulated minute (two hours of history) and a log
+of every command and lever movement.
+
+* **回退** restores a past moment so you can handle it differently.
+* **回放** restores it and re-runs your recorded commands. Issuing any command during
+  the replay takes over, and the recorded future is discarded.
+* A/B alarms, scenario events and random faults create bookmarks automatically, and you
+  can add your own.
+* Replays are deterministic (tested).
+
+### Sound
+
+Alarm and call tones (Web Audio, no files). Toggle with the speaker button or **M**.
+
+### Keys
+
+| Key | Action |
+|---|---|
+| Space | pause/resume |
+| 1–7 | simulation speed |
+| + / − / 0 | zoom view / zoom out / whole line |
+| Esc | cancel selection / follow / back to overview |
+| M | mute |
+| F1 | help |
+| Ctrl + / Ctrl − | UI scale |
+| ↑ ↓ W S X E | lever when driving |
+| Q R G C N V L B U X | station view functions |
+
+## Faults and recovery
 
 | Fault | Consequence in the simulation | Recovery |
 |---|---|---|
@@ -73,6 +264,8 @@ Safety-critical commands need a second, timed confirmation with swapped buttons.
 | 站台门故障 | At the next door close the PSD cannot lock: the train cannot leave and the next train cannot enter | 站台门互锁解除 (★); every train then loses ~25 s for manual confirmation until repaired |
 | 列车故障 | Train stops (EB); followers queue behind it. "Recoverable" clears after driver troubleshooting | Non-recoverable: 组织救援 (★) with the following train → it clears passengers, approaches in RM, couples (≤3 km/h, 60 s), pushes to the next station, clears passengers, returns to depot; remaining trips of both trains are cancelled on the graph |
 | 车站大客流 | Arrival rate ×N at a station: crowding alarm, longer dwells, full trains, delays | Holding, skip-stop, added trains / added-service templates |
+| PECU / 人员侵入 / ESP | Train held at the platform / platform closed until cleared | Answer the call; cancel 紧急关闭 after the line is clear |
+| 大风 / 暴雨 | Speed restriction on the exposed sections (table above) | Ends with the weather; regulate with holds and turnbacks |
 
 Every automatic and manual event goes to the event log; alarms stay active until the
 condition clears and can be acknowledged.
@@ -94,11 +287,32 @@ condition clears and can be acknowledged.
   guide routes, aspects), `movement.ts` (MA scan: CBTC moving block behind the
   preceding train's tail, fixed-block TBTC by section occupancy, RM on sight; ATP/ATO
   control), `ats.ts` (task execution, ARS with plan-order arbitration, regulation,
-  commands), `timetable.ts` (templates, circulation, insertion/withdrawal), `faults.ts`,
-  `passengers.ts`.
-* **Tests** (`tests/`): a full weekday and weekend (every planned revenue trip runs,
-  no collision, no emergency brakes, ≥98 % on time, everything returns to depot or
-  overnight stabling), plus one scenario per fault type and dispatcher command.
+  commands, manual driving and stop scoring), `timetable.ts` (templates, circulation,
+  insertion/withdrawal), `faults.ts`, `passengers.ts`, `radio.ts` (calls, responses,
+  deadlines and consequences), `env.ts` (weather, possessions), `yard.ts` (stabling
+  tracks), `pis.ts`, `scenario.ts` (scenarios, random faults, metrics, report),
+  `state.ts` (checkpoint capture/restore and a state fingerprint for determinism tests).
+* **UI** (`src/ui/`):
+  * `layout.ts` computes the screen regions from the window, the UI scale and the graph
+    mode.
+  * `geometry.ts` folds the track graph into rows for any width.
+  * `trackview.ts` is the PixiJS schematic, used both for the overview and for the
+    station view, with `labels.ts` doing the overlap-free label placement.
+  * `graph.ts` is the train graph; `stationview.ts`, `yardview.ts`, `dmi.ts`,
+    `pisview.ts`, `report.ts` and `help.ts` are the views and dialogs; `audio.ts` is
+    sound.
+  * DOM panels are scaled with the same factor as the canvas. Snapshot listeners run once
+    per rendered frame, so panel and DMI updates can never queue up behind a slow frame.
+* **Tests** (`tests/`):
+  * a full weekday and weekend: every planned revenue trip runs, no collision, no
+    emergency brakes, ≥ 98 % on time, everything returns to depot or overnight stabling;
+  * one scenario per fault type and dispatcher command;
+  * the revision features: blocking, CM/RM driving with ATP and stop scoring, radio
+    consequences, wind restriction, possessions, vehicle conservation in yards, PIS,
+    scenarios and their warm-up, and replay determinism.
+* `scripts/label-check.mjs` loads the running dev server in Chromium at 4K/100 %,
+  1440p/110 %, 1080p/150 % and 768p/150 %. For the overview (whole line and two zoom
+  levels) and a station view, it checks label overlaps and the minimum font size.
 
 ## Timetable
 
@@ -200,6 +414,30 @@ Everything below is plausible but **not** taken from a public source.
   added, 0xxx empty, 6xxx adjusted; odd eastbound) and train set numbers 0201–0276.
 * Added-service presets (routes, periods and headways) for CIIE and the Hongqiao hub.
 
+**Revision features**
+* Exposed sections: elevated from K37.4 (east of 广兰路) to 海天三路, at grade from there
+  to the airport terminus. The wind and rain limits are typical operating rules, not
+  Line 2's published ones.
+* Night possessions: drawn from 9 candidate station intervals. Morning possessions are
+  released by 04:20 if the call is answered. The night window is 00:50–03:30.
+* Yards: stabling tracks 14 / 12 / 8 with 34 / 30 / 20 places (北翟路 / 龙阳路 / 川沙),
+  2–3 trains per track. Yard moves are instantaneous.
+* Radio calls:
+  * the scripts and the set of responses are simplified;
+  * call deadlines are 45–300 s;
+  * auto-answer waits 15 s;
+  * an unanswered call is repeated every 2 min.
+* Manual driving:
+  * lever notches scale traction (P1–P4 = ¼–4/4 of the available effort) and service
+    brake (B1–B7 = 1/7–7/7 of 1.0 m/s²) linearly; emergency is 1.25 m/s²;
+  * the ATP permitted speed is the curve to the end of authority at a guaranteed
+    0.95 m/s² plus 0.15 m/s tolerance (the ATO drives the 0.75 m/s² planning curve);
+  * stop scoring thresholds are 0.3 / 0.5 / 0.75 / 1.0 m;
+  * overruns of up to 15 m are backed up automatically (in reality only with
+    dispatcher permission).
+* Scenario scoring weights (delay, affected passengers, delivery, calls, safety) are our
+  own choice.
+
 ## Performance
 
 The renderer keeps static geometry in GPU buffers. Per frame it only changes tints,
@@ -215,3 +453,7 @@ schematic update ≈ 2.6 ms and graph update ≈ 3 ms per updated frame, at 1× 
 The container has no GPU, so the frame rate there (≈10 fps) reflects software
 rasterisation, and **60 fps on real 4K hardware has not been measured**. Check it with
 the on-screen readout in a hardware-accelerated browser.
+
+## License
+
+AGPL-3.0, see [LICENSE](LICENSE).

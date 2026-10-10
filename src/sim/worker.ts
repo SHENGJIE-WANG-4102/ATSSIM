@@ -117,7 +117,7 @@ function sendSnapshot() {
   sim.paused = paused;
   const snap = sim.snapshot();
   snap.replay = {
-    from: checkpoints[0]?.t ?? sim.t, to: sim.t, replaying: sim.t < replayUntil, pending: pending.length,
+    from: checkpoints[0]?.t ?? sim.t, to: Math.max(sim.t, replayUntil), replaying: sim.t < replayUntil, pending: pending.length,
   };
   post({ type: 'snap', snap }, [snap.sections.buffer, snap.sectionTsr.buffer, snap.switches.buffer, snap.signals.buffer, snap.platforms.buffer, snap.platformWaiting.buffer]);
 }
@@ -239,6 +239,10 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       break;
     case 'rewind':
       rewind(m.to, m.replay);
+      break;
+    case 'takeover':
+      takeOver();
+      sendSnapshot();
       break;
   }
 };

@@ -3,7 +3,7 @@
  * the dispatcher's current selection. Also wraps the worker protocol.
  */
 import type { Topology } from '../sim/topology';
-import type { Command, FromWorker, Plan, SimConfig, SimEvent, Snapshot, ToWorker } from '../sim/model';
+import type { Command, FromWorker, Plan, ScenarioReport, SimConfig, SimEvent, Snapshot, ToWorker } from '../sim/model';
 
 export type Selection =
   | { kind: 'signal'; id: number }
@@ -13,9 +13,13 @@ export type Selection =
   | { kind: 'train'; id: number }
   | { kind: 'zone'; id: number }
   | { kind: 'depot'; id: number }
+  | { kind: 'station'; id: number }
   | null;
 
 type Listener = () => void;
+
+/** stride of the actual-line trace points: [t, chainage, inService, delay] */
+export const TRACE_STRIDE = 4;
 
 export class Store {
   topo: Topology;
@@ -30,8 +34,13 @@ export class Store {
   planVersion = 0;
   traces = new Map<number, number[]>();
   traceVersion = 0;
+  /** bumped when traces were truncated (rewind) and the graph must redraw */
+  traceReset = 0;
+  report: ScenarioReport | null = null;
+  progress: { t: number; target: number } | null = null;
   private listeners = new Map<string, Set<Listener>>();
   private nextCmd = 1;
+  private snapDirty = false;
   private pending = new Map<number, (r: { ok: boolean; msg: string }) => void>();
 
   constructor(topo: Topology, worker: Worker) {
@@ -60,7 +69,9 @@ export class Store {
     this.alarms = [];
     this.traces.clear();
     this.traceVersion++;
+    this.traceReset++;
     this.selection = null;
+    this.report = null;
     this.send({ type: 'init', config });
   }
 
@@ -70,6 +81,13 @@ export class Store {
       this.pending.set(id, resolve);
       this.send({ type: 'cmd', id, cmd });
     });
+  }
+
+  /** emit a pending 'snap' (called once per render frame) */
+  flushSnap() {
+    if (!this.snapDirty) return;
+    this.snapDirty = false;
+    this.emit('snap');
   }
 
   select(sel: Selection) {
@@ -85,6 +103,7 @@ export class Store {
         this.alarms = [];
         this.traces.clear();
         this.traceVersion++;
+        this.traceReset++;
         this.plan = m.plan;
         this.planVersion++;
         this.emit('ready');
@@ -103,7 +122,9 @@ export class Store {
           for (const v of tr.pts) arr.push(v);
         }
         if (m.snap.traces.length) this.traceVersion++;
-        this.emit('snap');
+        // listeners run from the render frame (flushSnap): at most once per
+        // painted frame, so DOM/canvas work can never queue up behind slow frames
+        this.snapDirty = true;
         break;
       }
       case 'events':
@@ -124,7 +145,26 @@ export class Store {
         this.progress = m;
         this.emit('progress');
         break;
+      case 'rewound': {
+        // drop everything recorded after the restored time
+        for (const [id, pts] of this.traces) {
+          let n = pts.length;
+          while (n >= TRACE_STRIDE && pts[n - TRACE_STRIDE] > m.t + 1e-6) n -= TRACE_STRIDE;
+          if (n === 0) this.traces.delete(id); else pts.length = n;
+        }
+        this.traceVersion++;
+        this.traceReset++;
+        this.events = this.events.filter((e) => e.id < m.nextEventId);
+        this.emit('events');
+        this.emit('rewound');
+        break;
+      }
+      case 'report':
+        this.report = m.report;
+        this.emit('report');
+        break;
+      case 'call':
+        break;
     }
   }
-  progress: { t: number; target: number } | null = null;
 }
