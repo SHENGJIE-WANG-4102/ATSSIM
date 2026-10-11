@@ -1,10 +1,18 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { Sim } from '../src/sim/engine';
 import type { DayType, Train } from '../src/sim/model';
+import { capture, restore, type Checkpoint } from '../src/sim/state';
+
+// Scenarios share a seed and initial time. Reuse a verified warm-up snapshot;
+// each test still gets its own simulator and mutable state.
+const warmups = new Map<string, Checkpoint>();
 
 export function makeSim(dayType: DayType = 'weekday', until = 8 * 3600): Sim {
   const sim = new Sim({ dayType, dateLabel: 'test', startTime: until, seed: 7 });
-  runUntil(sim, until);
+  const key = `${dayType}:${until}`;
+  const cp = warmups.get(key);
+  if (cp) restore(sim, cp);
+  else { runUntil(sim, until); warmups.set(key, capture(sim)); }
   return sim;
 }
 

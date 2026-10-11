@@ -1,62 +1,69 @@
-# 交接说明（稳定化阶段，进行中）
+# 交接说明：Line 2 核心稳定化
 
-分支：`claude/nifty-faraday-mdr3ug`，最新提交见 `git log`（c69fc09 起）。
-需求原文：用户的 "Stabilization pass: Line 2 signalling core"（§0–§11）。优先级：安全不变量 > 论文（reference/*.pdf，P1–P5）> CBTC 通用实践 > 早期需求。**论文与安全不变量冲突时必须停下来问用户，不要自己选。** 每个取舍记入 `docs/design-decisions.md`（目前 D1–D10）。
+分支 `work`，基于截图交接提交 `578c4f5`；本轮代码仍在工作区，未推送。
+需求为用户上传的 “Stabilization pass: Line 2 signalling core” §§0–11。
+优先级：严格安全不变量 > P1–P5 > 通用实践 > 旧需求；论文若与安全要求冲突，必须问用户。
 
-## 已完成
+## 本轮实现
 
-- 不变量检查（`src/sim/invariants.ts`）：每步 OVERLAP / BEYOND_MA / MA_NO_ROUTE / SWITCH_UNDER_LOAD / EB_ACCEL / OVERSPEED / FSM；每秒 LIVENESS（D5）和等待图 DEADLOCK。违例写快照、A 级报警、测试失败（`assertIntegrity`）。
-- 停车原因码（`src/sim/halt.ts`），并在 UI 的 tooltip / 侧表和日志中显示。
-- 自动调度（`src/sim/dispatcher.ts`，D4）：headless 测试有故障时开启。
-- MA 回撤 `maCut`（D2）；信号机故障不强拆进路，已无法停车的列车按 committed 通过（D3）；信号机故障立即重算 MA（D9）。
-- ARS：每架信号机先为最近的接近列车排列进路（D8，`ats.ts` 中的 `firstAt` / `via`），修复进路来回乒乓。
-- 停车中有待处理的模式转换时列车不动（D10，`movement.ts`），修复通信中断后 EB 反复触发。
-- `removeTrain` 清理 `linkBodies`，修复 `checkTrainsOnLink` 崩溃。
-- 运行图（D7，`timetable.ts`）：
-  - 终点站能力 `TERMINAL_CAP` / `MAX_PRESENT`；
-  - 出入段车、空车插空（`SLOT_GAP` 120 s，全路径 90 s 追踪间隔，见 `fitBefore` / `fitAfter` / `pathClear`）；
-  - 加开模板逐车次找可行时刻（`DepIndex`），不可行即不开行，并报告一次不足数量（`engine.ts` overlay 命令）；
-  - `validatePlan` + `terminalOccupancy`；
-  - `tests/timetable.test.ts` 全部通过（平日 / 周末 0 问题，各加开模板 0 错误）。
+- `commands.ts`：所有调度命令预校验必需参数、对象 ID、完整列表、有限数值及批量前置条件，避免半生效或缺参异常。
+- RM：仅设备/信号原因、前方第一架信号；授权范围内检查车体、封锁/施工、ESP、失表。拒绝的来电保持待答；无线自动应答不得授权 RM；脚本调度员另行通过相同命令入口操作。
+- MA：故障/ESP 即刻回撤制动目标；区分更短目标与最后已发授权，EB 也不得越过已发 MA。已锁闭点失表时只允许保留已发授权的物理方向；新授权仍要求表示。接近锁闭检查包含已发 MA 内第二/后续信号，避免只保护第一架。
+- ARS：最近列车的进路归属包含已设置/设置中的完整路径；后车不反复取消。停止原因与 ARS 资源等待串联到根因。
+- P3：反向平台牵入在换端任务开始前即建立 TD/方向 ESP，TBTC 不得自动反向区间折返；普通终端尾轨不误判。已设牵出进路重新绑定当前列车；换端停稳、牵出锁闭且平台无其他车体才取消防护。TBTC 正向牵出须明确逐信号指令，信号内方恢复 TBTC ATO。停稳非 RM 列车等完整牵出授权，不向关闭信号爬行。
+- P5：龙阳路入/出转换轨独立，单向使用，入/出进路可独立同时锁闭。北翟路、川沙共享转换轨保持保守串行防护，不能向对向车体排列进路。
+- 故障、折返、出入段阶段接线；FSM 表、可达性/非法转换和关键行为守卫有测试。
+- `state.ts`：完整运行图/车底、事件、完整性历史、输入游标、集合及计划修订均可恢复；报警确认/恢复采用不可变事件；恢复记录也进入持久历史。
+- `diagnostics.ts` / `scripts/replay.ts`：版本2无损 JSON（Map/Set/Infinity）、拓扑签名、按顺序重放及完整最终快照比较。相同时刻输入、手柄输入、暂停回放时未消费命令、回放接管均处理。旧拓扑的诊断文件不可恢复。
+- worker 检查点：最近2h每分钟，更早每10min及运营日起点；首次报警时间线可精确定位。
+- `planning.ts`：模板/单车共用候选图准备器，全路径间隔、终点能力、库存预测及过去出段检查；单车不可行则拒绝。UI 暂停预览，原图灰色/新增青色/冲突红色，确认/取消；增加诊断、快照及列车停止原因/阶段入口。
+- 插车到站估算从带惩罚、终段折半的“选路代价”改为真实完整路径。首班方向客流从首个可用载客发车前15min起，末班后不新增需求。依据/假设见 D16。
+- `soak.mjs`：完整240组合、失败停止新启动、每例详细晚点车次与未交付车次、源码哈希；变更中途模型即拒绝认证。摘要实时写入，未完成/过滤抽样不认证。
 
-## 未完成 / 下一步
+## 已验证与在跑
 
-1. **重跑测试，修剩余失败**：`npx vitest run tests/scenarios.test.ts tests/features.test.ts tests/timetable.test.ts`。
-   - 最近一次完整测试结果在上述修复之前，届时 11 项失败，部分应已修好：
-     - 通信中断 ×2：已修；
-     - fullday 平日 / 周末 LIVENESS：运行图问题，应已修；
-     - 大风 LIVENESS 059-2024 ROUTE_WAIT；
-     - 信号机故障 LIVENESS 020-1067，根因 061-1065 ROUTE_WAIT；
-     - 道岔失表 LIVENESS 055-1057 "敌对进路（道岔 P1301/03 失表）"；
-     - ZC 故障 BEYOND_MA 041-1044 / 017-1115；
-     - `scenarios.test.ts:185` hold / release / skip-stop 断言失败（尚未定位是哪个 expect）；
-     - 手动折返 / 退出 / 加车 DEADLOCK 046-回段 ↔ 100-5004。
-   - 最后一次重跑（test3）在交接时被中断，结果不可信，需要重跑。
-2. **故障探针**：
-   - `npx vite-node scripts/integrity.ts 25 weekend 3 3`（r3）
-   - `npx vite-node scripts/integrity.ts 25 weekday 2 2`（r2）
-   - 重跑 fullday（`tests/fullday.test.ts`）。
-3. **A2**：调度命令校验；TBTC 下的反向折返；完整性报警检查。RM 只因设备原因申请、每架信号机授权一次；自动应答不授权 RM。
-4. **A3**：命令日志、诊断导出与回放、检查点、事件时间线（§8：确定性、种子 RNG）。
-5. **A4**：
-   - 已完成：校验器、加开可行性、不足只报一次。
-   - 待做：预览 / 确认 UI、`addExtraTrain` 可行性检查、界面上不再出现裸数字 "1097"、校验结果在 UI 显示。
-6. **B**：按 P3 实现折返分阶段，按 P1/P5 实现出入段分阶段；FSM 转换表单元测试；补全 `docs/signalling-model.md`（每条行为引用论文，或标【假设】）。
-7. **C**：场景回归；`npm run soak`（尚未建立：所有模板 × 无故障 + 故障等级 1–3 × ≥10 个种子）及 KPI（0 违例、0 死锁；无故障 ≥99% 车次偏差 ≤2 min 且无 >5 min；有故障时最后一次故障恢复后 60 min 内回到 ±2 min）；结果写入 README；精简 UI（保留 DMI）。
+- 最新 `tests/core.test.ts`：31/31 通过（`work/core-preset-final.log`），包含已处于 RM 的普通/连挂车预复位压道回归。
+- 曾失败的独立 MA 比较、P3 相关测试：7/7 通过（其他40项过滤跳过，`work/pullout-tests.log`）。不削弱 MA/EB 检查。
+- build/typecheck 已通过；最后构建 `work/build-stable.log`。
+- Chromium 预览取消/确认、诊断下载、手柄输入与回放未来命令导出、重放后导出：无页面异常，三个诊断最终快照逐字段相同。脚本和截图在 `/workspace/work/`。
+- 牵出完整授权修复前的 KPI 抽样：weekday/base/0/seed1，664/664，±120s 99.6988%，最大晚点210.5s，0完整性违例。完整P3到站防护也复验过同一指标；**这些抽样不是240矩阵认证**。
+- 较早 weekday/base/2/seed2：664/664、0完整性违例，停止注入且最后故障修复后26s回到两分钟内；随后模型有变更，最终矩阵须复验。
+- 全日检查发现 weekday/seed3 虽完成664车次、零完整性违例，却有205条正常运营 EB 相关记录。原因是关闭牵出信号前爬行、发车平台变为占用后骤置零目标。D17 修复后关键 MA 回归通过；全日正常运营零 EB 断言保留，weekday/seed3 与 weekend 全日均通过，664/477 车次全部完成。
+- 原 full suite 在修改测试期间运行，存在旧模块缓存和10min超时，结果不可当最新版本验证。超时改为30min、hook60s。
+- 当前完整回归：`work/all-stable.log`。
+- 首次矩阵 `work/soak-matrix.log` 的等级0/1通过，等级2/3失败于 RM 列车遇预复位导致红灯，却只报告等待进路，且已在RM的车不会呼叫压道。修复红灯根因分类、允许已处于RM的司机请求新的逐信号指令；两个失败快照恢复后继续20min零完整性违例，预复位全部扫清（`work/resume2.log` / `work/resume3.log`）。
+- 当前240矩阵：`work/soak-fixed.log`；结果 `tests/out/soak-fixed/summary.json`。
+  - 检查 `certified`、`complete`、`model`、`completed`、`failed`，不能只看单例。
+  - 运行模型哈希 `1a648192244f7482ab918ec10644a5d02f6d2c1b9e1357387b6c569432ec8892`。
+  - 若需要修核心，再跑完整矩阵；不能把不同哈希的抽样混成认证。
 
-## 调试工具（scripts/）
+## 完成标准仍未关闭的部分
 
-| 脚本 | 用途 |
-|---|---|
-| `integrity.ts <hours> <dayType> <seed> <level>` | 全日 / 故障探针，打印违例 |
-| `dbg-halts.ts <hour> [dayType] [seed] [level]` | 某时刻所有停车列车的等待状态；`SHOW=id,…` 打印列车详情 |
-| `dbg-route.ts <signal> <svc> <from> <until> [dayType] [seed] [level]` | 逐步打印某信号机的进路和某列车的状态 |
-| `dbg-plan.ts` | 检查运行图 |
-| `validate-plan.ts` | 运行图校验 |
-| `dbg-step.ts` / `dbg-ma.ts` / `ars-trace.ts` | 单步、MA、ARS 跟踪 |
+1. 所有回归与240完整矩阵通过；无故障≥99%车次在±120s、最大晚点≤300s；故障最后清除后≤3600s恢复；零完整性违例、零死锁。当前未完成认证。
+2. 模块所有权接口全面收敛：现有故障、施工/通信及部分联锁命令仍有跨模块字段写入；不能声称 §3 的禁止直接写入已经完全实现。
+3. 所有 FSM 边逐项守卫行为测试：目前是状态/边可达性、关键模式/EB及回归覆盖，尚非每条边的完整守卫覆盖。
+4. P5 表2 的105/106s追踪、138.6/142.2s转换走行及 §3 X1915/X1917 的184/225s插车路径差别尚未实现为独立能力约束；段内瞬时生成仍为近似。另外两段需来源明确的配线校核。
+5. P3 防护区域目前按相关进路区段近似，未精确复制淞虹路 TD1/TD2 物理边界；TBTC数字轨道电路细分及信标布局仍是文档化近似。
 
-## 注意
+定义完成前不得隐藏以上差距或把抽样结果称为整体稳定化完成。
 
-- 这台机器 4 核，跑一次全日探针约 3–8 min，请放在后台跑。
-- 不要用会匹配到自身命令行的 `pkill -f`（会把当前 shell 杀掉，exit 144）；先查 pid，再 `kill <pid>`。
-- 仓库已迁移到 `SHENGJIE-WANG-4102/ShmetroLine2ATS`（push 时有重定向提示，目前仍能推上去）。
+## 命令
+
+```bash
+npm run build
+npm test
+npm run soak
+npm run replay -- diagnostics.json
+# 与当前运行目录一致的完整矩阵
+SOAK_WORKERS=4 SOAK_PROGRESS=1 SOAK_OUT=tests/out/soak-fixed npm run soak
+# 仅复用同源码哈希且完整通过的单例，失败/变更/部分单例重跑
+SOAK_RESUME=1 SOAK_WORKERS=4 SOAK_PROGRESS=1 SOAK_OUT=tests/out/soak-fixed npm run soak
+# 定位失败（此命令只跑抽样，永不认证）
+SOAK_SEEDS=2 SOAK_FILTER='^weekday-base-2-2$' SOAK_PROGRESS=1 npm run soak
+```
+
+固定0.1s步长，故障05:00后注入、21:00停止，跑到次日03:30。
+最后故障恢复 KPI 不能用运行中间的无故障空档计算。
+`work/` 与 `tests/out/` 已忽略；调试脚本只放 work，不把日志/截图提交。
+CLI 的同步长循环需要 `writeSync` 输出实时进度；异步 stdout/stderr 会延迟至循环结束。
+不要 `pkill -f` 匹配自身 shell，先找精确 pid。

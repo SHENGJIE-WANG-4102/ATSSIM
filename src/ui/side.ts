@@ -7,7 +7,7 @@ import { h, clear } from './dom';
 import type { Store, Selection } from './store';
 import { fmtTime, fmtDelay } from './theme';
 import { CommandPanel, type PanelHooks } from './cmdpanel';
-import { confirmAndSend, toast } from './confirm';
+import { confirmAndSend, toast, showIntegritySnapshot } from './confirm';
 import { FAULT_LABELS } from '../sim/faults';
 import { SCENARIOS, RANDOM_LEVELS } from '../sim/scenario';
 import { STATIONS, LINE_INFO, WEATHER_RULES } from '../data/line2';
@@ -129,7 +129,9 @@ export class SidePanel {
       } },
         h('td', { class: 'mono', style: 'width:120px' }, fmtTime(a.t)),
         h('td', { style: 'width:56px' }, h('span', { class: `lvl ${a.level}` }, a.level)),
-        h('td', { class: 'txt wrap' }, a.text),
+        h('td', { class: 'txt wrap' }, a.text, ...(a.snapshot ? [h('button', {
+          class: 'btn', onclick: (e: Event) => { e.stopPropagation(); showIntegritySnapshot(a.snapshot!); },
+        }, '快照')] : [])),
       );
       this.alarmBody.append(tr);
     }
@@ -406,7 +408,7 @@ export class SidePanel {
   // ---------------------------------------------------------------- replay
   private renderReplayTab() {
     const box = h('div', { class: 'cmd' });
-    box.append(h('div', { class: 'hint' }, '仿真每分钟自动保存检查点（保留最近2小时）。“回退”从检查点重新开始，可重新处置；“回放”按原有调度命令重演，期间下达任何命令即接管。A/B级报警、场景事件自动生成书签。'));
+    box.append(h('div', { class: 'hint' }, '检查点覆盖整个运营日：最近2小时每分钟保存，更早每10分钟保存。“回退”重新处置；“回放”按原有命令重演，下达命令即接管。事件时间线记录各类报警首次发生时刻。'));
     const label = h('input', { type: 'text', placeholder: '书签名称', style: 'flex:1' }) as HTMLInputElement;
     box.append(h('div', { class: 'form' }, label, h('button', { class: 'btn primary', onclick: async () => { const r = await this.store.command({ c: 'bookmark', label: label.value || '手动书签' }); toast(r.msg, r.ok); label.value = ''; this.renderReplay(); } }, '添加书签')));
     box.append(h('div', { class: 'cmdgrid' },
@@ -423,6 +425,12 @@ export class SidePanel {
     clear(this.replayBox);
     const r = snap.replay;
     this.replayBox.append(h('div', { class: 'sect-title' }, `可回退范围 ${fmtTime(r.from, false)} — ${fmtTime(r.to, false)}${r.replaying ? ` · 回放中（待重演命令 ${r.pending}）` : ''}`));
+    this.replayBox.append(h('div', { class: 'sect-title' }, '事件时间线（首次发生）'));
+    for (const incident of snap.incidents) this.replayBox.append(h('div', { class: 'form' },
+      h('span', { class: 'mono' }, fmtTime(incident.t)),
+      h('span', { class: 'hint', style: 'flex:1' }, incident.text),
+      h('button', { class: 'btn', onclick: () => this.hooks.rewind(Math.max(r.from, incident.t), true) }, '定位'),
+    ));
     const tb = h('tbody');
     for (const b of snap.bookmarks.slice().reverse()) {
       const can = b.t - 60 >= r.from - 1;

@@ -13,7 +13,10 @@ npm install
 npm run dev          # http://localhost:5173  (opens at 07:40 on the next weekday)
 npm run build        # type-check + production build into dist/
 npm run preview      # serve the production build
-npm test             # headless simulation tests (full days, faults, commands, features; ~15 min)
+npm test             # headless simulation tests (full days, faults, commands, features)
+npm run soak:quick   # parallel: both days, all templates, seeds 1–2, fault levels 0/3 (24 days)
+npm run soak         # parallel unattended: all 240 days; tests/out/soak/summary.json
+npm run replay -- diagnostics.json  # lossless replay and full snapshot comparison
 ```
 
 URL options: `?t=17:30` sets the start time (the day is simulated from 04:00 at full
@@ -258,11 +261,11 @@ Alarm and call tones (Web Audio, no files). Toggle with the speaker button or **
 
 | Fault | Consequence in the simulation | Recovery |
 |---|---|---|
-| 列车车地通信中断 | ZC loses the train; its sections become non-communicating occupancy, followers stop at the section boundary; the train's MA expires → EB | Driver switches to TBTC/CM after 30 s and runs under section-occupancy protection; upgrades to CBTC/AM when communication returns |
+| 列车车地通信中断 | ZC loses the train; its sections become non-communicating occupancy, followers stop at the section boundary; the train's MA expires → EB | Driver switches to TBTC/ATO after 30 s and runs under section-occupancy protection; upgrades to CBTC/DTO when communication and localization recover |
 | ZC 故障 (one area or whole line) | CBTC trains in the area lose MA and stop; trains outside cannot enter | 切换TBTC (★) → trains run under TBTC fixed block; after repair 恢复CBTC (★); restoring before repair is refused |
 | 计轴区段故障占用 | Section shows fault occupancy; CBTC trains stop before it | Reset is refused until maintenance is done; then 计轴预复位 (★); the first train sweeps it in RM and the section clears. Before that, 授权RM / 引导进路 can pass trains |
 | 道岔失表 | Routes over the switch cannot be set; trains stop at the protecting signal | 单操 attempts fail until repaired; 钩锁确认 (★) then 引导进路 (★) → RM ≤25 km/h; after repair 单操 restores detection, 取消钩锁 |
-| 信号机故障 | Signal cannot clear, its route is cancelled; trains stop at it | 引导进路 (★) per train, RM passage; repair restores automatic routes |
+| 信号机故障 | Signal cannot clear; approach/occupied route locking is retained until safe release; other trains stop at it | 引导进路 (★) per train, RM passage; repair restores automatic routes |
 | 站台门故障 | At the next door close the PSD cannot lock: the train cannot leave and the next train cannot enter | 站台门互锁解除 (★); every train then loses ~25 s for manual confirmation until repaired |
 | 列车故障 | Train stops (EB); followers queue behind it. "Recoverable" clears after driver troubleshooting | Non-recoverable: 组织救援 (★) with the following train → it clears passengers, approaches in RM, couples (≤3 km/h, 60 s), pushes to the next station, clears passengers, returns to depot; remaining trips of both trains are cancelled on the graph |
 | 车站大客流 | Arrival rate ×N at a station: crowding alarm, longer dwells, full trains, delays | Holding, skip-stop, added trains / added-service templates |
@@ -503,7 +506,7 @@ Everything below is plausible but **not** taken from a public source.
   trains.
 * Guide routes stay open 60 s; approach-locked route cancellation is delayed 30 s;
   switches throw in 5 s.
-* Driving modes: AM normal; CM after a per-train communication loss (TBTC level); RM
+* Driving modes: DTO normal; AM/ATO after a per-train communication loss (TBTC level); manual CM retains ATP; RM
   (≤25 km/h, on sight) for guide signals, preset sweeps, dispatcher authorisation and
   rescue coupling. Train-level downgrade takes 30 s of driver action. No unattended
   operation.
@@ -561,8 +564,8 @@ Everything below is plausible but **not** taken from a public source.
 The renderer keeps static geometry in GPU buffers. Per frame it only changes tints,
 visibility and the train layer, and it does so only when a new 20 Hz snapshot arrives or a
 blink phase changes. The train graph caches planned lines in hourly chunks and appends
-actual lines as small batched graphics every 0.6 s. The simulation runs in its worker
-(about 70 s of CPU for a full 24-hour day headless). The frame rate and per-frame update
+actual lines as small batched graphics every 0.6 s. The simulation runs in its worker. Full-day runtime depends on train load and the
+per-tick integrity checks; the earlier 70 s measurement predates those checks. The frame rate and per-frame update
 cost are shown at the top of the graph panel.
 
 Measured in the development container at 3840×2160 during the 08:00 peak (65 trains,
@@ -575,3 +578,49 @@ the on-screen readout in a hardware-accelerated browser.
 ## License
 
 AGPL-3.0, see [LICENSE](LICENSE).
+
+
+## Stabilization validation
+
+The runtime checks every 0.1 s for overlap, issued-MA overrun, unlocked routes,
+points moving under load, EB acceleration, overspeed and illegal FSM changes.
+Faults, holds and planned layovers are distinguished in the stop reason and wait graph.
+Diagnostics exports include the complete plan, input timeline and immutable alarm history.
+The planning preview validates the same candidate plan used at confirmation.
+
+Full certification requires 2 day types × 3 templates × 4 fault levels × 10 seeds.
+Fault-free cases require at least 99% of completed revenue trips within ±120 s and
+no arrival more than 300 s late; fault cases must recover within 3600 s after the
+last cleared fault once injection ends. A filtered run is never certified.
+
+**Status: certification pending.** Current results and remaining paper/model gaps
+are recorded in `docs/HANDOVER.md` and `docs/signalling-model.md`; unit-test or
+subset success does not establish that the complete stabilization pass is finished.
+
+`soak:quick` runs **24 complete service days**: weekday/weekend × base/ciie/hongqiao
+× fault-free/highest difficulty × seeds 1–2, using the same checks as the full run.
+Quick results go to `tests/out/soak-quick/summary.json` and never count as full certification.
+
+Both runners use parallel child processes (default 2–4 workers, according to CPU
+availability), continue through all cases after failures, and return a nonzero exit
+code if any case fails. Each case saves JSON results. Every simulation failure
+has a lossless replay bundle (`*-diagnostics.json`) and report (`*-failure.json`).
+For a crashed/timed-out worker the runner preserves its latest checkpoint; the
+report identifies the process exit or timeout. A worker that cannot initialize
+has a process failure bundle with stderr and `stateUnavailable: true`.
+The summary is replaced atomically after each result; the default wall timeout
+is 60 minutes per case.
+
+Run the full matrix overnight, with four workers and a persistent log:
+
+```bash
+mkdir -p tests/out
+nohup env SOAK_WORKERS=4 npm run soak > tests/out/soak.log 2>&1 &
+```
+
+Options: `SOAK_WORKERS=N`, `SOAK_OUT=directory`, `SOAK_TIMEOUT_MS=milliseconds`,
+`SOAK_RESUME=1` (reuse only complete passing cases with an identical model hash),
+`SOAK_FAIL_FAST=1` (optional), and `SOAK_PROGRESS=0` (quiet worker progress).
+`SOAK_SEEDS` and `SOAK_FILTER` support focused full-run debugging;
+filtered/incomplete results cannot be certified. A directory lock prevents
+concurrent writers. Stale locks recover automatically once their process exits.

@@ -348,6 +348,9 @@ export class CommandPanel {
       return [
         ['目的地', t.dest || '—'], ['方向', dir === 'DN' ? '下行' : '上行'],
         ['当前任务', t.task], ['晚点', t.inService ? fmtDelay(t.delay) : '非载客', t.delay > 300 ? 'bad' : t.delay > 120 ? 'warn' : ''],
+        ['停车原因', t.halt ? `${t.halt.label}${t.halt.blocker ? `（${t.halt.blocker}）` : ''} [${t.halt.code}] ${t.halt.detail}` : '—'],
+        ['折返阶段', ({ none: '—', arrive: '牵入', reverse: '换端', manual: '待司机牵出', depart: '牵出' })[t.tbStage]],
+        ['出入段阶段', ({ none: '—', out: '出段', in: '入段' })[t.depotStage]],
         ['满载率', `${Math.round((t.load / LINE_INFO.capacity) * 100)}%`, t.load > LINE_INFO.capacity ? 'warn' : ''], ['里程', `K${(t.chain / 1000).toFixed(3)}`],
       ];
     }, () => {

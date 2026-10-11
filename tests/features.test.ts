@@ -103,8 +103,7 @@ describe('manual driving', () => {
   it('RM is capped at 25 km/h and never closes up on the train ahead', () => {
     const sim = makeSim('weekday', H);
     const tr = sim.trainList.find((t) => t.phase === 'dwell' && t.inService && dirOf(sim, t) === 'UP' && sim.trainChain(t) > 9000)!;
-    runFor(sim, 1);
-    // wait until it is about to leave, then take over in RM
+    // Take over while it is still stopped; advancing can start departure.
     expect(sim.command({ c: 'manual', train: tr.id, mode: 'RM' }).ok).toBe(true);
     tr.notch = 4;
     let maxV = 0;

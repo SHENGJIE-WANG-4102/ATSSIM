@@ -72,6 +72,15 @@ function answerCalls(sim: Sim) {
     if (c.state !== 'ringing' || sim.t - c.t < REACT) continue;
     const tr = c.train !== undefined ? sim.trains.get(c.train) : undefined;
     switch (c.kind) {
+      case 'turnback':
+        if (tr && !unsafeAhead(sim, tr)) cmd(sim, { c: 'radio', call: c.id, option: 'rm' });
+        break;
+      case 'ebRelease':
+        // Following a SPAD, a human-equivalent investigation and an explicit
+        // bounded instruction are required. Radio auto-answer still waits.
+        if (tr?.ebCause === 'spad' && !unsafeAhead(sim, tr) && due(sim, `spad-${tr.id}`, 60))
+          cmd(sim, { c: 'radio', call: c.id, option: 'rm' });
+        break;
       case 'rmPreset':
         if (tr && !unsafeAhead(sim, tr)) cmd(sim, { c: 'radio', call: c.id, option: 'approve' });
         break;
@@ -109,6 +118,10 @@ function switchProcedures(sim: Sim) {
       // maintenance done: cancel routes still locked over it (none entered), release the
       // field lock and throw the switch to restore detection
       if (!due(sim, `swr-${i}`, 30)) continue;
+      // Re-prove the existing physical position after maintenance. This does
+      // not move a point and remains safe while its route/section is occupied.
+      // Waiting to cancel that route first traps the train in front of the point.
+      if (st.target === st.pos && cmd(sim, { c: 'switchMove', sw: i, pos: st.pos }).ok) continue;
       if (st.lockCount > 0) {
         for (const [rid, ar] of sim.routes) {
           if (ar.entered || ar.state !== 'locked' || !topo.routes[rid].switches.some((x) => x.sw === i)) continue;

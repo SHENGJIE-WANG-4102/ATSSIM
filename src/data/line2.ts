@@ -270,8 +270,9 @@ export interface DepotDef {
 export const LAYOUT = {
   /** terminal tail tracks with scissors crossovers (站后折返) */
   tails: [
-    { station: 0, side: 'west', length: 300 },
-    { station: 30, side: 'east', length: 300 },
+    // Assumed usable rescue length: two 186 m consists plus stopping margin.
+    { station: 0, side: 'west', length: 450 },
+    { station: 30, side: 'east', length: 450 },
   ] as TailDef[],
   /** middle turnback / storage sidings (尽头折返线) */
   sidings: [

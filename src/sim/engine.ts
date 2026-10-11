@@ -6,18 +6,18 @@
 import { buildTopology, linkChain, type Topology } from './topology';
 import { computeRunTimes, type RunTimes } from './dynamics';
 import {
-  generatePlan, applyOverlay, addExtraTrain, OVERLAY_PRESETS, type PlanContext,
+  generatePlan, type PlanContext,
 } from './timetable';
 import type {
   ActiveRoute, AlarmLevel, Command, DayType, Fault, Plan, PlatformState, SectionState, SignalState, SimConfig,
   SimEvent, Snapshot, SwitchState, Train, TrainSnap, ZoneState, StopTask, RadioCall, Possession, EnvState, YardState,
-  Metrics, ScenarioState, ScenarioReport, StopScore, Bookmark,
+  Metrics, ScenarioState, ScenarioReport, StopScore, Bookmark, Incident,
 } from './model';
 import { SEC, SW, SIGF, PLT, SIG_ASPECT } from './model';
 import {
   computeOccupancy, updateInterlocking, trySetRoute, cancelRoute, moveSwitch, sectionUnlock, signalPassed, type CmdResult,
 } from './interlocking';
-import { updateTrainMotion, indexBodies, refreshAuthority } from './movement';
+import { updateTrainMotion, indexBodies, refreshAuthority, withdrawAuthority } from './movement';
 import {
   buildRouteTable, type RouteTable, spawnDue, updateTrainTasks, runARS, driverRM, recordTrace,
   cmdTrainHold, cmdSkip, cmdTurnback, cmdWithdraw, cmdAuthRM, cmdRescue, trainLabel,
@@ -31,12 +31,15 @@ import { newMetrics, scenarioTick, startScenario, endScenario, randomTick, setRa
 import { computePis } from './pis';
 import { computeDmi, dmiTick } from './dmi';
 import { passengersTick } from './passengers';
-import { injectFault, repairFault, faultsTick, FAULT_LABELS } from './faults';
-import { updateOnboard, setManual, cmdTrainLevel, authoriseEBRelease } from './onboard';
+import { injectFault, repairFault, faultsTick, FAULT_LABELS, faultProcedure, updateFaultLifecycle } from './faults';
+import { updateOnboard, setManual, cmdTrainLevel, authoriseEBRelease, turnbackSignalPassed } from './onboard';
 import { psdTick, psdOpen, setBypass } from './psd';
 import { updateHalts, HALT } from './halt';
 import { newIntegrity, checkSafety, checkLiveness, type IntegrityState } from './invariants';
 import { LINE_INFO, STATIONS } from '../data/line2';
+import { validateCommand } from './commands';
+import { preparePlan } from './planning';
+import type { RecordedInput } from './diagnostics';
 
 export const FIXED_DT = 0.1;
 
@@ -139,6 +142,7 @@ export class Sim {
   drivingStops: StopScore[] = [];
   bookmarks: Bookmark[] = [];
   nextBookmarkId = 1;
+  incidents = new Map<string, Incident>();
   pisStation = -1;
   /** train whose cab DMI is open in the UI, -1 none */
   dmiTrain = -1;
@@ -146,6 +150,16 @@ export class Sim {
   planRev = 0;
   stepsThisSecond = 0;
   stepsPerSec = 0;
+  inputLog: RecordedInput[] = [];
+  replaying = false;
+
+  drive(train: number, notch: number) {
+    const tr = this.trains.get(train);
+    if (!tr?.manual || !Number.isFinite(notch)) return false;
+    tr.notch = Math.max(-8, Math.min(4, Math.round(notch)));
+    if (!this.replaying) this.inputLog.push({ t: this.t, drive: { train, notch: tr.notch } });
+    return true;
+  }
 
   constructor(config: SimConfig) {
     this.config = config;
@@ -165,7 +179,8 @@ export class Sim {
     this.plan = generatePlan(this.planCtx);
     const { topo } = this;
     this.sw = topo.switches.map(() => ({ pos: 'N', target: 'N', moveUntil: 0, failed: false, fieldLock: false, singleLock: false, lockCount: 0, blocked: false }));
-    this.sec = topo.sections.map(() => ({ occ: false, trainOcc: false, commOnly: false, disturbed: false, preset: false, presetSeen: false, lockRoute: -1, tsr: 0, blocked: false, poss: -1, envTsr: 0 }));
+    this.sec = topo.sections.map(() => ({ occ: false, trainOcc: false, commOnly: false, disturbed: false, preset: false, presetSeen: false, lockRoute: -1, tsr: 0, blocked: false, poss: -1, envTsr: 0,
+      td: 0, tdRoute: -1, tdTrain: -1, directionEsp: false }));
     this.sig = topo.signals.map(() => ({ aspect: 'R', route: -1, failed: false, ars: true, autoPass: true }));
     this.plat = topo.platforms.map(() => ({ hold: false, skip: false, esp: false, psd: 'closed', psdFault: false, psdBypass: false, psdLinkFault: false, psdTrain: -1, waiting: 0, surge: 1, stranded: 0, lastDep: 0, lastArr: 0, limitUntil: 0 }));
     this.zoneState = topo.zones.map(() => 'CBTC');
@@ -247,16 +262,19 @@ export class Sim {
     for (const c of this.calls) if (c.state === 'ringing' && c.train === tr.id) c.state = 'withdrawn';
   }
 
-  log(level: AlarmLevel, cat: string, text: string, opts: { key?: string; manual?: boolean; code?: string; train?: number } = {}) {
+  log(level: AlarmLevel, cat: string, text: string, opts: { key?: string; manual?: boolean; code?: string; train?: number; snapshot?: import('./invariants').DiagSnapshot } = {}) {
     if (opts.key && this.alarms.has(opts.key)) return;
     const ev: SimEvent = { id: this.nextEventId++, t: this.t, level, cat, text, manual: opts.manual };
     if (opts.code) ev.code = opts.code;
     if (opts.train !== undefined) ev.train = opts.train;
+    if (opts.snapshot) ev.snapshot = opts.snapshot;
     if (opts.key && level !== 'I') {
       ev.alarm = true;
       ev.key = opts.key;
       ev.ack = false;
       this.alarms.set(opts.key, ev);
+      const type = opts.code ?? opts.key.replace(/-(-?\d+)$/, '');
+      if (!this.incidents.has(type)) this.incidents.set(type, { type, t: this.t, eventId: ev.id, text });
       this.alarmsDirty = true;
       if (level === 'A' || level === 'B') this.bookmark(text, true);
     }
@@ -268,10 +286,18 @@ export class Sim {
   clearAlarm(key: string) {
     const a = this.alarms.get(key);
     if (!a) return;
-    a.cleared = this.t;
+    this.replaceEvent(a.id, { ...a, cleared: this.t });
     this.alarms.delete(key);
     this.alarmsDirty = true;
-    this.newEvents.push({ id: this.nextEventId++, t: this.t, level: 'I', cat: a.cat, text: `【恢复】${a.text}` });
+    this.log('I', a.cat, `【恢复】${a.text}`);
+  }
+
+  /** Published events are immutable so checkpoints can share their history. */
+  private replaceEvent(id: number, event: SimEvent) {
+    const index = this.events.findIndex(e => e.id === id);
+    if (index >= 0) this.events[index] = event;
+    const pending = this.newEvents.findIndex(e => e.id === id);
+    if (pending >= 0) this.newEvents[pending] = event;
   }
 
   trainChain(tr: Train): number {
@@ -285,6 +311,7 @@ export class Sim {
 
   onSignalPassed(tr: Train, sig: number) {
     signalPassed(this, tr.id, sig);
+    turnbackSignalPassed(this, tr, sig);
   }
 
   // ------------------------------------------------------------ stepping
@@ -297,7 +324,13 @@ export class Sim {
     indexBodies(this);
     computeOccupancy(this);
     updateInterlocking(this);
-    for (const tr of this.trainList.slice()) updateTrainTasks(this, tr);
+    for (const tr of this.trainList.slice()) {
+      const phase = tr.phase;
+      updateTrainTasks(this, tr);
+      // A departure may occur between ZC refreshes. Do not carry a dwell-time
+      // authority into running after the task (and therefore its route) changed.
+      if (phase !== 'run' && tr.phase === 'run') withdrawAuthority(this, tr);
+    }
     this.stepsThisSecond++;
     this.secAcc += dt;
     if (this.secAcc >= 1 - 1e-9) {
@@ -323,6 +356,7 @@ export class Sim {
     dmiTick(this);
     scenarioTick(this);
     randomTick(this);
+    updateFaultLifecycle(this);
     updateHalts(this);
     if (this.checkIntegrity) checkLiveness(this);
     for (const tr of this.trainList) {
@@ -360,7 +394,14 @@ export class Sim {
 
   /** a dispatcher command; `by` names a non-human issuer (自动调度) in the log */
   command(cmd: Command, by?: string): CmdResult {
+    if (!by && !this.replaying) this.inputLog.push({ t: this.t, cmd: structuredClone(cmd) });
+    const error = validateCommand(this, cmd);
+    if (error) {
+      this.log('C', '调度', `命令拒绝：${error}`, { manual: !by });
+      return { ok: false, msg: error };
+    }
     const r = this.execCommand(cmd);
+    if (r.ok) faultProcedure(this, cmd);
     const text = describeCommand(this, cmd);
     this.log(r.ok ? 'I' : 'C', '调度', `${by ? `【${by}】` : ''}${text}：${r.msg}`, { manual: !by });
     return r;
@@ -455,23 +496,15 @@ export class Sim {
         if (!f || !r) return { ok: false, msg: '列车不存在' };
         return cmdRescue(this, f, r);
       }
-      case 'addTrain': {
-        if (cmd.time < this.t + 120) return { ok: false, msg: '出段时刻须晚于当前时刻2分钟以上' };
-        if (this.depotStock[cmd.depot] <= 0) return { ok: false, msg: `${topo.depots[cmd.depot].name} 无可用车辆` };
-        const b = addExtraTrain(this.planCtx, this.plan, cmd.depot, cmd.dir, cmd.to, cmd.time);
-        if (typeof b === 'string') return { ok: false, msg: b };
-        this.planDirty = true;
-        return { ok: true, msg: `加开列车 表号${b.svc}：${topo.depots[cmd.depot].name} 出段 → ${STATIONS[cmd.to].name} 折返 → 回段` };
-      }
+      case 'addTrain':
       case 'overlay': {
-        const p = OVERLAY_PRESETS.find((x) => x.id === cmd.id);
-        if (!p) return { ok: false, msg: '无此加开模板' };
-        if (cmd.from < this.t + 600) return { ok: false, msg: '加开开始时刻须晚于当前时刻10分钟以上' };
-        const r = applyOverlay(this.planCtx, this.plan, { ...p, from: cmd.from, to: cmd.to, headway: cmd.headway });
+        const preview = preparePlan(this, cmd);
+        if (!preview.ok) return { ok: false, msg: preview.msg };
+        this.plan = preview.plan;
         this.planDirty = true;
-        const short = r.skipped ? `；另有 ${r.skipped} 个车次因追踪间隔或折返能力不足未安排` : '';
-        if (r.skipped) this.log('C', '运营', `${p.label}：${r.skipped} 个加开车次无法安排（高峰追踪间隔 / 折返线能力），已不开行`);
-        return { ok: true, msg: `${p.label}：新增 ${r.trips} 个车次、${r.blocks} 列车底${short}` };
+        this.planRev++;
+        if (preview.skipped) this.log('C', '运营', preview.msg);
+        return { ok: true, msg: preview.msg };
       }
       case 'zoneLevel': {
         const names: string[] = [];
@@ -490,7 +523,11 @@ export class Sim {
         return { ok: true, msg: `${names.join('、') || '所选区域'} 切换至 ${cmd.level}` };
       }
       case 'ack': {
-        for (const a of this.alarms.values()) if (cmd.ids.includes(a.id)) a.ack = true;
+        for (const [key, a] of this.alarms) if (cmd.ids.includes(a.id)) {
+          const updated = { ...a, ack: true };
+          this.alarms.set(key, updated);
+          this.replaceEvent(a.id, updated);
+        }
         this.alarmsDirty = true;
         return { ok: true, msg: `确认报警 ${cmd.ids.length} 条` };
       }
@@ -611,6 +648,7 @@ export class Sim {
       return {
         id: tr.id, vehicle: tr.vehicle, svc: tr.svc, trip: tr.tripNo, dest: tr.destText, link: tr.link, off: tr.off, dir: tr.dir,
         body, v: tr.v, level: tr.level, comm: tr.comm, mode: tr.mode, eb: tr.eb, phase: tr.phase, delay: tr.delay,
+        tbStage: tr.tbStage, depotStage: tr.depotStage,
         load: tr.load, hold: tr.hold, failed: tr.failed, doors: tr.doorsOpen, inService: tr.inService, chain: this.trainChain(tr),
         maReason: tr.maReason, maDist: tr.maDist, vPermit: tr.vPermit, nextSig: tr.nextSignal,
         task: t0 ? describeTask(this, t0) : '—', kind: tr.tripId >= 0 ? this.plan.trips[tr.tripId].kind : '',
@@ -654,6 +692,7 @@ export class Sim {
       metrics: this.metrics,
       replay: { from: 0, to: 0, replaying: false, pending: 0 },
       bookmarks: this.bookmarks.slice(-60),
+      incidents: [...this.incidents.values()],
     };
   }
 }
