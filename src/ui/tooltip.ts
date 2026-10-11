@@ -57,7 +57,8 @@ export class Tooltip {
       this.el.append(h('div', { class: 'tt' }, `${t.svc}-${t.trip}  ${t.vehicle}`),
         this.row('目的地', t.dest || '—'), this.row('速度', `${(t.v * 3.6).toFixed(0)} km/h`), this.row('模式/级别', `${t.mode} / ${t.level}${t.comm ? '' : ' 通信中断'}`),
         this.row('晚点', t.inService ? fmtDelay(t.delay) : '非载客'), this.row('满载率', `${Math.round((t.load / LINE_INFO.capacity) * 100)}%`), this.row('任务', t.task),
-        ...(t.maReason ? [this.row('移动授权', `${t.maReason} ${Math.round(t.maDist)}m`)] : []));
+        ...(t.maReason ? [this.row('移动授权', `${t.maReason} ${Math.round(t.maDist)}m`)] : []),
+        ...(t.halt ? [this.row('停车原因', `${t.halt.label}${t.halt.blocker ? `（${t.halt.blocker}）` : ''} [${t.halt.code}] ${Math.round((snap.t - t.halt.since) / 60)}分`)] : []));
     } else if (hov.kind === 'signal') {
       const s = topo.signals[hov.id];
       const r = snap.activeRoutes.find((x) => topo.routes[x].start === hov.id);

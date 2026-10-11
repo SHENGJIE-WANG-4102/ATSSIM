@@ -19,18 +19,23 @@ import {
 } from './interlocking';
 import { updateTrainMotion, indexBodies, refreshAuthority } from './movement';
 import {
-  buildRouteTable, type RouteTable, spawnDue, updateTrainTasks, runARS, updateLevels, driverRM, recordTrace,
+  buildRouteTable, type RouteTable, spawnDue, updateTrainTasks, runARS, driverRM, recordTrace,
   cmdTrainHold, cmdSkip, cmdTurnback, cmdWithdraw, cmdAuthRM, cmdRescue, trainLabel,
 } from './ats';
 import { stopError } from './movement';
 import { initYards, vehicleName } from './yard';
 import { radioTick, answerCall, type CallSpec } from './radio';
+import { dispatcherTick, newDispatcher, type DispatcherState } from './dispatcher';
 import { exposureOf, envTick, initPossessions, setWeather } from './env';
 import { newMetrics, scenarioTick, startScenario, endScenario, randomTick, setRandomFaults } from './scenario';
 import { computePis } from './pis';
 import { computeDmi, dmiTick } from './dmi';
 import { passengersTick } from './passengers';
 import { injectFault, repairFault, faultsTick, FAULT_LABELS } from './faults';
+import { updateOnboard, setManual, cmdTrainLevel, authoriseEBRelease } from './onboard';
+import { psdTick, psdOpen, setBypass } from './psd';
+import { updateHalts, HALT } from './halt';
+import { newIntegrity, checkSafety, checkLiveness, type IntegrityState } from './invariants';
 import { LINE_INFO, STATIONS } from '../data/line2';
 
 export const FIXED_DT = 0.1;
@@ -115,6 +120,13 @@ export class Sim {
   nextCallId = 1;
   pendingCalls: { at: number; spec: CallSpec }[] = [];
   autoRadio = true;
+  /** automatic dispatcher (soak / probe runs): works the recovery procedures through dispatcher commands */
+  autoDispatch = false;
+  dispatcher: DispatcherState = newDispatcher();
+  /** integrity checker state (invariants.ts) */
+  integrity: IntegrityState = newIntegrity();
+  /** run the invariant checks (on by default; the perf budget includes them) */
+  checkIntegrity = true;
   env: EnvState = { wind: 0, rain: false, windUntil: 0, rainUntil: 0 };
   exposure: Uint8Array;
   possessions: Possession[] = [];
@@ -147,6 +159,7 @@ export class Sim {
     this.routeTable = sharedTable!;
     this.rngState = config.seed >>> 0;
     this.autoRadio = config.autoRadio ?? true;
+    this.autoDispatch = config.autoDispatch ?? false;
     this.metrics = newMetrics(config.startTime);
     this.planCtx = { topo: this.topo, rt: this.rt, dayType: config.dayType };
     this.plan = generatePlan(this.planCtx);
@@ -154,7 +167,7 @@ export class Sim {
     this.sw = topo.switches.map(() => ({ pos: 'N', target: 'N', moveUntil: 0, failed: false, fieldLock: false, singleLock: false, lockCount: 0, blocked: false }));
     this.sec = topo.sections.map(() => ({ occ: false, trainOcc: false, commOnly: false, disturbed: false, preset: false, presetSeen: false, lockRoute: -1, tsr: 0, blocked: false, poss: -1, envTsr: 0 }));
     this.sig = topo.signals.map(() => ({ aspect: 'R', route: -1, failed: false, ars: true, autoPass: true }));
-    this.plat = topo.platforms.map(() => ({ hold: false, skip: false, esp: false, psd: 'closed', psdFault: false, psdBypass: false, waiting: 0, surge: 1, stranded: 0, lastDep: 0, lastArr: 0, limitUntil: 0 }));
+    this.plat = topo.platforms.map(() => ({ hold: false, skip: false, esp: false, psd: 'closed', psdFault: false, psdBypass: false, psdLinkFault: false, psdTrain: -1, waiting: 0, surge: 1, stranded: 0, lastDep: 0, lastArr: 0, limitUntil: 0 }));
     this.zoneState = topo.zones.map(() => 'CBTC');
     this.exposure = exposureOf(this);
     this.depotStock = this.initialDepotStock();
@@ -229,7 +242,7 @@ export class Sim {
     this.trainList = this.trainList.filter((x) => x.id !== tr.id);
     for (const [b, t] of this.berthRes) if (t === tr.id) this.berthRes.delete(b);
     for (const k of ['eb', 'comm', 'tf', 'tfr', 'spad', 'late']) this.clearAlarm(`${k}-${tr.id}`);
-    for (const c of this.calls) if (c.state === 'ringing' && c.train === tr.id) c.state = 'expired';
+    for (const c of this.calls) if (c.state === 'ringing' && c.train === tr.id) c.state = 'withdrawn';
   }
 
   log(level: AlarmLevel, cat: string, text: string, opts: { key?: string; manual?: boolean; code?: string; train?: number } = {}) {
@@ -290,21 +303,26 @@ export class Sim {
       this.secAcc = 0;
       this.secondTick(acc);
     }
+    if (this.checkIntegrity) checkSafety(this);
   }
 
   private secondTick(dt: number) {
     refreshAuthority(this);
     spawnDue(this);
-    updateLevels(this);
+    updateOnboard(this);
+    psdTick(this);
     driverRM(this);
     runARS(this);
     passengersTick(this, dt);
     faultsTick(this);
     envTick(this);
+    dispatcherTick(this);
     radioTick(this);
     dmiTick(this);
     scenarioTick(this);
     randomTick(this);
+    updateHalts(this);
+    if (this.checkIntegrity) checkLiveness(this);
     for (const tr of this.trainList) {
       recordTrace(this, tr);
       this.trackDelay(tr);
@@ -338,10 +356,11 @@ export class Sim {
 
   // ------------------------------------------------------------ commands
 
-  command(cmd: Command): CmdResult {
+  /** a dispatcher command; `by` names a non-human issuer (自动调度) in the log */
+  command(cmd: Command, by?: string): CmdResult {
     const r = this.execCommand(cmd);
     const text = describeCommand(this, cmd);
-    this.log(r.ok ? 'I' : 'C', '调度', `${text}：${r.msg}`, { manual: true });
+    this.log(r.ok ? 'I' : 'C', '调度', `${by ? `【${by}】` : ''}${text}：${r.msg}`, { manual: !by });
     return r;
   }
 
@@ -420,17 +439,14 @@ export class Sim {
         else this.clearAlarm(`esp-${cmd.platform}`);
         return { ok: true, msg: `${topo.platforms[cmd.platform].name} ${cmd.on ? '紧急关闭' : '取消紧急关闭'}` };
       }
-      case 'psdBypass': {
-        const p = this.plat[cmd.platform];
-        p.psdBypass = cmd.on;
-        if (cmd.on) this.clearAlarm(`psd-${cmd.platform}`);
-        return { ok: true, msg: `${topo.platforms[cmd.platform].name} 站台门互锁${cmd.on ? '解除' : '恢复'}` };
-      }
+      case 'psdBypass': return setBypass(this, cmd.platform, cmd.on);
       case 'trainHold': return this.withTrain(cmd.train, (tr) => cmdTrainHold(this, tr, cmd.on));
       case 'trainSkip': return this.withTrain(cmd.train, (tr) => cmdSkip(this, tr, cmd.station, cmd.on));
       case 'turnback': return this.withTrain(cmd.train, (tr) => cmdTurnback(this, tr, cmd.station));
       case 'withdraw': return this.withTrain(cmd.train, (tr) => cmdWithdraw(this, tr));
-      case 'authRM': return this.withTrain(cmd.train, (tr) => cmdAuthRM(this, tr));
+      case 'authRM': return this.withTrain(cmd.train, (tr) => cmdAuthRM(this, tr, cmd.signal));
+      case 'ebRelease': return this.withTrain(cmd.train, (tr) => authoriseEBRelease(this, tr, '调度'));
+      case 'trainLevel': return this.withTrain(cmd.train, (tr) => cmdTrainLevel(this, tr, cmd.level));
       case 'rescue': {
         const f = this.trains.get(cmd.failed);
         const r = this.trains.get(cmd.rescuer);
@@ -466,17 +482,7 @@ export class Sim {
             if (cur !== 'CBTC') { this.zoneState[z] = 'CBTC'; names.push(topo.zones[z].key); }
           }
         }
-        if (cmd.level === 'TBTC') {
-          // trains inside switch level after the driver confirms
-          for (const tr of this.trainList) {
-            if (cmd.zones.includes(topo.links[tr.link].zone) && tr.level === 'CBTC') {
-              tr.pendingLevel = 'TBTC';
-              tr.pendingMode = tr.comm ? 'AM' : 'CM';
-              tr.pendingModeAt = this.t + (tr.v < 0.1 ? 20 : 0);
-              tr.eb = false;
-            }
-          }
-        }
+        // trains inside degrade at their next station stop / upgrade on the move (onboard.ts)
         return { ok: true, msg: `${names.join('、') || '所选区域'} 切换至 ${cmd.level}` };
       }
       case 'ack': {
@@ -500,7 +506,7 @@ export class Sim {
       case 'switchBlock':
         this.sw[cmd.sw].blocked = cmd.on;
         return { ok: true, msg: `道岔 ${topo.switches[cmd.sw].name} ${cmd.on ? '封锁（不能办理经过该道岔的进路）' : '解封'}` };
-      case 'manual': return this.withTrain(cmd.train, (tr) => this.setManual(tr, cmd.mode));
+      case 'manual': return this.withTrain(cmd.train, (tr) => setManual(this, tr, cmd.mode));
       case 'radio': return answerCall(this, cmd.call, cmd.option);
       case 'radioAuto':
         this.autoRadio = cmd.on;
@@ -516,30 +522,6 @@ export class Sim {
         return { ok: true, msg: `已添加书签 ${b.label}` };
       }
     }
-  }
-
-  /** dispatcher hands a train to manual driving (CM/RM) or back to ATO (AM) */
-  setManual(tr: Train, mode: 'CM' | 'RM' | 'AM'): CmdResult {
-    if (tr.failed) return { ok: false, msg: '列车故障中' };
-    if (tr.phase === 'stabled') return { ok: false, msg: '列车已存车' };
-    if (mode === 'AM') {
-      if (!tr.manual) return { ok: false, msg: '列车未处于人工驾驶' };
-      if (tr.v > 0.1 && tr.mode === 'RM') return { ok: false, msg: 'RM 转 AM 须停车后进行' };
-      tr.manual = false;
-      tr.notch = 0;
-      tr.mode = tr.comm || tr.level === 'TBTC' ? (tr.comm ? 'AM' : 'CM') : 'CM';
-      tr.rmAuth = 0;
-      return { ok: true, msg: `列车 ${trainLabel(tr)} 恢复 ${tr.mode} 自动驾驶` };
-    }
-    if (mode === 'RM' && tr.v > 0.1) return { ok: false, msg: '转RM模式须先停车' };
-    if (mode === 'CM' && tr.level === 'CBTC' && !tr.comm) return { ok: false, msg: '车地通信中断，无ATP防护，只能以RM模式驾驶' };
-    if (mode === 'CM' && this.zoneState[this.topo.links[tr.link].zone] === 'ZCFAIL' && tr.level === 'CBTC') return { ok: false, msg: 'ZC故障区域无移动授权，只能以RM模式驾驶' };
-    tr.manual = true;
-    tr.mode = mode;
-    tr.notch = tr.v > 0.1 ? 0 : -7;
-    tr.rmAuth = 0;
-    tr.drv = { stops: [], overspeed: 0, spad: 0, since: this.t };
-    return { ok: true, msg: `列车 ${trainLabel(tr)} 转人工驾驶 ${mode}${mode === 'RM' ? '（≤25km/h，目视行车）' : '（ATP防护）'}` };
   }
 
   private withTrain(id: number, fn: (tr: Train) => CmdResult): CmdResult {
@@ -607,7 +589,7 @@ export class Sim {
       if (p.hold) f |= PLT.HOLD;
       if (p.skip) f |= PLT.SKIP;
       if (p.esp) f |= PLT.ESP;
-      if (p.psd === 'open') f |= PLT.PSDOPEN;
+      if (psdOpen(p)) f |= PLT.PSDOPEN;
       if (p.psdFault) f |= PLT.PSDFAULT;
       if (p.psdBypass) f |= PLT.BYPASS;
       if (p.surge > 1) f |= PLT.SURGE;
@@ -633,6 +615,10 @@ export class Sim {
         stopDist: Number.isFinite(tr.stopDist) ? tr.stopDist : -1, a: tr.a, manual: tr.manual, notch: tr.notch,
         dwellLeft: tr.phase === 'dwell' || tr.phase === 'reversing' ? Math.max(0, tr.dwellUntil - this.t) : 0,
         nextStation: nextStopStation(tr), ebReason: tr.eb ? tr.ebReason : tr.stopUntil > this.t ? tr.stopReason : '',
+        halt: tr.halt.code === 'NONE' ? null : {
+          code: tr.halt.code, label: HALT[tr.halt.code].label, detail: tr.halt.detail, since: tr.halt.since,
+          blocker: tr.halt.train >= 0 ? (() => { const o = this.trains.get(tr.halt.train); return o ? `${o.svc}-${o.tripNo}` : ''; })() : '',
+        },
         stopErr: stopError(this, tr), drv: tr.manual || tr.drv.stops.length ? tr.drv : null, len: tr.len,
       };
     });
@@ -707,7 +693,9 @@ export function describeCommand(sim: Sim, cmd: Command): string {
     case 'trainSkip': return `跳停 ${tn(cmd.train)} ${STATIONS[cmd.station].name}`;
     case 'turnback': return `人工折返 ${tn(cmd.train)} @${STATIONS[cmd.station].name}`;
     case 'withdraw': return `退出服务 ${tn(cmd.train)}`;
-    case 'authRM': return `授权RM ${tn(cmd.train)}`;
+    case 'authRM': return `授权RM ${tn(cmd.train)}${cmd.signal !== undefined ? ` 越过 ${topo.signals[cmd.signal].name}` : ''}`;
+    case 'ebRelease': return `授权缓解紧急制动 ${tn(cmd.train)}`;
+    case 'trainLevel': return `列车控制级别 ${tn(cmd.train)} → ${cmd.level === 'AUTO' ? '自动' : cmd.level}`;
     case 'rescue': return `组织救援 ${tn(cmd.rescuer)}→${tn(cmd.failed)}`;
     case 'addTrain': return `加开列车 ${topo.depots[cmd.depot].short}`;
     case 'overlay': return '加开运行图';
@@ -717,7 +705,7 @@ export function describeCommand(sim: Sim, cmd: Command): string {
     case 'repair': return '【教员】故障修复';
     case 'sectionBlock': return `区段${cmd.on ? '封锁' : '解封'} ${cmd.sections.map((x) => topo.sections[x].name).join('、')}`;
     case 'switchBlock': return `道岔${cmd.on ? '封锁' : '解封'} ${topo.switches[cmd.sw].name}`;
-    case 'manual': return `${cmd.mode === 'AM' ? '恢复自动驾驶' : `人工驾驶${cmd.mode}`} ${tn(cmd.train)}`;
+    case 'manual': return `${cmd.mode === 'AUTO' ? '恢复自动驾驶' : `人工驾驶${cmd.mode}`} ${tn(cmd.train)}`;
     case 'radio': return '通话应答';
     case 'radioAuto': return '通话应答方式';
     case 'env': return '【教员】环境设置';

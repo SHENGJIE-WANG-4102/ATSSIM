@@ -9,6 +9,7 @@
 import type { Sim } from './engine';
 import type { Train, Block } from './model';
 import { indexBodies } from './movement';
+import { resetObservation } from './invariants';
 
 export interface Checkpoint {
   t: number;
@@ -25,12 +26,12 @@ export interface Checkpoint {
 const CLONED = [
   'sw', 'sec', 'sig', 'plat', 'zoneState', 'routes', 'routeUnlockedSw', 'berthRes', 'depotStock', 'depotShortLogged', 'blockDone',
   'faults', 'alarms', 'noRouteLogged', 'truncatedTrips', 'yards', 'stabledPool', 'calls', 'pendingCalls', 'env', 'possessions',
-  'metrics', 'scenario',
+  'metrics', 'scenario', 'dispatcher',
 ] as const;
 
 const SCALARS = [
   'nextTrainId', 'nextFaultId', 'passengersServed', 'passengersCleared', 'passengersStranded', 'depTotal', 'depOnTime', 'tripsDone',
-  'nextCallId', 'autoRadio', 'scenarioFired', 'randomLevel', 'nextRandomAt',
+  'nextCallId', 'autoRadio', 'autoDispatch', 'scenarioFired', 'randomLevel', 'nextRandomAt',
 ] as const;
 
 function cloneTrain(tr: Train): Train {
@@ -104,6 +105,7 @@ export function restore(sim: Sim, cp: Checkpoint) {
   sim.removedTraces = [];
   sim.reportReady = null;
   sim.bookmarks = sim.bookmarks.filter((b) => !b.auto || b.t <= cp.t);
+  resetObservation(sim);
 }
 
 /** compact fingerprint of the dynamic state (tests: replay determinism) */

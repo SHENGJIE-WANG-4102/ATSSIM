@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Sim } from '../src/sim/engine';
-import { makeSim, runFor, runUntil, assertNoCollision, dirOf } from './helpers';
+import { makeSim, runFor, runUntil, assertNoCollision, assertIntegrity, dirOf } from './helpers';
 import { capture, restore, fingerprint } from '../src/sim/state';
 import { computePis } from '../src/sim/pis';
 import { yardCount } from '../src/sim/yard';
@@ -18,7 +18,7 @@ import { platformBerth } from '../src/sim/timetable';
 
 const H = 8 * 3600;
 const st = (sim: Sim, name: string) => sim.topo.stations.find((s) => s.name === name)!;
-const check = (sim: Sim) => assertNoCollision(sim);
+const check = (sim: Sim) => { assertNoCollision(sim); assertIntegrity(sim); };
 
 describe('blocking (封锁)', () => {
   it('a blocked section refuses routes and stops trains before it; unblocking restores service', () => {
@@ -83,7 +83,7 @@ describe('manual driving', () => {
     expect(Math.abs(tr.drv.stops[0].err)).toBeLessThanOrEqual(1);
     expect(tr.drv.stops[0].score).toBeGreaterThan(0);
     expect(tr.drv.overspeed).toBe(0);
-    expect(sim.command({ c: 'manual', train: tr.id, mode: 'AM' }).ok).toBe(true);
+    expect(sim.command({ c: 'manual', train: tr.id, mode: 'AUTO' }).ok).toBe(true);
   });
 
   it('ATP: overspeed in CM triggers an emergency brake and counts as a safety violation', () => {
@@ -118,26 +118,28 @@ describe('manual driving', () => {
 });
 
 describe('radio calls', () => {
-  it('without an answer a comm-loss train waits; approving the degrade lets it run', () => {
+  it('without an answer a comm-loss train waits under EB; authorising release with degrade lets it run in AM-T', () => {
     const sim = new Sim({ dayType: 'weekday', dateLabel: 't', startTime: H, seed: 7, autoRadio: false });
     runUntil(sim, H);
     const tr = sim.trainList.find((t) => t.inService && t.phase === 'run' && t.v > 5 && sim.trainChain(t) > 9000 && sim.trainChain(t) < 30000)!;
     sim.command({ c: 'fault', kind: 'trainComm', target: tr.id, duration: 3000 });
     runFor(sim, 60, check);
-    const call = sim.calls.find((c) => c.kind === 'degrade' && c.train === tr.id);
+    const call = sim.calls.find((c) => c.kind === 'ebRelease' && c.train === tr.id);
     expect(call).toBeDefined();
     expect(tr.level).toBe('CBTC');
+    expect(tr.eb).toBe(true);
     runFor(sim, 140, check);
     expect(sim.metrics.callsExpired).toBeGreaterThanOrEqual(1);
     expect(tr.v).toBeLessThan(0.1);
     // the driver calls again
     runFor(sim, 80, check);
-    const again = sim.calls.find((c) => c.kind === 'degrade' && c.train === tr.id && c.state === 'ringing');
+    const again = sim.calls.find((c) => c.kind === 'ebRelease' && c.train === tr.id && c.state === 'ringing');
     expect(again).toBeDefined();
-    expect(sim.command({ c: 'radio', call: again!.id, option: 'approve' }).ok).toBe(true);
+    expect(sim.command({ c: 'radio', call: again!.id, option: 'degrade' }).ok).toBe(true);
     runFor(sim, 30, check);
     expect(tr.level).toBe('TBTC');
-    expect(tr.mode).toBe('CM');
+    expect(tr.mode).toBe('AM');
+    expect(tr.eb).toBe(false);
   });
 
   it('an unanswered passenger alarm makes the driver stop in section', () => {
@@ -310,7 +312,7 @@ describe('DMI logic: movement authority, permitted speed, fleet, message log', (
     for (let k = 0; k < 40; k++) {
       runFor(sim, 15, check);
       for (const tr of sim.trainList) {
-        if (tr.phase !== 'run' || tr.mode !== 'AM' || tr.level !== 'CBTC' || !tr.comm || tr.failed || tr.manual) continue;
+        if (tr.phase !== 'run' || tr.mode !== 'DTO' || tr.level !== 'CBTC' || !tr.comm || tr.failed || tr.manual) continue;
         const e = expectedMa(sim, tr);
         if (!Number.isFinite(e.d)) continue;
         checked++;
@@ -347,7 +349,7 @@ describe('DMI logic: movement authority, permitted speed, fleet, message log', (
       sim.step();
       for (const tr of sim.trainList) {
         maxP = Math.max(maxP, tr.vPermit);
-        if (tr.phase !== 'run' || tr.mode !== 'AM' || tr.v < 0.1) continue;
+        if (tr.phase !== 'run' || tr.mode !== 'DTO' || tr.v < 0.1) continue;
         expect(tr.vPermit).toBeLessThanOrEqual(tr.vEbi + 1e-9);
         if (Number.isFinite(tr.stopDist) && tr.stopDist < 120 && tr.stopDist < tr.maDist - 1 && tr.tgtReason !== '限速') {
           approaches++;
@@ -387,11 +389,11 @@ describe('DMI logic: movement authority, permitted speed, fleet, message log', (
     const msgs = tr.dmiLog.map((m) => m.m);
     expect(msgs).toContain('连接丢失');
     expect(msgs.some((m) => m.startsWith('紧急制动'))).toBe(true);
-    expect(msgs).toContain('CM模式可用');
+    expect(msgs).toContain('TBTC ATO/ATP模式可用');
     sim.dmiTrain = tr.id;
     const d = sim.snapshot().dmi!;
     expect(d.trainNo).toMatch(/^T\d{4}$/);
     expect(d.log[0].t).toBeGreaterThanOrEqual(d.log[d.log.length - 1].t);
-    expect(d.avail).toEqual({ mode: 'CM', level: 'TBTC' });
+    expect(d.avail).toEqual({ mode: 'AM', level: 'TBTC' });
   });
 });

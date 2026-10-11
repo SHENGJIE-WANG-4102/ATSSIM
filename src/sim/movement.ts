@@ -9,6 +9,9 @@ import { swPos } from './interlocking';
 import { PERF, brakingSpeed, controlAccel, tractionAccel } from './dynamics';
 import { routeLeadsTo } from './ats';
 import type { HaltCode } from './halt';
+import { applyEB } from './onboard';
+import { psdSafe } from './psd';
+import type { EbCause } from './model';
 
 /** speed limits / platform stops further than this do not influence the braking curves */
 const LOOKAHEAD = 1400;
@@ -45,6 +48,8 @@ export interface ScanResult {
   vBody: number;
   nextSignal: number;
   nextSignalDist: number;
+  /** signals the movement authority passes (route-locked by the MA: approach locking) */
+  maSignals: number[];
 }
 
 /** link speed limit incl. TSR and weather restrictions (m/s) */
@@ -83,7 +88,7 @@ function trainInSection(sim: Sim, sec: number, self: number): number {
 
 export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP): ScanResult {
   const { topo } = sim;
-  const res: ScanResult = { maDist: Infinity, maReason: '', maCode: 'NONE', maTrain: -1, hardDist: Infinity, stopDist: Infinity, constraints: [], vBody: Infinity, nextSignal: -1, nextSignalDist: Infinity };
+  const res: ScanResult = { maDist: Infinity, maReason: '', maCode: 'NONE', maTrain: -1, hardDist: Infinity, stopDist: Infinity, constraints: [], vBody: Infinity, nextSignal: -1, nextSignalDist: Infinity, maSignals: [] };
   const atp = tr.mode !== 'RM';
   // a manually driven RM train is on sight: authority limits are advisory, the scan goes on to find physical obstacles
   const onSight = tr.manual && tr.mode === 'RM';
@@ -119,8 +124,12 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
 
   // zone check for current position
   const z0 = sim.zoneState[l0.zone];
-  if (atp && tr.level === 'CBTC' && z0 === 'ZCFAIL' && tr.rmAuth <= 0) obstacle(res, 0, '区域控制器故障', 'ZC_FAULT');
-  if (atp && tr.level === 'CBTC' && !tr.comm) obstacle(res, 0, '车地通信中断', 'COMM_LOSS');
+  // without a ZC (zone failed, train-ground link lost) no new authority comes in: the
+  // onboard keeps the last MA it received and stops within it (it is never pulled
+  // back under a moving train); tr.maDist was measured before the last movement
+  const kept = Number.isFinite(tr.maDist) ? Math.max(0, tr.maDist - tr.lastDs) : 0;
+  if (atp && tr.level === 'CBTC' && z0 === 'ZCFAIL' && tr.rmAuth <= 0) obstacle(res, kept, '区域控制器故障', 'ZC_FAULT');
+  if (atp && tr.level === 'CBTC' && !tr.comm) obstacle(res, kept, '车地通信中断', 'COMM_LOSS');
 
   let lastSec = l0.section;
   let guard = 0;
@@ -128,6 +137,7 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
   // past the stopping point we only keep looking for the next signal (for ARS)
   // once the MA end is found we only keep looking for the next signal (for ARS)
   let signalOnly = res.maDist <= 0;
+  const sigPass: number[] = [];
   while (guard++ < 600) {
     if (!signalOnly && !onSight && d >= res.maDist) signalOnly = true;
     if (onSight && (d >= res.hardDist || d >= LOOKAHEAD)) break;
@@ -167,11 +177,21 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
         let swOk = true;
         for (const x of topo.routes[sg.route].switches) if (swPos(sim, x.sw) !== x.pos) { swOk = false; break; }
         if (atp) ok = ar.state === 'locked' && ar.cancelAt === 0 && !ar.guide && !consumed && !sg.failed && swOk;
-        else ok = (ar.state === 'locked' || ar.guide) && ar.cancelAt === 0 && !consumed && (sg.aspect !== 'R' && sg.aspect !== 'FAIL' || tr.rmAuth > d);
-      } else if (!atp && tr.rmAuth > d && !topo.signals[sigId].routes.some((r) => topo.routes[r].switches.length > 0)) {
-        ok = true; // authorised to pass a signal at danger on plain line
+        else ok = (ar.state === 'locked' || ar.guide) && ar.cancelAt === 0 && !consumed && (sg.aspect !== 'R' && sg.aspect !== 'FAIL' || (tr.rmSig === sigId && tr.rmAuth > d));
+        // a committed train keeps the authority of a route cancelled in front of it
+        if (!ok && ar.committed === tr.id && ar.state === 'locked' && !consumed && swOk) ok = true;
+        if (ok && atp) sigPass.push(sigId, d);
+      } else if (!atp && tr.rmSig === sigId && tr.rmAuth > d && !topo.signals[sigId].routes.some((r) => topo.routes[r].switches.length > 0)) {
+        ok = true; // authorised (for this one signal) to pass it at danger on plain line
       }
-      if (!ok) { obstacle(res, d - SIGNAL_MARGIN, sg.failed ? '信号机故障' : '信号/进路未开放', sg.failed ? 'SIGNAL_FAULT' : 'ROUTE_WAIT'); if (!onSight) break; }
+      if (!ok) {
+        // a locked route over a switch without detection waits on the switch fault, not on ARS
+        const swLost = sg.route >= 0 && topo.routes[sg.route].switches.some((x) => sim.sw[x.sw].failed && swPos(sim, x.sw) !== x.pos);
+        if (sg.failed) obstacle(res, d - SIGNAL_MARGIN, '信号机故障', 'SIGNAL_FAULT');
+        else if (swLost) obstacle(res, d - SIGNAL_MARGIN, '进路内道岔失表', 'SWITCH_FAULT');
+        else obstacle(res, d - SIGNAL_MARGIN, '信号/进路未开放', 'ROUTE_WAIT');
+        if (!onSight) break;
+      }
       // ATS departure / route check: the set route must lead towards the train's goal
       const routeGoal = gb >= 0 ? gb : sim.rescueGoal(tr);
       if (ok && !tr.manual && res.stopDist === Infinity && routeGoal >= 0 && sg.route >= 0 && !routeLeadsTo(sim, sg.route, routeGoal)) { obstacle(res, d - SIGNAL_MARGIN, '进路与计划不符', 'ROUTE_MISMATCH'); break; }
@@ -186,7 +206,8 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
         if (!onSight) break;
       }
       if (atp && tr.rmAuth <= d) {
-        if (tr.level === 'CBTC' && zs === 'ZCFAIL') { obstacle(res, d - 5, 'ZC故障区域', 'ZC_FAULT'); break; }
+        // the MA already issued into the failed zone stays valid (kept); no new one is given
+        if (tr.level === 'CBTC' && zs === 'ZCFAIL') { obstacle(res, Math.max(d - 5, kept), 'ZC故障区域', 'ZC_FAULT'); if (kept <= d - 5) break; }
         if (st.disturbed || st.preset) { obstacle(res, d - 5, st.preset ? '计轴预复位区段' : '计轴故障占用', st.preset ? 'AXLE_PRESET' : 'AXLE_FAULT'); break; }
         if (st.occ) {
           const passable = cbtc && zs === 'CBTC' && st.commOnly;
@@ -194,14 +215,14 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
         }
       }
     }
+    // other trains on this link (before the platform checks below, which end the walk)
+    checkTrainsOnLink(sim, tr, nx.link, nx.dir, d, rescueTarget, cbtc, atp, res);
     // platform protections
     if (nl.platform >= 0) {
       const ps = sim.plat[nl.platform];
       if (ps.esp) { obstacle(res, d - 3, '站台紧急关闭', 'ESP'); if (!onSight) break; }
-      if (ps.psd === 'fault' && !ps.psdBypass && atp) { obstacle(res, d - 3, '站台门未关闭锁紧', 'PSD_FAULT'); break; }
+      if (!psdSafe(ps) && atp) { obstacle(res, d - 3, '站台门未关闭锁紧', 'PSD_FAULT'); break; }
     }
-    // other trains on this link
-    checkTrainsOnLink(sim, tr, nx.link, nx.dir, d, rescueTarget, cbtc, atp, res);
     // speed limits
     const lim = linkLimit(sim, nx.link);
     if (d < LOOKAHEAD && (lim < res.vBody + 0.01 || lim < 25)) res.constraints.push(d, tr.mode === 'RM' ? Math.min(lim, PERF.vRM) : lim);
@@ -214,8 +235,9 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
     dir = nx.dir;
   }
   // the walk ended without meeting an authority limit (RM on sight, scan cap)
-  if (res.maDist === Infinity && !onSight) { res.maDist = d; res.maReason = MA_CAP_REASON; res.maCode = 'NONE'; }
+  if (res.maDist === Infinity && !onSight) { res.maDist = Math.min(d, cap); res.maReason = MA_CAP_REASON; res.maCode = 'NONE'; }
   if (res.nextSignal < 0) { res.nextSignalDist = Infinity; }
+  for (let i = 0; i < sigPass.length; i += 2) if (sigPass[i + 1] < res.maDist) res.maSignals.push(sigPass[i]);
   return res;
 }
 
@@ -371,16 +393,10 @@ export function advance(sim: Sim, tr: Train, ds: number): boolean {
       tr.off = tr.dir === 1 ? l.len : 0;
       return false;
     }
-    // passing a signal at danger?
+    // passing a signal without authority (SPAD)?
     const sigId = topo.signalByEntry.get(nx.node * 65536 + nx.link);
     if (sigId !== undefined) {
-      const sg = sim.sig[sigId];
-      if ((sg.aspect === 'R' || sg.aspect === 'FAIL') && tr.mode === 'RM' && tr.rmAuth <= 0) {
-        tr.passedRed++;
-        if (tr.manual) tr.drv.spad++;
-        sim.metrics.safety.spad++;
-        sim.log('A', '信号', `列车 ${tr.svc}-${tr.tripNo} 冒进信号 ${topo.signals[sigId].name}`, { key: `spad-${tr.id}` });
-      }
+      if (!passAuthorised(sim, tr, sigId, ds - rem)) spad(sim, tr, sigId);
       sim.onSignalPassed(tr, sigId);
     }
     tr.link = nx.link;
@@ -389,6 +405,36 @@ export function advance(sim: Sim, tr: Train, ds: number): boolean {
     tr.hist.push({ link: nx.link, dir: nx.dir });
   }
   return true;
+}
+
+/**
+ * May the train pass this signal? Within a valid movement authority (CBTC /
+ * TBTC ATP), over the locked route the signal protects, on a guide aspect
+ * in RM, or with an RM authorisation for exactly this signal. Anything else
+ * is a SPAD (docs/signalling-model.md §3.4).
+ */
+export function passAuthorised(sim: Sim, tr: Train, sigId: number, travelled: number): boolean {
+  const rm = tr.mode === 'RM';
+  if (!rm && travelled <= tr.lastMa + 0.5) return true;
+  if (rm && tr.rmSig === sigId && tr.rmAuth > 0) return true;
+  const sg = sim.sig[sigId];
+  if (sg.route < 0) return false;
+  const ar = sim.routes.get(sg.route)!;
+  if (ar.guide) return rm;
+  if (ar.state !== 'locked') return false;
+  if (ar.entered && !ar.fleeting && ar.owner !== tr.id) return false;
+  if (ar.cancelAt > 0 && ar.committed !== tr.id) return false;
+  return !rm || sg.aspect === 'G' || sg.aspect === 'Y' || sg.aspect === 'DARK';
+}
+
+function spad(sim: Sim, tr: Train, sigId: number) {
+  const name = sim.topo.signals[sigId].name;
+  tr.passedRed++;
+  tr.spadSig = sigId;
+  if (tr.manual) tr.drv.spad++;
+  sim.metrics.safety.spad++;
+  sim.log('A', '信号', `列车 ${tr.svc}-${tr.tripNo} 冒进信号 ${name}`, { key: `spad-${tr.id}`, code: 'SPAD', train: tr.id });
+  applyEB(sim, tr, `冒进信号 ${name}`, 'spad');
 }
 
 export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
@@ -417,6 +463,7 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     tr.maReason = scan.maReason;
     tr.maCode = scan.maCode;
     tr.maTrain = scan.maTrain;
+    tr.maSigs = scan.maSignals;
   }
   tr.nextSignal = scan.nextSignal;
   tr.nextSignalDist = scan.nextSignalDist;
@@ -424,7 +471,7 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
 
   // pending driver mode change while stopped
   if (tr.pendingMode && tr.v < 0.05) {
-    if (sim.t < tr.pendingModeAt) { tr.v = 0; return; }
+    if (sim.t < tr.pendingModeAt) { tr.v = 0; tr.lastDs = 0; return; }
   }
   // dispatcher / driver stop in section (e.g. passenger emergency alarm)
   const standStill = tr.stopUntil > sim.t;
@@ -460,7 +507,8 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   if (scan.stopDist !== Infinity) vT = Math.min(vT, brakingSpeed(scan.stopDist - 0.2, 0, PERF.bPlan));
   if (!(tr.manual && rm)) {
     vPerm = Math.min(vPerm, brakingSpeed(scan.maDist, 0, PERF.bEbGuaranteed));
-    vEbi = Math.min(vEbi, brakingSpeed(scan.maDist + 2, 0, PERF.bEbGuaranteed) + 0.6);
+    // the EB intervention curve ends at the EOA itself: at / past it any motion trips the EB
+    vEbi = Math.min(vEbi, scan.maDist > 0 ? brakingSpeed(scan.maDist, 0, PERF.bEbGuaranteed) + 0.3 : 0);
   }
   consider(tr.maDist, 0, tr.maReason || 'MA终点');
   if (scan.stopDist !== Infinity && scan.stopDist <= scan.maDist) consider(scan.stopDist, 0, '停车点');
@@ -478,24 +526,19 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   // ATP supervision
   if (!tr.eb) {
     const atp = tr.mode !== 'RM';
-    if (tr.v > tr.vEbi + 0.15) {
-      triggerEB(sim, tr, atp ? (scan.maDist < 30 ? `MA终点防护(${scan.maReason})` : '超速防护') : 'RM超速');
+    if (atp && tr.level === 'CBTC' && !tr.comm && tr.v > 0.1) triggerEB(sim, tr, '车地通信中断，MA失效', 'comm');
+    else if (atp && tr.level === 'CBTC' && sim.zoneState[sim.topo.links[tr.link].zone] === 'ZCFAIL' && tr.v > 0.1) triggerEB(sim, tr, 'ZC故障，MA失效', 'zc');
+    else if (tr.v > tr.vEbi + 0.15) {
+      triggerEB(sim, tr, atp ? (scan.maDist < 30 ? `MA终点防护(${scan.maReason})` : '超速防护') : 'RM超速', atp ? (scan.maDist < 30 ? 'atp' : 'overspeed') : 'rm');
       if (tr.manual) { tr.drv.overspeed++; sim.metrics.safety.overspeed++; }
     }
-    if (atp && tr.level === 'CBTC' && !tr.comm && tr.v > 0.1) triggerEB(sim, tr, '车地通信中断，MA失效');
-    if (atp && tr.level === 'CBTC' && sim.zoneState[sim.topo.links[tr.link].zone] === 'ZCFAIL' && tr.rmAuth <= 0 && tr.v > 0.1) triggerEB(sim, tr, 'ZC故障，MA失效');
   }
 
   let a: number;
   if (tr.eb) {
+    // released only by onboard.ts after the dispatcher's authorisation
     a = -PERF.bEb;
-    if (tr.v <= 0.01) {
-      tr.v = 0;
-      if (sim.t - tr.ebSince > 6 && !(tr.manual && tr.notch > 0)) {
-        tr.eb = false;
-        sim.clearAlarm(`eb-${tr.id}`);
-      }
-    }
+    if (tr.v <= 0.01) tr.v = 0;
   } else if (tr.manual) {
     a = notchAccel(tr.v, tr.notch);
     if (standStill && a > 0) a = 0;
@@ -523,6 +566,15 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     if (ds > hard) { ds = hard; tr.v = Math.min(tr.v, 0.3); }
     if (stopAt < 0.4 && tr.v < 0.35 && !tr.eb) tr.v = 0;
   }
+  // MA withdrawn under the train (the EOA moved back to where even the guaranteed emergency
+  // brake cannot stop): the ATP has tripped the EB above; the overrun is logged, not hidden
+  const prevEoa = tr.lastMa - tr.lastDs;
+  if (!rm && !tr.maCut && Number.isFinite(prevEoa) && scan.maDist < prevEoa - 0.5 && scan.maDist < (v0 * v0) / (2 * PERF.bEbGuaranteed)) {
+    tr.maCut = true;
+    if (!tr.eb) triggerEB(sim, tr, `移动授权回撤(${scan.maReason})`, 'atp');
+    sim.log('B', '信号', `列车 ${tr.svc}-${tr.tripNo} 移动授权被回撤（${scan.maReason}），紧急制动`, { key: `macut-${tr.id}`, code: scan.maCode, train: tr.id });
+  }
+  if (tr.v <= 0.01) tr.maCut = false;
   tr.lastDs = ds;
   tr.lastMa = tr.manual && rm ? Infinity : scan.maDist;
   if (ds > 0) {
@@ -540,6 +592,22 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   computeBody(sim, tr);
 }
 
+/** a route the MA relied on was released: recompute the train's authority now */
+export function withdrawAuthority(sim: Sim, tr: Train) {
+  const s = scanAhead(sim, tr, goalBerth(tr));
+  tr.maFar = s.maDist;
+  tr.maFarReason = s.maReason;
+  tr.maFarCode = s.maCode;
+  tr.maFarTrain = s.maTrain;
+  tr.maSigs = s.maSignals;
+  if (s.maDist < tr.maDist) {
+    tr.maDist = s.maDist;
+    tr.maReason = s.maReason;
+    tr.maCode = s.maCode;
+    tr.maTrain = s.maTrain;
+  }
+}
+
 /** once a second: full-length movement authority for every train (see MA_NEAR) */
 export function refreshAuthority(sim: Sim) {
   for (const tr of sim.trainList) {
@@ -548,6 +616,7 @@ export function refreshAuthority(sim: Sim) {
     tr.maFarReason = s.maReason;
     tr.maFarCode = s.maCode;
     tr.maFarTrain = s.maTrain;
+    tr.maSigs = s.maSignals;
     const moving = tr.phase === 'run' && !tr.failed;
     // a moving train keeps this step's near scan; only the far end is taken over
     if (moving && tr.maReason !== MA_CAP_REASON) continue;
@@ -565,11 +634,8 @@ export function refreshAuthority(sim: Sim) {
   }
 }
 
-export function triggerEB(sim: Sim, tr: Train, reason: string) {
-  tr.eb = true;
-  tr.ebSince = sim.t;
-  tr.ebReason = reason;
-  sim.log('B', '列车', `列车 ${tr.svc}${tr.tripNo}（${tr.vehicle}）紧急制动：${reason}`, { key: `eb-${tr.id}` });
+export function triggerEB(sim: Sim, tr: Train, reason: string, cause: EbCause) {
+  applyEB(sim, tr, reason, cause);
 }
 
 /** Rebuild link → body segment index for scans. */

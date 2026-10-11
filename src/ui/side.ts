@@ -17,12 +17,13 @@ import type { Audio } from './audio';
 const CAT_FILTERS = ['全部', '报警', '调度', '通话', '信号', '列车', '车站', '客流', '施工', '教员'];
 
 const PROCEDURES: Record<FaultKind, string> = {
-  trainComm: '后果：ZC 失去列车位置，该车按计轴区段占用防护；列车紧急制动。处置：司机来电申请降级 → 同意后以TBTC后备CM模式运行；通信恢复后自动升级CBTC。',
-  zcFail: '后果：区域内CBTC列车失去移动授权紧急制动。处置：确认列车停稳 → “切换TBTC”（二次确认）→ 固定闭塞运行；ZC修复后“恢复CBTC”。',
+  trainComm: '后果：ZC 失去列车位置，该车按计轴区段占用防护；列车紧急制动。处置：司机停稳后报告 → 授权缓解并降级TBTC后备（AM）运行；通信恢复后在下一区段边界不停车升级CBTC（DTO）。',
+  zcFail: '后果：区域内CBTC列车失去移动授权，原地转TBTC后备（AM）按固定闭塞运行。处置：“切换TBTC”（二次确认）使后续列车停站降级；ZC修复后“恢复CBTC”，列车不停车升级。',
   axle: '后果：区段故障占用，列车在区段前停车。处置：设备修复后“计轴预复位”（二次确认）→ 首列车来电申请RM压道 → 同意。',
   switch: '后果：道岔失表，经过该道岔的进路无法办理。处置：单操试排 → 通知维修 → 钩锁确认（二次确认）→ 引导进路 → 修复后单操恢复表示、取消钩锁。',
   signal: '后果：信号机无法开放。处置：办理引导进路（二次确认），列车凭引导信号RM通过；修复后恢复。',
   psd: '后果：站台门无法关闭锁紧，列车不能发车。处置：车站来电申请互锁解除 → 同意（二次确认）；修复后取消互锁解除。',
+  psdLink: '后果：车门与站台门不能联动，由车站人员在PSL开关站台门，每次开/关约多耗时15秒；列车仍按DTO运行。处置：通知车站PSL操作；修复后自动恢复联动。',
   trainFail: '后果：列车故障停车。处置：可恢复时司机约4分钟内恢复；不能恢复时司机来电请求救援 → 组织后车救援。',
   surge: '后果：进站客流成倍增加，停站时间延长。处置：限流、扣车均衡间隔、加开列车。',
   pecu: '后果：司机来电请求处置方式。未应答时司机自行区间停车。',
@@ -258,9 +259,11 @@ export class SidePanel {
       this.trainBody.append(h('tr', { class: sel ? 'sel' : '', style: 'cursor:pointer', onclick: () => { this.store.select({ kind: 'train', id: t.id }); this.hooks.locate(); } },
         h('td', { class: 'mono' }, `${t.svc}-${t.trip}`), h('td', {}, t.dest),
         h('td', {}, `${near.name}${Math.abs(near.chain - t.chain) > 150 ? '附近' : ''}`), h('td', { class: 'mono' }, `${Math.round(t.v * 3.6)}`),
-        h('td', { class: 'mono', style: t.mode !== 'AM' || t.manual ? 'color:var(--warn)' : '' }, `${t.manual ? '人' : ''}${t.mode}${t.comm ? '' : '×'}`),
+        h('td', { class: 'mono', style: (t.mode !== 'DTO' && t.mode !== 'AM') || t.manual ? 'color:var(--warn)' : '' }, `${t.manual ? '人' : ''}${t.mode}${t.comm ? '' : '×'}`),
         h('td', { class: 'mono', style: late ? 'color:var(--late)' : '' }, t.inService ? fmtDelay(t.delay) : '—'), h('td', { class: 'mono' }, `${Math.round((t.load / LINE_INFO.capacity) * 100)}%`),
-        h('td', { style: t.failed || t.eb ? 'color:var(--bad)' : '' }, t.failed ? '故障' : t.eb ? '紧急制动' : t.hold ? '扣车' : t.phase === 'dwell' ? '停站' : t.phase === 'reversing' ? '折返' : t.v > 0.1 ? '运行' : '停车'),
+        h('td', { style: t.failed || t.eb ? 'color:var(--bad)' : '', title: t.halt ? `${t.halt.code} ${t.halt.detail}` : '' },
+          t.failed ? '故障' : t.eb ? '紧急制动' : t.hold ? '扣车' : t.phase === 'dwell' ? '停站' : t.phase === 'reversing' ? '折返' : t.v > 0.1 ? '运行'
+            : t.halt ? `${t.halt.label}${t.halt.blocker ? `（${t.halt.blocker}）` : ''}` : '停车'),
       ));
     }
   }

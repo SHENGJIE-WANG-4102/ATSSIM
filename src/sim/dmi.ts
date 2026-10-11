@@ -7,23 +7,21 @@ import type { Sim } from './engine';
 import type { DmiData, DmiMsg, Level, Mode, Train } from './model';
 import { STATIONS, fleetEntry } from '../data/line2';
 import { stopError } from './movement';
+import { cbtcAvailable } from './onboard';
 
 const LOG_MAX = 40;
 
 /** highest mode the on-board equipment could offer right now (the "AM-C" field) */
 export function availableMode(sim: Sim, tr: Train): { mode: Mode; level: Level } {
-  const zone = sim.zoneState[sim.topo.links[tr.link].zone];
-  if (zone === 'CBTC' && tr.comm) return { mode: 'AM', level: 'CBTC' };
-  if (zone === 'TBTC') return { mode: tr.comm ? 'AM' : 'CM', level: 'TBTC' };
-  // CBTC zone without train-ground link: fixed-block backup under ATP
-  if (zone === 'CBTC') return { mode: 'CM', level: 'TBTC' };
-  // failed ZC: only a train already on the backup level stays supervised
-  return tr.level === 'TBTC' ? { mode: 'CM', level: 'TBTC' } : { mode: 'RM', level: tr.level };
+  // CBTC (DTO) needs the radio link and a ZC in control; the TBTC backup
+  // (digital track circuits, continuous) runs in parallel and offers ATO (P2 §2.1.1)
+  if (cbtcAvailable(sim, tr)) return { mode: 'DTO', level: 'CBTC' };
+  return { mode: 'AM', level: 'TBTC' };
 }
 
-/** on-screen wording: Line 2 cabs show automatic mode as "DTO" */
+/** on-screen wording of the driving mode */
 export function modeWord(m: Mode): string {
-  return m === 'AM' ? 'DTO' : m;
+  return m;
 }
 
 export function dmiNote(sim: Sim, tr: Train, m: string, k: DmiMsg['k'] = 'info') {
@@ -32,7 +30,7 @@ export function dmiNote(sim: Sim, tr: Train, m: string, k: DmiMsg['k'] = 'info')
 }
 
 const availMsg = (a: { mode: Mode; level: Level }) =>
-  a.mode === 'AM' ? 'ATO/ATP模式可用' : a.mode === 'CM' ? 'CM模式可用' : '仅RM模式可用';
+  a.mode === 'DTO' ? 'DTO/ATP模式可用' : a.mode === 'AM' ? 'TBTC ATO/ATP模式可用' : a.mode === 'CM' ? 'CM模式可用' : '仅RM模式可用';
 
 /** once a second: turn state changes into DMI messages */
 export function dmiTick(sim: Sim) {
@@ -53,7 +51,7 @@ export function dmiTick(sim: Sim) {
     if (!p.comm && cur.comm) dmiNote(sim, tr, '连接恢复');
     if (p.avail !== cur.avail) {
       // supervision regained after a period with only RM available: FAM-photo wording
-      const regained = p.avail.startsWith('RM') && av.mode === 'AM';
+      const regained = p.avail.startsWith('RM') && av.mode !== 'RM';
       dmiNote(sim, tr, regained ? 'CM/AM模式可用' : availMsg(av), av.mode === 'RM' ? 'warn' : 'info');
     }
     if (p.mode !== cur.mode) dmiNote(sim, tr, `${modeWord(tr.mode)} ${tr.level}模式`, tr.mode === 'RM' ? 'warn' : 'info');
@@ -92,7 +90,7 @@ export function computeDmi(sim: Sim, id: number): DmiData | null {
   const pi = topo.links[tr.link].platform;
   if (pi >= 0 && (dwelling || tr.v < 0.05)) {
     const ps = sim.plat[pi];
-    psd = ps.psdBypass ? 'bypass' : ps.psd === 'fault' || (ps.psdFault && !tr.doorsOpen && dwelling) ? 'fault' : ps.psd;
+    psd = ps.psd === 'bypass' ? 'bypass' : ps.psd === 'closeFail' || (ps.psdFault && !tr.doorsOpen && dwelling) ? 'fault' : ps.psd === 'closed' ? 'closed' : 'open';
   }
   // stopping window indicator
   const err = stopError(sim, tr);

@@ -274,7 +274,8 @@ export function setRandomFaults(sim: Sim, level: number) {
 }
 
 export function randomTick(sim: Sim) {
-  if (!sim.randomLevel || sim.t < sim.nextRandomAt) return;
+  // nothing is injected during the warm-up before the session starts
+  if (!sim.randomLevel || sim.t < sim.nextRandomAt || sim.t < sim.config.startTime) return;
   const lv = LEVELS[sim.randomLevel]!;
   // exponential inter-arrival
   sim.nextRandomAt = sim.t + Math.max(180, -Math.log(1 - sim.rng()) * lv.mean);

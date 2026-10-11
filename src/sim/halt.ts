@@ -21,7 +21,8 @@ export type HaltCode =
   | 'FAILED' | 'COUPLING' | 'RESCUE' | 'EB' | 'MODE_CHANGE' | 'INCIDENT' | 'RM_WAIT'
   | 'TRAIN_AHEAD' | 'ROUTE_WAIT' | 'BERTH_WAIT' | 'ROUTE_CONFLICT' | 'ROUTE_MISMATCH' | 'ARS_OFF' | 'SWITCH_MOVING'
   | 'SIGNAL_FAULT' | 'SWITCH_FAULT' | 'AXLE_FAULT' | 'AXLE_PRESET' | 'ZC_FAULT' | 'COMM_LOSS' | 'PSD_FAULT'
-  | 'BLOCKED' | 'POSSESSION' | 'WEATHER' | 'ESP' | 'BUFFER' | 'DEPOT_LIMIT' | 'NO_TASK' | 'STOP_POINT';
+  | 'BLOCKED' | 'POSSESSION' | 'WEATHER' | 'ESP' | 'BUFFER' | 'DEPOT_LIMIT' | 'NO_TASK' | 'STOP_POINT'
+  | 'SPAD' | 'DISPATCHER' | 'MANUAL';
 
 export interface HaltInfo { label: string; exempt: boolean }
 
@@ -42,7 +43,10 @@ export const HALT: Record<HaltCode, HaltInfo> = {
   FAILED: { label: '列车故障', exempt: true },
   COUPLING: { label: '救援连挂作业', exempt: true },
   RESCUE: { label: '救援接近', exempt: true },
-  EB: { label: '紧急制动', exempt: true },
+  EB: { label: '紧急制动（待授权缓解）', exempt: false },
+  SPAD: { label: '冒进信号紧急制动', exempt: true },
+  DISPATCHER: { label: '等待调度应答', exempt: true },
+  MANUAL: { label: '人工驾驶', exempt: true },
   MODE_CHANGE: { label: '驾驶模式转换', exempt: true },
   INCIDENT: { label: '区间停车处置', exempt: true },
   RM_WAIT: { label: '等待RM授权', exempt: true },
@@ -82,10 +86,12 @@ export interface Halt {
   plannedUntil: number;
   /** an unplanned-stop event was written for this episode */
   logged: boolean;
+  /** since when the train's own code is non-exempt (0 while exempt): the liveness clock */
+  unplannedSince: number;
 }
 
 export function newHalt(): Halt {
-  return { code: 'NONE', train: -1, detail: '', since: 0, plannedUntil: 0, logged: false };
+  return { code: 'NONE', train: -1, detail: '', since: 0, plannedUntil: 0, logged: false, unplannedSince: 0 };
 }
 
 /** ATS route-setting state of a train (written by runARS each second) */
@@ -103,7 +109,7 @@ export function classify(sim: Sim, tr: Train): { code: HaltCode; train: number; 
     const ps = p >= 0 ? sim.plat[p] : null;
     if (ps?.esp) return r('ESP', -1, sim.topo.platforms[p].name);
     if (tr.hold || ps?.hold) return r('HOLD');
-    if (ps && ps.psd === 'fault' && !ps.psdBypass) return r('PSD_FAULT', -1, sim.topo.platforms[p].name);
+    if (ps && ps.psd === 'closeFail') return r('PSD_FAULT', -1, sim.topo.platforms[p].name);
     const planned = Math.max(tr.depReadyAt, st?.dep ?? 0);
     if (sim.t < tr.dwellUntil) return r(st && st.dep !== null && sim.t < st.dep - 30 ? 'LAYOVER' : 'DWELL', -1, '', planned);
     return r('DWELL', -1, '', planned);
@@ -111,10 +117,18 @@ export function classify(sim: Sim, tr: Train): { code: HaltCode; train: number; 
   if (tr.phase === 'reversing') return r('TURNBACK', -1, '', tr.dwellUntil);
   if (tr.phase !== 'run') return r('NONE');
   if (tr.v > 0.05) return r('NONE');
-  if (tr.eb) return r('EB', -1, tr.ebReason);
+  if (tr.eb) {
+    if (tr.ebCause === 'spad') return r('SPAD', -1, tr.ebReason);
+    if (tr.ebCause === 'comm' && !tr.comm) return r('COMM_LOSS', -1, tr.ebReason);
+    if (tr.ebCause === 'zc' && sim.zoneState[sim.topo.links[tr.link].zone] === 'ZCFAIL') return r('ZC_FAULT', -1, tr.ebReason);
+    // the release needs a dispatcher answer: with manual answering the clock is the dispatcher's
+    if (!sim.autoRadio && sim.t >= sim.config.startTime) return r('DISPATCHER', -1, tr.ebReason);
+    return r('EB', -1, tr.ebReason);
+  }
   if (tr.pendingMode) return r('MODE_CHANGE');
   if (tr.stopUntil > sim.t) return r('INCIDENT', -1, tr.stopReason, tr.stopUntil);
   if (tr.hold) return r('HOLD');
+  if (tr.manual) return r('MANUAL');
   if (!tr.tasks.length) return r('NO_TASK');
   if (tr.tasks[0].k === 'rescue') return r('RESCUE', tr.tasks[0].target);
   const plannedUntil = 0;
@@ -178,6 +192,8 @@ export function updateHalts(sim: Sim) {
     n.train = c.train;
     n.detail = c.detail;
     n.plannedUntil = c.plannedUntil;
+    if (HALT[c.code].exempt) n.unplannedSince = 0;
+    else if (!n.unplannedSince) n.unplannedSince = sim.t;
   }
   // one event per unplanned stop episode (standing > 20 s at an obstacle)
   for (const tr of sim.trainList) {

@@ -327,7 +327,7 @@ export class CommandPanel {
     const drive = h('div', { class: 'cmdgrid' },
       this.btn(following ? '取消跟踪' : '跟踪列车', () => this.hooks.follow(following ? null : id), following ? 'on' : 'primary'),
       ...(t0.manual
-        ? [this.btn('恢复自动驾驶 AM', { title: `列车 ${t0.svc}-${t0.trip} 恢复自动驾驶`, cmd: { c: 'manual', train: id, mode: 'AM' } }, 'primary')]
+        ? [this.btn('恢复自动驾驶', { title: `列车 ${t0.svc}-${t0.trip} 恢复自动驾驶（CBTC级 DTO，TBTC级 AM）`, cmd: { c: 'manual', train: id, mode: 'AUTO' } }, 'primary')]
         : [
           this.btn('人工驾驶 CM', { title: `接管列车 ${t0.svc}-${t0.trip}：人工驾驶 CM（ATP 防护）`, cmd: { c: 'manual', train: id, mode: 'CM' }, detail: '由你操纵牵引/制动手柄驾驶列车（↑/W 牵引、↓/S 制动、X 惰行、E 紧急制动）。ATP 监督速度与移动授权，超速将触发紧急制动并计入安全违章。停站对标将评分。建议仿真速率 1×。' }, 'warn'),
           this.btn('人工驾驶 RM', { title: `接管列车 ${t0.svc}-${t0.trip}：限制人工驾驶 RM（≤25km/h）`, cmd: { c: 'manual', train: id, mode: 'RM' }, critical: true, detail: 'RM 模式无移动授权防护，司机目视行车，限速25km/h。越过红灯将记为冒进信号。须先停车。' }, 'danger'),

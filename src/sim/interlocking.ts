@@ -3,6 +3,8 @@
  */
 import type { Sim } from './engine';
 import type { ActiveRoute } from './model';
+import { withdrawAuthority } from './movement';
+import { PERF } from './dynamics';
 
 export const SWITCH_TIME = 5; // s, point machine throw time (approx)
 export const APPROACH_RELEASE = 30; // s, delayed release when approach-locked
@@ -63,7 +65,7 @@ export function trySetRoute(sim: Sim, rid: number, opts: { manual?: boolean; fle
   const ar: ActiveRoute = {
     route: rid, state: 'setting', fleeting: !!opts.fleeting, manual: !!opts.manual, guide: !!opts.guide,
     guideUntil: opts.guide ? sim.t + GUIDE_TIME : 0, occSeen: r.sections.map(() => false), released: r.sections.map(() => false),
-    entered: false, owner: -1, cancelAt: 0, setAt: sim.t,
+    entered: false, owner: -1, cancelAt: 0, committed: -1, setAt: sim.t,
   };
   for (const s of r.sections) sim.sec[s].lockRoute = rid;
   for (const { sw, pos } of r.switches) {
@@ -107,6 +109,9 @@ export function releaseRoute(sim: Sim, rid: number) {
   sim.routes.delete(rid);
   sim.routeUnlockedSw.delete(rid);
   if (sim.sig[r.start].route === rid) sim.sig[r.start].route = -1;
+  // the ZC withdraws every movement authority that was handed out over the route
+  // (approach locking has made sure those trains can stop short of the signal)
+  for (const tr of sim.trainList) if (tr.maSigs.includes(r.start)) withdrawAuthority(sim, tr);
 }
 
 /** Is a train approaching this signal (approach locking)? */
@@ -127,6 +132,16 @@ export function approachLocked(sim: Sim, sig: number): boolean {
   return false;
 }
 
+/** an approaching train that cannot stop before the signal with the service brake (-1 none) */
+export function committedTrain(sim: Sim, sig: number): number {
+  for (const tr of sim.trainList) {
+    if (tr.nextSignal !== sig || tr.v < 0.5 || tr.mode === 'RM') continue;
+    const need = (tr.v * tr.v) / (2 * PERF.bService) + 2;
+    if (need >= tr.nextSignalDist - 6) return tr.id;
+  }
+  return -1;
+}
+
 export function cancelRoute(sim: Sim, sig: number, opts: { force?: boolean; manual?: boolean } = {}): CmdResult {
   const sg = sim.sig[sig];
   const name = sim.topo.signals[sig].name;
@@ -139,9 +154,17 @@ export function cancelRoute(sim: Sim, sig: number, opts: { force?: boolean; manu
     if (occ) return { ok: false, msg: `进路 ${r.name} 内有车占用，不能取消` };
   }
   if (approachLocked(sim, sig) && !opts.force) {
+    // the signal closes at once; the route is released after the approach-locking delay.
+    // A train that can no longer stop before the signal with the service brake keeps
+    // its movement authority over the route (it is "committed") and releases it normally.
     ar.cancelAt = sim.t + APPROACH_RELEASE;
     ar.fleeting = false;
-    return { ok: true, msg: `${name} 接近锁闭，进路延时${APPROACH_RELEASE}秒解锁` };
+    const c = committedTrain(sim, sig);
+    if (c >= 0) {
+      ar.committed = c;
+      return { ok: true, msg: `${name} 接近锁闭，列车已无法在信号机前停车，进路保持至列车通过后解锁` };
+    }
+    return { ok: true, msg: `${name} 接近锁闭，信号关闭，进路延时${APPROACH_RELEASE}秒解锁` };
   }
   releaseRoute(sim, sg.route);
   return { ok: true, msg: `${name} 进路取消` };
@@ -179,7 +202,10 @@ export function moveSwitch(sim: Sim, sw: number, pos: 'N' | 'R'): CmdResult {
   if (st.lockCount > 0) return { ok: false, msg: `道岔 ${name} 被进路锁闭` };
   if (st.singleLock) return { ok: false, msg: `道岔 ${name} 单锁，不能转换` };
   if (st.fieldLock) return { ok: false, msg: `道岔 ${name} 已现场钩锁` };
-  for (const s of sim.topo.switches[sw].sections) if (sim.sec[s].occ && !sim.sec[s].disturbed) return { ok: false, msg: `道岔 ${name} 区段占用` };
+  for (const s of sim.topo.switches[sw].sections) {
+    if (sim.sec[s].trainOcc) return { ok: false, msg: `道岔 ${name} 区段有车占用，不能转换` };
+    if (sim.sec[s].occ) return { ok: false, msg: `道岔 ${name} 区段计轴占用（未确认出清），不能转换` };
+  }
   st.target = pos;
   st.moveUntil = sim.t + SWITCH_TIME;
   if (st.failed) {
@@ -238,7 +264,8 @@ export function updateInterlocking(sim: Sim) {
     }
     if (ar.cancelAt > 0 && sim.t >= ar.cancelAt) {
       // a train that entered during the delay keeps the route (normal sectional release)
-      if (ar.entered) ar.cancelAt = 0;
+      if (ar.entered) { ar.cancelAt = 0; ar.committed = -1; }
+      else if (ar.committed >= 0 && sim.trains.get(ar.committed)?.nextSignal === r.start) { /* still approaching */ }
       else { releaseRoute(sim, ar.route); continue; }
     }
     if (ar.guide && !ar.entered && sim.t > ar.guideUntil) {

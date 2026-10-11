@@ -4,7 +4,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Sim } from '../src/sim/engine';
-import { assertNoCollision } from './helpers';
+import { assertNoCollision, assertIntegrity } from './helpers';
 import type { DayType } from '../src/sim/model';
 
 async function runDay(dayType: DayType) {
@@ -18,6 +18,7 @@ async function runDay(dayType: DayType) {
     if (++k % 20000 === 0) await new Promise((r) => setTimeout(r, 0));
     if (k % 50 !== 0) continue;
     assertNoCollision(sim);
+    assertIntegrity(sim);
     maxOnline = Math.max(maxOnline, sim.trainList.length);
     for (const tr of sim.trainList) {
       const t0 = tr.tasks[0];

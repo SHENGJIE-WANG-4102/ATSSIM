@@ -1,0 +1,333 @@
+/**
+ * Onboard ATP / ATO (车载控制器): the only module that writes a train's
+ * driving mode, control level and emergency brake (§3 one source of truth).
+ *
+ * Every mode / level change goes through setMode, which only performs
+ * transitions of the MODE table in fsm.ts (with their guards); the EB is set
+ * by applyEB and released by releaseEB only after a dispatcher authorisation
+ * (EB table). Other modules ask: ATS / radio grant RM through grantRM, the
+ * dispatcher selects the train level (trainLevel command) and the zone level,
+ * the movement module reports ATP interventions through applyEB.
+ *
+ * Behaviour and sources: docs/signalling-model.md §2 (modes, level
+ * switchover) and §3 (emergency brake).
+ */
+import type { Sim } from './engine';
+import type { EbCause, ForceLevel, Level, Mode, Train } from './model';
+import { MODE, allowed, modeState, type ModeState } from './fsm';
+import { trainLabel } from './ats';
+import { openCall, unsafeAhead } from './radio';
+import { nextLink } from './topology';
+import { swPos } from './interlocking';
+
+/** driver action time for a mode / level change at standstill (s) 【假设】 */
+export const MODE_CHANGE_TIME = 10;
+/** driver report of an EB to the dispatcher after standstill (s) 【假设】 */
+export const EB_REPORT_DELAY = 5;
+/** repeat of an EB release request after the dispatcher said "wait" (s) */
+export const EB_REPEAT = 60;
+
+const LEVEL_C = (l: Level) => (l === 'CBTC' ? 'C' : 'T');
+
+export function stateLabel(s: ModeState): string {
+  const [m, l] = s.split('-');
+  return modeLabel(m as Mode, l === 'C' ? 'CBTC' : 'TBTC');
+}
+
+export function modeLabel(mode: Mode, level: Level): string {
+  return `${level === 'CBTC' ? 'CBTC' : 'TBTC后备'} ${mode}`;
+}
+
+/** CBTC level possible now: train-to-wayside radio, ZC in control of the zone, not forced to TBTC */
+export function cbtcAvailable(sim: Sim, tr: Train): boolean {
+  return tr.comm && sim.zoneState[sim.topo.links[tr.link].zone] === 'CBTC' && tr.forceLevel !== 'TBTC';
+}
+
+/** best automatic mode for the train's current level */
+export function autoMode(level: Level): Mode {
+  return level === 'CBTC' ? 'DTO' : 'AM';
+}
+
+/**
+ * Perform a mode / level transition. Returns false (and changes nothing) when
+ * it is not in the MODE table or its guard does not hold.
+ */
+export function setMode(sim: Sim, tr: Train, mode: Mode, level: Level, why: string): boolean {
+  const from = modeState(tr);
+  const to = `${mode}-${LEVEL_C(level)}` as ModeState;
+  if (from === to) return true;
+  if (!MODE.states.includes(to)) return false;
+  const a = allowed(sim, MODE, from, to, tr);
+  if (!a.ok) return false;
+  tr.mode = mode;
+  tr.level = level;
+  tr.modeSince = sim.t;
+  if (mode !== 'RM') { tr.rmAuth = 0; tr.rmSig = -1; tr.rmReason = ''; }
+  if (why) sim.log('I', '列车', `列车 ${trainLabel(tr)} ${why}：${stateLabel(from)} → ${stateLabel(to)}`, { train: tr.id });
+  return true;
+}
+
+// ---------------------------------------------------------------- emergency brake
+
+export function applyEB(sim: Sim, tr: Train, reason: string, cause: EbCause) {
+  if (tr.eb) {
+    // a SPAD during an EB still counts as the more serious cause
+    if (cause === 'spad' && tr.ebCause !== 'spad') { tr.ebCause = cause; tr.ebReason = reason; tr.ebAuth = false; }
+    return;
+  }
+  tr.eb = true;
+  tr.ebSince = sim.t;
+  tr.ebReason = reason;
+  tr.ebCause = cause;
+  tr.ebAuth = false;
+  tr.ebCallAt = 0;
+  sim.log(cause === 'spad' ? 'A' : 'B', '列车', `列车 ${tr.svc}${tr.tripNo}（${tr.vehicle}）紧急制动：${reason}`, { key: `eb-${tr.id}`, train: tr.id, code: 'EB' });
+}
+
+/** the EB cause no longer holds (release can be authorised without further measures) */
+export function ebCauseCleared(_sim: Sim, tr: Train): boolean {
+  switch (tr.ebCause) {
+    case 'spad': return false;
+    case 'comm': return tr.comm || tr.level === 'TBTC';
+    default: return true;
+  }
+}
+
+/** dispatcher authorises the release (driver has reported the EB) */
+export function authoriseEBRelease(sim: Sim, tr: Train, by: string): { ok: boolean; msg: string } {
+  if (!tr.eb) return { ok: false, msg: '列车未处于紧急制动' };
+  if (tr.v > 0.01) return { ok: false, msg: '列车未停稳，不能缓解紧急制动' };
+  tr.ebAuth = true;
+  releaseEB(sim, tr, by);
+  return { ok: true, msg: `列车 ${trainLabel(tr)} 紧急制动缓解` };
+}
+
+function releaseEB(sim: Sim, tr: Train, by: string) {
+  if (!tr.eb || !tr.ebAuth || tr.v > 0.01) return;
+  tr.eb = false;
+  sim.clearAlarm(`eb-${tr.id}`);
+  for (const c of sim.calls) if (c.state === 'ringing' && c.kind === 'ebRelease' && c.train === tr.id) c.state = 'withdrawn';
+  sim.log('I', '列车', `列车 ${trainLabel(tr)} 紧急制动缓解（${by}）`, { train: tr.id });
+}
+
+function callEbRelease(sim: Sim, tr: Train) {
+  tr.ebCallAt = sim.t;
+  const spad = tr.ebCause === 'spad';
+  const comm = tr.ebCause === 'comm' && !tr.comm && tr.level === 'CBTC';
+  const options = spad
+    ? [{ key: 'rm', label: '核实进路后缓解，RM运行至前方信号机', critical: true }, { key: 'wait', label: '原地待命（调查）' }]
+    : comm
+      ? [{ key: 'degrade', label: '同意缓解，降级TBTC后备ATO运行' }, { key: 'wait', label: '原地等待' }]
+      : [{ key: 'release', label: '同意缓解紧急制动' }, { key: 'wait', label: '原地等待' }];
+  openCall(sim, {
+    kind: 'ebRelease', from: `列车 ${trainLabel(tr)} 司机`, train: tr.id,
+    text: spad ? `列车冒进信号 ${tr.spadSig >= 0 ? sim.topo.signals[tr.spadSig].name : ''}，紧急制动停车，请求处置` : `列车紧急制动停车（${tr.ebReason}），请求缓解`,
+    // auto-answer never authorises RM (SPAD stays until the dispatcher decides)
+    options, auto: spad ? 'wait' : comm ? 'degrade' : 'release', timeout: 120,
+  });
+}
+
+/** answer of the EB release call (radio.ts) */
+export function answerEbRelease(sim: Sim, tr: Train, option: string): { ok: boolean; msg: string } {
+  if (!tr.eb) return { ok: true, msg: '紧急制动已缓解' };
+  if (option === 'wait') return { ok: true, msg: '司机原地等待' };
+  if (option === 'degrade') {
+    const r = authoriseEBRelease(sim, tr, '调度授权');
+    if (r.ok && !tr.comm && tr.level === 'CBTC') requestMode(sim, tr, tr.manual ? 'CM' : 'AM', 'TBTC');
+    return { ok: r.ok, msg: r.ok ? `缓解后${MODE_CHANGE_TIME}秒转TBTC后备ATO` : r.msg };
+  }
+  if (option === 'rm') {
+    const why = unsafeAhead(sim, tr);
+    if (why) {
+      sim.metrics.safety.unsafeAuth++;
+      sim.log('A', '安全', `不安全授权：列车 ${trainLabel(tr)} 前方${why}，仍授权RM运行`);
+    }
+    const r = authoriseEBRelease(sim, tr, '调度授权');
+    if (!r.ok) return r;
+    const d = distToNextSignal(sim, tr);
+    grantRM(sim, tr, Math.max(0, d - 6), -1, '冒进后调度授权RM运行至前方信号机');
+    return { ok: true, msg: `缓解，RM运行至前方信号机（${Math.round(d)} m）` };
+  }
+  return authoriseEBRelease(sim, tr, '调度授权');
+}
+
+// ---------------------------------------------------------------- RM authority
+
+/**
+ * Grant restricted manual (RM, ≤25 km/h on sight). `signal` is the one signal
+ * at danger the authority allows to pass (-1: none — the train may only run
+ * up to the next signal). RM is never granted under an EB: the EB is released
+ * first by its own authorisation.
+ */
+export function grantRM(sim: Sim, tr: Train, metres: number, signal: number, reason: string): boolean {
+  if (tr.eb) return false;
+  if (tr.mode !== 'RM' && !setMode(sim, tr, 'RM', tr.level, '')) return false;
+  tr.rmAuth = metres;
+  tr.rmSig = signal;
+  tr.rmReason = reason;
+  tr.modeSince = sim.t;
+  sim.log('C', '列车', `列车 ${trainLabel(tr)} 以RM模式（≤25km/h）运行：${reason}`, { train: tr.id });
+  return true;
+}
+
+export function distToNextSignal(sim: Sim, tr: Train): number {
+  const { topo } = sim;
+  let link = tr.link;
+  let dir = tr.dir;
+  let d = dir === 1 ? topo.links[link].len - tr.off : tr.off;
+  for (let i = 0; i < 60 && d < 5000; i++) {
+    const nx = nextLink(topo, link, dir, (sw) => swPos(sim, sw));
+    if (!nx) return d;
+    const lk = topo.links[link];
+    const node = dir === 1 ? lk.b : lk.a;
+    if (topo.signalByEntry.has(node * 65536 + nx.link)) return d;
+    d += topo.links[nx.link].len;
+    link = nx.link;
+    dir = nx.dir;
+  }
+  return d;
+}
+
+// ---------------------------------------------------------------- driver mode changes
+
+/** a mode / level change performed by the driver after MODE_CHANGE_TIME at standstill */
+export function requestMode(sim: Sim, tr: Train, mode: Mode, level: Level, delay = MODE_CHANGE_TIME) {
+  tr.pendingMode = mode;
+  tr.pendingLevel = level;
+  tr.pendingModeAt = sim.t + delay;
+}
+
+/** dispatcher: train-level CBTC / TBTC selection (P1 表3) */
+export function cmdTrainLevel(_sim: Sim, tr: Train, level: ForceLevel): { ok: boolean; msg: string } {
+  tr.forceLevel = level;
+  const txt = level === 'AUTO' ? '自动' : level === 'CBTC' ? '强制CBTC' : '强制TBTC';
+  if (level === 'TBTC' && tr.level === 'CBTC') return { ok: true, msg: `列车 ${trainLabel(tr)} 设为${txt}：下一站停站时降级TBTC后备` };
+  if (level !== 'TBTC' && tr.level === 'TBTC') return { ok: true, msg: `列车 ${trainLabel(tr)} 设为${txt}：具备条件后不停车升级CBTC` };
+  return { ok: true, msg: `列车 ${trainLabel(tr)} 控制级别设为${txt}` };
+}
+
+/** dispatcher hands a train to manual driving (CM / RM) or back to automatic (DTO / AM) */
+export function setManual(sim: Sim, tr: Train, mode: 'CM' | 'RM' | 'AUTO'): { ok: boolean; msg: string } {
+  if (tr.failed) return { ok: false, msg: '列车故障中' };
+  if (tr.phase === 'stabled') return { ok: false, msg: '列车已存车' };
+  if (tr.eb) return { ok: false, msg: '列车紧急制动中，须先报告调度并获授权缓解' };
+  if (mode === 'AUTO') {
+    if (!tr.manual) return { ok: false, msg: '列车未处于人工驾驶' };
+    if (tr.v > 0.1 && tr.mode === 'RM') return { ok: false, msg: 'RM 转自动驾驶须停车后进行' };
+    const level: Level = cbtcAvailable(sim, tr) ? 'CBTC' : tr.level === 'CBTC' && !tr.comm ? 'CBTC' : 'TBTC';
+    if (level === 'CBTC' && !tr.comm) return { ok: false, msg: '车地通信中断，不能以CBTC自动驾驶' };
+    if (!setMode(sim, tr, autoMode(level), level, '恢复自动驾驶')) return { ok: false, msg: '当前条件下不能转换（见状态机条件）' };
+    tr.manual = false;
+    tr.notch = 0;
+    return { ok: true, msg: `列车 ${trainLabel(tr)} 恢复 ${modeLabel(tr.mode, tr.level)} 自动驾驶` };
+  }
+  if (mode === 'RM' && tr.v > 0.1) return { ok: false, msg: '转RM模式须先停车' };
+  if (mode === 'CM' && tr.level === 'CBTC' && !tr.comm) return { ok: false, msg: '车地通信中断，无ATP防护，只能以RM模式驾驶' };
+  if (mode === 'CM' && sim.zoneState[sim.topo.links[tr.link].zone] === 'ZCFAIL' && tr.level === 'CBTC') return { ok: false, msg: 'ZC故障区域无移动授权，只能以RM模式驾驶' };
+  if (mode === 'RM') {
+    if (!setMode(sim, tr, 'RM', tr.level, '转人工驾驶')) return { ok: false, msg: '当前条件下不能转RM' };
+    tr.rmAuth = 0;
+    tr.rmSig = -1;
+  } else if (!setMode(sim, tr, 'CM', tr.level, '转人工驾驶')) return { ok: false, msg: '当前条件下不能转CM' };
+  tr.manual = true;
+  tr.notch = tr.v > 0.1 ? 0 : -7;
+  tr.drv = { stops: [], overspeed: 0, spad: 0, since: sim.t };
+  return { ok: true, msg: `列车 ${trainLabel(tr)} 转人工驾驶 ${mode}${mode === 'RM' ? '（≤25km/h，目视行车；越过关闭的信号机须调度逐架授权）' : '（ATP防护）'}` };
+}
+
+// ---------------------------------------------------------------- per-second onboard logic
+
+export function updateOnboard(sim: Sim) {
+  const { topo } = sim;
+  for (const tr of sim.trainList) {
+    // ---- emergency brake: driver report → dispatcher authorisation → release
+    if (tr.eb) {
+      if (tr.v > 0.01) continue;
+      if (tr.ebAuth) { releaseEB(sim, tr, '调度授权'); continue; }
+      const ringing = sim.calls.some((c) => c.state === 'ringing' && c.kind === 'ebRelease' && c.train === tr.id);
+      if (!ringing && sim.t - tr.ebSince >= EB_REPORT_DELAY && (tr.ebCallAt === 0 || sim.t - tr.ebCallAt >= EB_REPEAT)) callEbRelease(sim, tr);
+      continue;
+    }
+    // ---- pending driver mode change
+    if (tr.pendingMode) {
+      if (sim.t < tr.pendingModeAt) continue;
+      const mode = tr.pendingMode;
+      const level = tr.pendingLevel ?? tr.level;
+      tr.pendingMode = null;
+      tr.pendingLevel = null;
+      if (!setMode(sim, tr, mode, level, '模式转换')) {
+        // the condition went away meanwhile (e.g. comm recovered): stay as is
+        sim.log('I', '列车', `列车 ${trainLabel(tr)} 取消模式转换（条件不满足）`, { train: tr.id });
+      }
+      continue;
+    }
+    if (tr.failed || tr.phase === 'stabled') continue;
+    const zone = sim.zoneState[topo.links[tr.link].zone];
+    const avail = cbtcAvailable(sim, tr);
+    if (tr.manual && (tr.mode !== 'CM' || tr.level === 'CBTC')) continue;
+    // ---- RM authority used up → supervised mode again
+    if (tr.mode === 'RM') {
+      if (tr.rmAuth > 0 || tr.coupledLen > 0 || tr.tasks[0]?.k === 'rescue') continue;
+      const level: Level = avail ? 'CBTC' : 'TBTC';
+      setMode(sim, tr, autoMode(level), level, '结束RM');
+      continue;
+    }
+    // ---- degrade CBTC → TBTC
+    if (tr.level === 'CBTC') {
+      const standing = tr.v < 0.1;
+      if (!tr.comm) {
+        // comm loss at standstill without EB (e.g. during a dwell): driver asks to degrade
+        if (standing && !sim.calls.some((c) => c.state === 'ringing' && c.kind === 'degrade' && c.train === tr.id)) callDegrade(sim, tr);
+        continue;
+      }
+      // forced TBTC (train or zone): degrade at the next station stop (P1 停站降级);
+      // without a ZC (zone failed / switched) the train degrades where it stands
+      // a dwelling train whose next stop lies in a zone switched to TBTC degrades here,
+      // at the last station before the TBTC area, rather than in section
+      const nextZone = tr.phase === 'dwell' ? nextStopZone(sim, tr) : 'CBTC';
+      const forced = tr.forceLevel === 'TBTC' || zone !== 'CBTC' || nextZone !== 'CBTC';
+      if (!forced || !standing) continue;
+      if (tr.phase === 'dwell') setMode(sim, tr, 'AM', 'TBTC', tr.forceLevel === 'TBTC' ? '强制TBTC，停站降级' : '区域转TBTC，停站降级');
+      else if (tr.phase === 'run' && (zone === 'ZCFAIL' || tr.maDist < 40)) {
+        // no ZC movement authority: the driver changes over where the train stands
+        requestMode(sim, tr, 'AM', 'TBTC');
+        sim.log('I', '列车', `列车 ${trainLabel(tr)} ${zone === 'ZCFAIL' ? 'ZC故障，' : ''}原地降级TBTC后备（司机操作约${MODE_CHANGE_TIME}秒）`, { train: tr.id });
+      }
+      continue;
+    }
+    // ---- upgrade TBTC → CBTC on the move after relocalisation (P1 不停车升级)
+    // (not towards a stop in a zone switched to TBTC: it would only degrade again there)
+    if (!avail || tr.forceLevel === 'TBTC' || nextStopZone(sim, tr) !== 'CBTC') { tr.relocSec = -1; continue; }
+    const sec = topo.links[tr.link].section;
+    if (tr.relocSec < 0) { tr.relocSec = sec; continue; }
+    if (sec !== tr.relocSec || tr.phase === 'dwell') {
+      if (setMode(sim, tr, tr.mode === 'CM' ? 'CM' : 'DTO', 'CBTC', '升级CBTC')) tr.relocSec = -1;
+    }
+  }
+}
+
+/** level state of the zone of the train's next stop (after the current dwell); 'CBTC' if none */
+function nextStopZone(sim: Sim, tr: Train) {
+  for (let i = tr.phase === 'dwell' ? 1 : 0; i < tr.tasks.length; i++) {
+    const t = tr.tasks[i];
+    const b = t.k === 'stop' || t.k === 'stable' ? t.berth : t.k === 'reverse' ? (t.chosen >= 0 ? t.chosen : t.berths[0]) : -1;
+    if (b < 0) continue;
+    return sim.zoneState[sim.topo.links[sim.topo.berths[b].link].zone];
+  }
+  return 'CBTC';
+}
+
+export function callDegrade(sim: Sim, tr: Train) {
+  return openCall(sim, {
+    kind: 'degrade', from: `列车 ${trainLabel(tr)} 司机`, train: tr.id,
+    text: '车载与轨旁通信中断，列车已停车，请求降级为TBTC后备ATO运行',
+    options: [{ key: 'approve', label: '同意降级TBTC后备运行' }, { key: 'wait', label: '原地等待' }], auto: 'approve', timeout: 120,
+  });
+}
+
+export function answerDegrade(sim: Sim, tr: Train, option: string): { ok: boolean; msg: string } {
+  if (option !== 'approve') return { ok: true, msg: '司机原地等待' };
+  if (tr.comm || tr.level !== 'CBTC') return { ok: true, msg: '通信已恢复，无需降级' };
+  requestMode(sim, tr, 'AM', 'TBTC');
+  return { ok: true, msg: `司机${MODE_CHANGE_TIME}秒后以TBTC后备ATO运行` };
+}

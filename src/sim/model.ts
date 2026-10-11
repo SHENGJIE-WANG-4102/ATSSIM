@@ -4,10 +4,19 @@
  */
 import type { Dir } from './topology';
 import type { HaltCode, Halt, ArsWait } from './halt';
+import type { TurnbackState, DepotState, PsdState, FaultState } from './fsm';
 
 export type DayType = 'weekday' | 'weekend';
 export type Level = 'CBTC' | 'TBTC';
-export type Mode = 'AM' | 'CM' | 'RM';
+/**
+ * Driving mode. DTO = 有人值守的列车自动运行 (CBTC level only, P4);
+ * AM = TBTC-level ATO (P2 §2.1.1); CM = ATP-protected manual; RM = restricted manual.
+ */
+export type Mode = 'DTO' | 'AM' | 'CM' | 'RM';
+/** cause of an emergency brake application (decides how it may be released) */
+export type EbCause = '' | 'atp' | 'overspeed' | 'comm' | 'zc' | 'spad' | 'rm' | 'driver';
+/** train-level control mode selection (P1 表3: 自动 / 强制CBTC / 强制TBTC) */
+export type ForceLevel = 'AUTO' | 'CBTC' | 'TBTC';
 export type TrackDir = 'DN' | 'UP';
 export type ZoneState = 'CBTC' | 'TBTC' | 'ZCFAIL';
 export type Aspect = 'R' | 'G' | 'Y' | 'GUIDE' | 'DARK' | 'FAIL';
@@ -125,6 +134,24 @@ export interface Train {
   eb: boolean;
   ebReason: string;
   ebSince: number;
+  ebCause: EbCause;
+  /** EB release authorised by the dispatcher (driver report → authorisation → release) */
+  ebAuth: boolean;
+  /** last time the driver reported the EB / asked for its release */
+  ebCallAt: number;
+  /** train-level CBTC/TBTC selection */
+  forceLevel: ForceLevel;
+  /** section where CBTC became available again; the upgrade waits for the next section boundary (relocalisation) */
+  relocSec: number;
+  /** last mode / level change */
+  modeSince: number;
+  /** signal the RM authorisation is bound to (-1 = none: RM gives no authority to pass a signal at danger) */
+  rmSig: number;
+  /** signal passed at danger (-1 none), until the incident is closed */
+  spadSig: number;
+  /** turnback and depot-move stages (fsm.ts TURNBACK / DEPOT) */
+  tbStage: TurnbackState;
+  depotStage: DepotState;
   maDist: number;
   maReason: string;
   /** machine-readable cause of the MA end and the train causing it (-1 none) */
@@ -135,6 +162,10 @@ export interface Train {
   /** distance moved and MA in force during the last fixed step (invariant checks) */
   lastDs: number;
   lastMa: number;
+  /** the EOA was pulled back under the moving train further than it can stop (MA withdrawn: ESP, axle disturbance, ZC/interlocking); cleared at standstill */
+  maCut: boolean;
+  /** signals the current movement authority passes (MA approach locking of their routes) */
+  maSigs: number[];
   /** ATS route-setting wait (why the next route is not set) */
   arsWait: ArsWait | null;
   /** current stop reason */
@@ -288,6 +319,8 @@ export interface ActiveRoute {
   /** train that passed the start signal and owns the route (-1 = none) */
   owner: number;
   cancelAt: number; // delayed cancellation time (0 = none)
+  /** train that could no longer stop before the signal when the route was cancelled: keeps its authority (-1 none) */
+  committed: number;
   setAt: number;
 }
 
@@ -303,9 +336,13 @@ export interface PlatformState {
   hold: boolean;
   skip: boolean;
   esp: boolean; // emergency close
-  psd: 'closed' | 'open' | 'fault';
+  psd: PsdState;
   psdFault: boolean;
+  /** door / PSD linkage (联动) failure: doors worked from the PSL by station staff */
+  psdLinkFault: boolean;
   psdBypass: boolean;
+  /** train whose doors the PSD is currently linked to (-1 none) */
+  psdTrain: number;
   waiting: number;
   surge: number; // multiplier
   stranded: number;
@@ -345,6 +382,7 @@ export type FaultKind =
   | 'switch'
   | 'signal'
   | 'psd'
+  | 'psdLink'
   | 'trainFail'
   | 'surge'
   | 'pecu'
@@ -362,6 +400,10 @@ export interface Fault {
   /** extra parameters */
   param?: number;
   recoverable?: boolean;
+  /** inject → effect → procedure → recovery → closed (fsm.ts FAULT) */
+  stage: FaultState;
+  /** when the stage was entered */
+  stageAt: number;
 }
 
 // ---------------------------------------------------------------- commands (UI → worker)
@@ -387,7 +429,9 @@ export type Command =
   | { c: 'trainSkip'; train: number; station: number; on: boolean }
   | { c: 'turnback'; train: number; station: number }
   | { c: 'withdraw'; train: number }
-  | { c: 'authRM'; train: number }
+  | { c: 'authRM'; train: number; signal?: number }
+  | { c: 'ebRelease'; train: number }
+  | { c: 'trainLevel'; train: number; level: ForceLevel }
   | { c: 'rescue'; failed: number; rescuer: number }
   | { c: 'addTrain'; depot: number; dir: TrackDir; to: number; time: number }
   | { c: 'overlay'; id: string; from: number; to: number; headway: number }
@@ -397,7 +441,7 @@ export type Command =
   | { c: 'repair'; fault: number }
   | { c: 'sectionBlock'; sections: number[]; on: boolean }
   | { c: 'switchBlock'; sw: number; on: boolean }
-  | { c: 'manual'; train: number; mode: 'CM' | 'RM' | 'AM' }
+  | { c: 'manual'; train: number; mode: 'CM' | 'RM' | 'AUTO' }
   | { c: 'radio'; call: number; option: string }
   | { c: 'radioAuto'; on: boolean }
   | { c: 'env'; wind?: number; rain?: boolean; duration: number }
@@ -414,6 +458,8 @@ export interface SimConfig {
   seed: number;
   /** answer radio calls automatically with their default response (headless runs) */
   autoRadio?: boolean;
+  /** automatic dispatcher works the fault recovery procedures (soak / probe runs) */
+  autoDispatch?: boolean;
   /** scenario to run (instructor mode) */
   scenario?: string;
   /** random fault level 0..3 */
@@ -476,6 +522,8 @@ export interface TrainSnap {
   dwellLeft: number;
   nextStation: number;
   ebReason: string;
+  /** machine-readable stop reason while standing (halt.ts), null when running */
+  halt: { code: string; label: string; detail: string; blocker: string; since: number } | null;
   /** signed distance to the stopping point (m, + = short) when near one, else NaN */
   stopErr: number;
   drv: DriveRecord | null;
@@ -498,7 +546,7 @@ export interface RadioCall {
   /** response chosen automatically in auto-answer mode / headless */
   auto: string;
   deadline: number;
-  state: 'ringing' | 'answered' | 'expired';
+  state: 'ringing' | 'answered' | 'expired' | 'withdrawn';
   answer?: string;
   answeredAt?: number;
   repeats: number;

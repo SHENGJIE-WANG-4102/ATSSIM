@@ -1,3 +1,4 @@
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { Sim } from '../src/sim/engine';
 import type { DayType, Train } from '../src/sim/model';
 
@@ -35,6 +36,22 @@ export function assertNoCollision(sim: Sim) {
       }
     }
   }
+}
+
+/**
+ * throws on the first invariant violation found by the simulator's own
+ * per-tick checker (src/sim/invariants.ts); the violation with its state
+ * snapshot is saved to tests/out/ for diagnosis
+ */
+export function assertIntegrity(sim: Sim) {
+  const v = sim.integrity.violations[0];
+  if (!v) return;
+  const file = `tests/out/violation-${v.kind}-${Math.round(v.t)}.json`;
+  try {
+    mkdirSync('tests/out', { recursive: true });
+    writeFileSync(file, JSON.stringify(v, null, 1));
+  } catch { /* the assertion below is what matters */ }
+  throw new Error(`integrity violation ${v.kind} at t=${v.t.toFixed(1)}: ${v.detail} (snapshot ${file})`);
 }
 
 /** an in-service train running on the main line near a chainage window, in a given direction */

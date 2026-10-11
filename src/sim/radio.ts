@@ -12,12 +12,19 @@
 import type { Sim } from './engine';
 import type { RadioCall, Train } from './model';
 import { STATIONS } from '../data/line2';
-import { cmdAuthRM, cmdRescue, grantRM, trainLabel } from './ats';
+import { cmdAuthRM, cmdRescue, trainLabel } from './ats';
+import { grantRM, answerDegrade, answerEbRelease } from './onboard';
+import { setBypass } from './psd';
+import { HALT, type HaltCode } from './halt';
 import { nextLink } from './topology';
 import { swPos } from './interlocking';
 
 export const AUTO_DELAY = 15;
 const REPEAT = 120;
+/** stop reasons for which the driver may be authorised to pass the signal ahead in RM */
+const EQUIPMENT_CODES: HaltCode[] = ['SIGNAL_FAULT', 'SWITCH_FAULT', 'AXLE_FAULT'];
+/** unanswered repeats before the call is raised as an alarm */
+const ESCALATE_AFTER = 2;
 
 export interface CallSpec {
   kind: string;
@@ -34,7 +41,11 @@ export interface CallSpec {
 export function openCall(sim: Sim, spec: CallSpec): RadioCall | null {
   // one ringing call per subject
   if (sim.calls.some((c) => c.state === 'ringing' && c.kind === spec.kind && c.train === spec.train && c.station === spec.station && c.target === spec.target)) return null;
-  const prev = sim.calls.filter((c) => c.kind === spec.kind && c.train === spec.train && c.station === spec.station && c.target === spec.target).length;
+  const same = sim.calls.filter((c) => c.kind === spec.kind && c.train === spec.train && c.station === spec.station && c.target === spec.target);
+  const prev = same.length;
+  // unanswered repeats since the last answer
+  let unanswered = 0;
+  for (let i = same.length - 1; i >= 0 && same[i].state === 'expired'; i--) unanswered++;
   const call: RadioCall = {
     id: sim.nextCallId++, t: sim.t, from: spec.from, kind: spec.kind, text: spec.text, train: spec.train, station: spec.station, target: spec.target,
     options: spec.options, auto: spec.auto, deadline: sim.t + spec.timeout, state: 'ringing', repeats: prev,
@@ -42,6 +53,10 @@ export function openCall(sim: Sim, spec: CallSpec): RadioCall | null {
   sim.calls.push(call);
   if (sim.calls.length > 300) sim.calls.splice(0, sim.calls.length - 300);
   sim.log('I', '通话', `【来电】${spec.from}：${spec.text}${prev ? `（第${prev + 1}次呼叫）` : ''}`);
+  // a request repeated without an answer is escalated to an alarm
+  if (unanswered >= ESCALATE_AFTER) {
+    sim.log('B', '通话', `${spec.from} 已${unanswered}次呼叫未获应答：${spec.text}`, { key: `esc-${spec.kind}-${spec.train ?? ''}-${spec.target ?? ''}`, train: spec.train });
+  }
   return call;
 }
 
@@ -72,20 +87,20 @@ export function answerCall(sim: Sim, id: number, option: string, auto = false): 
 function applyAnswer(sim: Sim, call: RadioCall, option: string): { ok: boolean; msg: string } {
   const tr = call.train !== undefined ? sim.trains.get(call.train) : undefined;
   switch (call.kind) {
-    case 'degrade': {
+    case 'degrade':
       if (!tr) return { ok: false, msg: '列车已不在线' };
-      if (option === 'approve') {
-        if (tr.comm) return { ok: true, msg: '通信已恢复，无需降级' };
-        tr.pendingMode = 'CM';
-        tr.pendingLevel = 'TBTC';
-        tr.pendingModeAt = sim.t + 10;
-        return { ok: true, msg: '司机10秒后以TBTC后备CM模式运行' };
-      }
-      return { ok: true, msg: '司机原地等待' };
-    }
+      return answerDegrade(sim, tr, option);
+    case 'ebRelease':
+      if (!tr) return { ok: false, msg: '列车已不在线' };
+      return answerEbRelease(sim, tr, option);
     case 'rmPreset': {
       if (!tr) return { ok: false, msg: '列车已不在线' };
-      if (option === 'approve') { grantRM(sim, tr, 450 + tr.len, '预复位区段压道'); return { ok: true, msg: '司机以RM模式压道' }; }
+      if (option === 'approve') {
+        // the authority covers the preset section ahead and the one signal protecting it
+        const sig = tr.nextSignal >= 0 && tr.nextSignalDist <= 450 ? tr.nextSignal : -1;
+        if (!grantRM(sim, tr, 450 + tr.len, sig, '预复位区段压道')) return { ok: false, msg: '列车紧急制动中，须先缓解' };
+        return { ok: true, msg: '司机以RM模式压道' };
+      }
       return { ok: true, msg: '司机原地等待' };
     }
     case 'stuck': {
@@ -96,7 +111,7 @@ function applyAnswer(sim: Sim, call: RadioCall, option: string): { ok: boolean; 
           sim.metrics.safety.unsafeAuth++;
           sim.log('A', '安全', `不安全授权：列车 ${trainLabel(tr)} 前方${why}，仍授权RM运行`);
         }
-        return cmdAuthRM(sim, tr);
+        return cmdAuthRM(sim, tr, tr.nextSignal >= 0 ? tr.nextSignal : undefined);
       }
       return { ok: true, msg: '司机原地等待' };
     }
@@ -112,11 +127,7 @@ function applyAnswer(sim: Sim, call: RadioCall, option: string): { ok: boolean; 
     }
     case 'psd': {
       const p = call.target!;
-      if (option === 'bypass') {
-        sim.plat[p].psdBypass = true;
-        sim.clearAlarm(`psd-${p}`);
-        return { ok: true, msg: `${sim.topo.platforms[p].name} 站台门互锁解除` };
-      }
+      if (option === 'bypass') return setBypass(sim, p, true);
       return { ok: true, msg: '等待维修' };
     }
     case 'crowd': {
@@ -292,12 +303,19 @@ export function radioTick(sim: Sim) {
     if (!tr.waitSince) tr.waitSince = sim.t;
     if (sim.t - tr.waitSince >= 180) {
       const r = tr.maReason;
-      // preset sections and comm loss have their own calls
-      if (r === '计轴预复位区段' || r === '车地通信中断') continue;
+      const code = tr.halt.code;
+      // a train held by another train just waits; preset sections and comm loss have their own calls
+      if (tr.halt.train >= 0 || code === 'TRAIN_AHEAD' || code === 'AXLE_PRESET' || code === 'COMM_LOSS') continue;
+      // RM is offered only for an equipment / signalling failure at the signal ahead
+      const equip = EQUIPMENT_CODES.includes(code);
+      // a planned / ordered wait (departure order, hold, layover…) is no reason to call
+      if (HALT[code].exempt && !equip) continue;
       const c = openCall(sim, {
         kind: 'stuck', from: driverOf(tr), train: tr.id,
         text: `在${nearStationName(sim, tr)}因“${r}”停车已超过${Math.floor((sim.t - tr.waitSince) / 60)}分钟，请求指示`,
-        options: [{ key: 'rm', label: '授权RM越过（≤25km/h，目视）', critical: true }, { key: 'wait', label: '原地等待' }],
+        options: equip
+          ? [{ key: 'rm', label: `授权RM越过${tr.nextSignal >= 0 ? ` ${sim.topo.signals[tr.nextSignal].name}` : ''}（≤25km/h，目视）`, critical: true }, { key: 'wait', label: '原地等待' }]
+          : [{ key: 'wait', label: '原地等待（调度处理）' }],
         auto: 'wait', timeout: 120,
       });
       if (c) tr.waitSince = sim.t; // ask again later
@@ -315,6 +333,9 @@ function expire(sim: Sim, c: RadioCall) {
     case 'degrade':
       if (tr && !tr.comm && tr.level === 'CBTC') again(REPEAT / 2);
       break;
+    case 'ebRelease':
+      // the onboard logic repeats the report while the EB stands (onboard.ts)
+      break;
     case 'rmPreset':
       if (tr) again(REPEAT / 2);
       break;
@@ -322,7 +343,7 @@ function expire(sim: Sim, c: RadioCall) {
       if (tr && tr.failed) again(REPEAT);
       break;
     case 'psd':
-      if (sim.plat[c.target!].psd === 'fault' && !sim.plat[c.target!].psdBypass) again(REPEAT);
+      if (sim.plat[c.target!].psd === 'closeFail') again(REPEAT);
       break;
     case 'pecu':
       // the driver stops in section on his own
@@ -365,19 +386,11 @@ function nearStationName(sim: Sim, tr: Train): string {
 
 // ---------------------------------------------------------------- call factories used by other modules
 
-export function callDegrade(sim: Sim, tr: Train) {
-  return openCall(sim, {
-    kind: 'degrade', from: driverOf(tr), train: tr.id,
-    text: '车载与轨旁通信中断，列车已停车，请求降级为TBTC后备CM模式运行',
-    options: [{ key: 'approve', label: '同意降级CM运行' }, { key: 'wait', label: '原地等待' }], auto: 'approve', timeout: 120,
-  });
-}
-
 export function callRmPreset(sim: Sim, tr: Train) {
   return openCall(sim, {
     kind: 'rmPreset', from: driverOf(tr), train: tr.id,
     text: '前方区段计轴预复位，请求以RM模式压道运行',
-    options: [{ key: 'approve', label: '同意RM压道' }, { key: 'wait', label: '原地等待' }], auto: 'approve', timeout: 120,
+    options: [{ key: 'approve', label: '同意RM压道', critical: true }, { key: 'wait', label: '原地等待' }], auto: 'wait', timeout: 120,
   });
 }
 

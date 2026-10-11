@@ -4,16 +4,16 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Sim } from '../src/sim/engine';
-import { makeSim, runFor, assertNoCollision, pickTrain, dirOf } from './helpers';
+import { makeSim, runFor, assertNoCollision, assertIntegrity, pickTrain, dirOf } from './helpers';
 import { trainAheadOf } from '../src/sim/ats';
 
 const st = (sim: Sim, name: string) => sim.topo.stations.find((s) => s.name === name)!;
 const H = 8 * 3600;
 
-function stepCheck(sim: Sim) { assertNoCollision(sim); }
+function stepCheck(sim: Sim) { assertNoCollision(sim); assertIntegrity(sim); }
 
 describe('faults', () => {
-  it('train communication loss → TBTC/CM with occupancy protection → upgrade after recovery', () => {
+  it('train communication loss → EB → TBTC ATO (AM) with occupancy protection → re-upgrade to DTO after recovery', () => {
     const sim = makeSim('weekday', H);
     const tr = pickTrain(sim, (t, ch) => dirOf(sim, t) === 'DN' && ch > 15000 && ch < 22000 && t.v > 5);
     const r = sim.command({ c: 'fault', kind: 'trainComm', target: tr.id, duration: 900 });
@@ -24,14 +24,15 @@ describe('faults', () => {
     expect(tr.eb || tr.v < 5).toBe(true);
     runFor(sim, 90, stepCheck);
     expect(tr.level).toBe('TBTC');
-    expect(tr.mode).toBe('CM');
+    expect(tr.mode).toBe('AM');
+    expect(tr.eb).toBe(false);
     const ch0 = sim.trainChain(tr);
     runFor(sim, 300, stepCheck);
     expect(sim.trainChain(tr)).toBeGreaterThan(ch0 + 500);
     runFor(sim, 700, stepCheck);
     expect(tr.comm).toBe(true);
     expect(tr.level).toBe('CBTC');
-    expect(tr.mode).toBe('AM');
+    expect(tr.mode).toBe('DTO');
   });
 
   it('ZC failure → trains stop → switchover to TBTC → restore CBTC', () => {
@@ -41,7 +42,8 @@ describe('faults', () => {
     runFor(sim, 40, stepCheck);
     const inZone = sim.trainList.filter((t) => sim.topo.links[t.link].zone === zone && t.phase === 'run');
     expect(inZone.length).toBeGreaterThan(3);
-    expect(inZone.every((t) => t.v < 0.5)).toBe(true);
+    // no CBTC authority in the failed zone: every train there has stopped or runs on the TBTC backup
+    expect(inZone.every((t) => t.v < 0.5 || t.level === 'TBTC')).toBe(true);
     expect(sim.command({ c: 'zoneLevel', zones: [zone], level: 'CBTC' }).ok).toBe(false);
     expect(sim.command({ c: 'zoneLevel', zones: [zone], level: 'TBTC' }).ok).toBe(true);
     const pos = new Map(inZone.map((t) => [t.id, sim.trainChain(t)]));
@@ -67,7 +69,14 @@ describe('faults', () => {
     runFor(sim, 70, stepCheck);
     expect(sim.command({ c: 'axleReset', section: sec.id }).ok).toBe(true);
     expect(sim.sec[sec.id].preset).toBe(true);
-    runFor(sim, 360, stepCheck);
+    // the first train asks to sweep the preset section in RM; auto-answer never grants RM, the dispatcher does
+    let answered = false;
+    runFor(sim, 360, (s) => {
+      stepCheck(s);
+      const c = s.calls.find((x) => x.kind === 'rmPreset' && x.state === 'ringing');
+      if (c && !answered) { answered = s.command({ c: 'radio', call: c.id, option: 'approve' }).ok; }
+    });
+    expect(answered).toBe(true);
     expect(sim.sec[sec.id].preset).toBe(false);
     expect(sim.sec[sec.id].disturbed).toBe(false);
     expect(sim.events.some((e) => e.text.includes('预复位区段压道'))).toBe(true);

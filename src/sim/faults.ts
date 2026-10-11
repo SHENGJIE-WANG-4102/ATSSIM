@@ -5,8 +5,10 @@ import type { Sim } from './engine';
 import type { Fault, FaultKind } from './model';
 import { STATIONS } from '../data/line2';
 import { cancelRoute } from './interlocking';
+import { withdrawAuthority } from './movement';
 import { failTrain, recoverTrain, trainLabel } from './ats';
 import { callRescue, callPecu, callTrackPerson } from './radio';
+import { psdRepaired } from './psd';
 
 export const FAULT_LABELS: Record<FaultKind, string> = {
   trainComm: '列车车地通信中断',
@@ -15,6 +17,7 @@ export const FAULT_LABELS: Record<FaultKind, string> = {
   switch: '道岔失表',
   signal: '信号机故障',
   psd: '站台门故障',
+  psdLink: '站台门与信号联动故障',
   trainFail: '列车故障',
   surge: '车站大客流',
   pecu: '车厢乘客紧急报警',
@@ -24,7 +27,7 @@ export const FAULT_LABELS: Record<FaultKind, string> = {
 export function injectFault(sim: Sim, kind: FaultKind, target: number, duration: number, param?: number, recoverable?: boolean): { ok: boolean; msg: string } {
   const { topo } = sim;
   const repairAt = duration > 0 ? sim.t + duration : Infinity;
-  const f: Fault = { id: sim.nextFaultId++, kind, target, since: sim.t, repairAt, repaired: false, text: '', param, recoverable };
+  const f: Fault = { id: sim.nextFaultId++, kind, target, since: sim.t, repairAt, repaired: false, text: '', param, recoverable, stage: 'effect', stageAt: sim.t };
   sim.metrics.faults++;
   switch (kind) {
     case 'pecu': {
@@ -65,6 +68,8 @@ export function injectFault(sim: Sim, kind: FaultKind, target: number, duration:
       const s = sim.sw[target];
       s.failed = true;
       s.fieldLock = false;
+      // the interlocking reports the lost detection: the ZC pulls every MA back before the switch
+      for (const tr of sim.trainList) if (tr.phase === 'run') withdrawAuthority(sim, tr);
       f.text = `道岔 ${topo.switches[target].name} 失去表示`;
       sim.log('A', '信号', `${f.text}（${STATIONS[topo.switches[target].station].name}）`, { key: `sw-${target}` });
       break;
@@ -72,7 +77,9 @@ export function injectFault(sim: Sim, kind: FaultKind, target: number, duration:
     case 'signal': {
       const s = sim.sig[target];
       s.failed = true;
-      if (s.route >= 0) cancelRoute(sim, target, { force: true });
+      // the signal drops to danger; its route is cancelled as by the desk (approach locking
+      // holds it for a train that can no longer stop, an occupied route stays until cleared)
+      if (s.route >= 0) cancelRoute(sim, target);
       f.text = `信号机 ${topo.signals[target].name} 故障（无法开放）`;
       sim.log('B', '信号', `${f.text}（${STATIONS[topo.signals[target].station].name}）`, { key: `sig-${target}` });
       break;
@@ -82,6 +89,13 @@ export function injectFault(sim: Sim, kind: FaultKind, target: number, duration:
       p.psdFault = true;
       f.text = `${topo.platforms[target].name} 站台门故障`;
       sim.log('C', '车站', `${f.text}（下一次关门时无法关闭锁紧）`);
+      break;
+    }
+    case 'psdLink': {
+      const p = sim.plat[target];
+      p.psdLinkFault = true;
+      f.text = `${topo.platforms[target].name} 站台门与信号联动故障`;
+      sim.log('B', '车站', `${f.text}：车门与站台门不能联动，由车站人员在PSL操作站台门`, { key: `psdl-${target}` });
       break;
     }
     case 'trainFail': {
@@ -172,12 +186,15 @@ export function faultsTick(sim: Sim) {
         break;
       case 'psd': {
         const p = sim.plat[f.target];
-        p.psdFault = false;
-        if (p.psd === 'fault') p.psd = 'closed';
-        sim.clearAlarm(`psd-${f.target}`);
+        psdRepaired(sim, f.target);
         sim.log('C', '车站', `${f.text} 已修复${p.psdBypass ? '，请取消互锁解除' : ''}`);
         break;
       }
+      case 'psdLink':
+        sim.plat[f.target].psdLinkFault = false;
+        sim.clearAlarm(`psdl-${f.target}`);
+        sim.log('C', '车站', `${f.text} 已修复，站台门恢复联动`);
+        break;
       case 'surge': {
         const st = topo.stations[f.target];
         sim.plat[st.platforms.DN].surge = 1;

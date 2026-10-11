@@ -8,9 +8,11 @@ import type { Block, StopTask, Task, Train, Trip, TrackDir } from './model';
 import type { Dir, Topology } from './topology';
 import { nextLink } from './topology';
 import { cancelRoute, swPos, trySetRoute, releaseRoute, approachLocked } from './interlocking';
-import { computeBody, reverseTrain, goalBerth, triggerEB, stopError, moveBack } from './movement';
+import { computeBody, reverseTrain, goalBerth, stopError, moveBack } from './movement';
 import { takeVehicle, putVehicle } from './yard';
-import { callDegrade, callRmPreset, callPsd } from './radio';
+import { callRmPreset } from './radio';
+import { applyEB, grantRM, setMode, distToNextSignal } from './onboard';
+import { openDoors, closeDoors } from './psd';
 import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation } from './timetable';
 import { STATIONS, LINE_INFO } from '../data/line2';
 import { boardAndAlight } from './passengers';
@@ -176,6 +178,30 @@ export function routeBlocker(sim: Sim, rid: number, self: number): { train: numb
   return { train: -1, detail: '' };
 }
 
+/**
+ * Infrastructure fault / protection that keeps a route from being set:
+ * the train then waits on that cause (exempt from the liveness rule while the
+ * fault and its recovery procedure last) rather than on a conflicting route.
+ */
+export function routeFaultCode(sim: Sim, rid: number): HaltCode | null {
+  const r = sim.topo.routes[rid];
+  if (sim.sig[r.start].failed) return 'SIGNAL_FAULT';
+  for (const { sw } of r.switches) {
+    const st = sim.sw[sw];
+    // without detection only a guide route can be set over it (after field locking)
+    if (st.failed) return 'SWITCH_FAULT';
+    if (st.blocked) return 'BLOCKED';
+  }
+  for (const s of r.sections) {
+    const st = sim.sec[s];
+    if (st.poss >= 0) return 'POSSESSION';
+    if (st.blocked) return 'BLOCKED';
+    if (st.preset) return 'AXLE_PRESET';
+    if (st.disturbed) return 'AXLE_FAULT';
+  }
+  return null;
+}
+
 function setArsWait(sim: Sim, tr: Train, code: HaltCode, train: number, signal: number, detail = '') {
   const w: ArsWait = { code, train: train === tr.id ? -1 : train, signal, t: sim.t, detail };
   tr.arsWait = w;
@@ -236,9 +262,10 @@ export function newTrain(sim: Sim, block: Block | null, link: number, off: numbe
     id: sim.nextTrainId++, vehicle, svc: block?.svc ?? '---', tripNo: '----', tripId: -1, block: block?.id ?? -1,
     destText: '', destStation: -1,
     link, off, dir, hist, body: [], len: LINE_INFO.trainLength, v: 0, a: 0,
-    level: 'CBTC', comm: true, mode: 'AM', eb: false, ebReason: '', ebSince: 0,
+    level: 'CBTC', comm: true, mode: 'DTO', eb: false, ebReason: '', ebSince: 0, ebCause: '', ebAuth: false, ebCallAt: 0,
+    forceLevel: 'AUTO', relocSec: -1, modeSince: sim.t, rmSig: -1, spadSig: -1, tbStage: 'none', depotStage: 'none', maSigs: [],
     maDist: 0, maReason: '', maCode: 'NONE', maTrain: -1, maFar: 0, maFarReason: '', maFarCode: 'NONE', maFarTrain: -1,
-    lastDs: 0, lastMa: Infinity, arsWait: null, halt: newHalt(), vTarget: 0, vPermit: 0, stopDist: Infinity, rmAuth: 0, rmReason: '',
+    lastDs: 0, lastMa: Infinity, maCut: false, arsWait: null, halt: newHalt(), vTarget: 0, vPermit: 0, stopDist: Infinity, rmAuth: 0, rmReason: '',
     pendingModeAt: 0, pendingMode: null, pendingLevel: null,
     tasks: [], phase: 'run', phaseSince: sim.t, dwellUntil: 0, doorsOpen: false, arrivedAt: 0, depReadyAt: 0,
     load: 0, delay: 0, hold: false, skipStations: new Set(), failed: false, failRecoverAt: 0, failRecoverable: true,
@@ -373,20 +400,11 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
     if (ps.esp) { tr.dwellUntil = Math.max(tr.dwellUntil, sim.t + 1); return; }
     const held = tr.hold || ps.hold;
     if (sim.t < tr.dwellUntil || held) return;
-    // doors closing
+    // doors closing (train doors and PSD linked, psd.ts)
     if (tr.doorsOpen) {
-      if (ps.psdFault && !ps.psdBypass) {
-        if (ps.psd !== 'fault') {
-          ps.psd = 'fault';
-          sim.log('A', '车站', `${topo.platforms[p].name} 站台门无法关闭锁紧，列车 ${trainLabel(tr)} 无法发车`, { key: `psd-${p}` });
-          callPsd(sim, p);
-        }
-        return;
-      }
-      tr.doorsOpen = false;
-      ps.psd = ps.psdFault ? 'fault' : 'closed';
-      tr.dwellUntil = sim.t + 4 + (ps.psdFault && ps.psdBypass ? 25 : 0);
-      if (ps.psdFault && ps.psdBypass) sim.log('I', '车站', `${topo.platforms[p].name} 站台门互锁解除，人工确认后发车`);
+      const extra = closeDoors(sim, tr, p);
+      if (extra < 0) return;
+      tr.dwellUntil = sim.t + 4 + extra;
       return;
     }
     // depart
@@ -449,23 +467,23 @@ function arriveAtBerth(sim: Sim, tr: Train, task: Task) {
     }
     recordTrace(sim, tr, true);
     let dwell = 10;
+    let doorExtra = 0;
     if (task.doors) {
-      tr.doorsOpen = true;
-      ps.psd = ps.psdFault ? 'fault' : 'open';
+      doorExtra = openDoors(sim, tr, p);
       const before = tr.load;
       const paxDwell = boardAndAlight(sim, tr, p, task);
       if (tr.delay > 120) sim.metrics.boardedDelayed += Math.max(0, tr.load - before) + Math.round(before * 0.3);
       dwell = Math.max(task.minDwell ?? 18, paxDwell);
     } else if (!task.revenue && tr.load > 0) {
       // clear-out (清客)
-      tr.doorsOpen = true;
-      ps.psd = ps.psdFault ? 'fault' : 'open';
+      doorExtra = openDoors(sim, tr, p);
       sim.passengersCleared += tr.load;
       sim.metrics.cleared += tr.load;
       tr.load = 0;
       dwell = Math.max(task.minDwell ?? 60, 60);
     }
     if (task.minDwell) dwell = Math.max(dwell, task.minDwell);
+    dwell += doorExtra;
     if (tr.extraDwell > 0) { dwell += tr.extraDwell; tr.extraDwell = 0; }
     // regulation: hold early trains to the timetable, shorten dwell for late ones
     let ready = sim.t + dwell;
@@ -669,7 +687,8 @@ export function runARS(sim: Sim) {
     }
     if (!res.ok) {
       const b = routeBlocker(sim, d.route, d.train.id);
-      setArsWait(sim, d.train, 'ROUTE_CONFLICT', b.train, d.signal, b.detail || res.msg);
+      const fault = b.train < 0 ? routeFaultCode(sim, d.route) : null;
+      setArsWait(sim, d.train, fault ?? 'ROUTE_CONFLICT', b.train, d.signal, b.detail || res.msg);
     } else d.train.arsWait = null;
   }
   // restore automatic (fleeting) routes on idle signals
@@ -914,69 +933,23 @@ function nearestBerthAhead(sim: Sim, f: Train): number {
   return -1;
 }
 
-// ---------------------------------------------------------------- level / mode management (per second)
-
-export function updateLevels(sim: Sim) {
-  const { topo } = sim;
-  for (const tr of sim.trainList) {
-    const zone = sim.zoneState[topo.links[tr.link].zone];
-    // pending driver actions
-    if (tr.pendingMode && sim.t >= tr.pendingModeAt) {
-      if (tr.pendingLevel) tr.level = tr.pendingLevel;
-      tr.mode = tr.pendingMode;
-      sim.log('I', '列车', `列车 ${trainLabel(tr)} 转换为 ${tr.level === 'TBTC' ? 'TBTC后备' : 'CBTC'} ${tr.mode} 模式`);
-      tr.pendingMode = null;
-      tr.pendingLevel = null;
-    }
-    if (tr.pendingMode) continue;
-    // RM authorisation finished → back to supervised modes
-    if (tr.mode === 'RM' && tr.rmAuth <= 0 && tr.coupledLen === 0 && tr.tasks[0]?.k !== 'rescue' && !tr.manual) {
-      tr.mode = tr.level === 'CBTC' || (zone === 'TBTC') ? 'AM' : 'CM';
-      if (!tr.comm) tr.mode = 'CM';
-      sim.log('I', '列车', `列车 ${trainLabel(tr)} 结束RM，恢复 ${tr.mode} 模式`);
-    }
-    if (tr.comm) {
-      if (zone === 'CBTC' && tr.level === 'TBTC') {
-        tr.level = 'CBTC';
-        if (tr.mode === 'CM') tr.mode = 'AM';
-        sim.log('I', '列车', `列车 ${trainLabel(tr)} 升级至 CBTC ${tr.mode}`);
-      } else if (zone === 'TBTC' && tr.level === 'CBTC') {
-        tr.level = 'TBTC';
-        sim.log('I', '列车', `列车 ${trainLabel(tr)} 进入TBTC区域，转TBTC后备运行`);
-      } else if (zone === 'ZCFAIL' && tr.level === 'CBTC' && tr.v < 0.05 && tr.mode !== 'RM') {
-        // stuck until the area is switched to TBTC (or RM authorised)
-      }
-    } else if (tr.level === 'CBTC' && tr.v < 0.05 && tr.mode !== 'RM') {
-      // the driver asks the dispatcher for permission to degrade
-      callDegrade(sim, tr);
-    }
-  }
-}
-
 /** driver reaction to guide signals / preset sections: switch to RM */
 export function driverRM(sim: Sim) {
   const { topo } = sim;
   for (const tr of sim.trainList) {
-    if (tr.phase !== 'run' || tr.v > 0.05 || tr.mode === 'RM' || tr.failed || tr.pendingMode || tr.manual) continue;
+    if (tr.phase !== 'run' || tr.v > 0.05 || tr.mode === 'RM' || tr.failed || tr.pendingMode || tr.manual || tr.eb) continue;
     if (tr.maDist > 35) continue;
     if (tr.nextSignal >= 0 && tr.nextSignalDist < 40 && sim.sig[tr.nextSignal].aspect === 'GUIDE') {
       const rid = sim.sig[tr.nextSignal].route;
       const len = rid >= 0 ? topo.routes[rid].length : 300;
-      grantRM(sim, tr, len + tr.len + 30, `引导信号 ${topo.signals[tr.nextSignal].name}`);
+      // the guide aspect is the per-signal RM authority for this one signal
+      grantRM(sim, tr, len + tr.len + 30, tr.nextSignal, `引导信号 ${topo.signals[tr.nextSignal].name}`);
       continue;
     }
     if (tr.maReason === '计轴预复位区段') {
       callRmPreset(sim, tr);
     }
   }
-}
-
-export function grantRM(sim: Sim, tr: Train, metres: number, reason: string) {
-  tr.mode = 'RM';
-  tr.rmAuth = metres;
-  tr.rmReason = reason;
-  tr.eb = false;
-  sim.log('C', '列车', `列车 ${trainLabel(tr)} 以RM模式（≤25km/h）运行：${reason}`);
 }
 
 // ---------------------------------------------------------------- dispatcher train commands
@@ -1137,10 +1110,40 @@ export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
   return { ok: true, msg: `列车 ${tr.svc}（${tr.vehicle}）退出服务（${reason}），清客后回${topo.depots[depot].name}` };
 }
 
-export function cmdAuthRM(sim: Sim, tr: Train) {
+/**
+ * Dispatcher RM authorisation: bound to one signal (default: the next signal
+ * ahead). The authority covers the approach to that signal and the route /
+ * block section behind it, up to the following signal.
+ */
+export function cmdAuthRM(sim: Sim, tr: Train, signal?: number) {
   if (tr.failed) return { ok: false, msg: '列车故障中' };
-  grantRM(sim, tr, 600, '调度授权RM运行');
-  return { ok: true, msg: `授权列车 ${trainLabel(tr)} 以RM模式运行600m（≤25km/h，目视行车）` };
+  if (tr.eb) return { ok: false, msg: '列车紧急制动中，须先授权缓解' };
+  if (tr.v > 0.1) return { ok: false, msg: '列车须停车后转RM' };
+  const sig = signal ?? tr.nextSignal;
+  if (sig < 0) return { ok: false, msg: '前方无信号机' };
+  const d = sig === tr.nextSignal ? tr.nextSignalDist : distToNextSignal(sim, tr);
+  const beyond = signalBlockLength(sim, sig);
+  if (!grantRM(sim, tr, d + beyond, sig, `调度授权越过信号机 ${sim.topo.signals[sig].name}`)) return { ok: false, msg: '当前条件下不能转RM' };
+  return { ok: true, msg: `授权列车 ${trainLabel(tr)} 以RM模式越过 ${sim.topo.signals[sig].name}（${Math.round(d + beyond)} m，≤25km/h，目视行车）` };
+}
+
+/** length from a signal to the next signal in its direction (the block it protects) */
+function signalBlockLength(sim: Sim, sig: number): number {
+  const { topo } = sim;
+  const s = topo.signals[sig];
+  let link = s.link;
+  let dir = s.dir;
+  let d = 0;
+  for (let i = 0; i < 40 && d < 3000; i++) {
+    d += topo.links[link].len;
+    const nx = nextLink(topo, link, dir, (sw) => swPos(sim, sw));
+    if (!nx) break;
+    const node = dir === 1 ? topo.links[link].b : topo.links[link].a;
+    if (topo.signalByEntry.has(node * 65536 + nx.link)) break;
+    link = nx.link;
+    dir = nx.dir;
+  }
+  return d;
 }
 
 // ---------------------------------------------------------------- rescue
@@ -1211,7 +1214,9 @@ function rescueStep(sim: Sim, tr: Train, target: number) {
   // approach in RM when close
   const gapToFailed = tr.maReason === '救援连挂' ? tr.maDist : Infinity;
   if (tr.mode !== 'RM' && tr.v < 0.05 && tr.maDist < 60 && (tr.maReason === '救援连挂' || tr.maReason.startsWith('前方') || tr.maReason === '前车' || tr.maReason === '非通信车占用')) {
-    grantRM(sim, tr, 400, '救援连挂（≤3km/h 接近）');
+    // the rescue order authorises passing the signal between the rescuer and the failed train
+    const sig = tr.nextSignal >= 0 && tr.nextSignalDist <= tr.maDist + 15 ? tr.nextSignal : -1;
+    grantRM(sim, tr, 400, sig, '救援连挂（≤3km/h 接近）');
   }
   if (gapToFailed < 0.6 && tr.v < 0.05) {
     tr.phase = 'coupling';
@@ -1254,8 +1259,9 @@ function completeCoupling(sim: Sim, tr: Train) {
   if (fault) { fault.repaired = true; }
   sim.clearAlarm(`tf-${f.id}`);
   sim.removeTrain(f);
-  tr.mode = 'RM';
+  setMode(sim, tr, 'RM', tr.level, '');
   tr.rmAuth = 0;
+  tr.rmSig = -1;
   tr.tripNo = '救援';
   tr.phase = 'run';
   // continue to the next station, detrain, then to the nearest depot / siding
@@ -1286,7 +1292,7 @@ export function failTrain(sim: Sim, tr: Train, recoverable: boolean, recoverAfte
   tr.failRecoverable = recoverable;
   tr.failRecoverAt = sim.t + recoverAfter;
   tr.phase = tr.phase === 'dwell' ? 'dwell' : 'failed';
-  if (tr.v > 0.1) triggerEB(sim, tr, '列车牵引/制动故障');
+  if (tr.v > 0.1) applyEB(sim, tr, '列车牵引/制动故障', 'driver');
   tr.v = 0;
 }
 

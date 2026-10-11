@@ -48,7 +48,7 @@ export const NOTCHES: { v: number; label: string; cls: string }[] = [
 ];
 
 /** on-screen wording */
-const modeWord = (m: string) => (m === 'AM' ? 'DTO' : m);
+const modeWord = (m: string) => m;
 const availWord = (a: DmiData['avail']) => (a.mode === 'RM' ? 'RM' : `${modeWord(a.mode)}-${a.level === 'CBTC' ? 'C' : 'T'}`);
 
 // dial geometry
@@ -281,7 +281,7 @@ export class Dmi {
     c.fillStyle = C.white;
     roundRect(c, 418, 330, 9, 40, 2); c.fill();
     c.font = `bold 40px ${FONT}`;
-    c.fillText(t.mode === 'AM' ? 'AA' : 'MM', 434, 368);
+    c.fillText(t.mode === 'DTO' || t.mode === 'AM' ? 'AA' : 'MM', 434, 368);
     const dc = t.doors ? C.yellow : C.green;
     for (const x of [598, 624]) {
       c.fillStyle = dc;
