@@ -4,12 +4,12 @@
  * A checkpoint is a deep copy of all dynamic state except the trains' task
  * lists, which are shared structurally: task objects are treated as
  * immutable (see cowTask in ats.ts), so only the arrays are copied. The plan
- * is captured as its mutable parts (trip count, cancellations, blocks).
+ * includes every trip and circulation so a fresh simulator can restore
+ * timetable edits, together with events and integrity observation history.
  */
 import type { Sim } from './engine';
-import type { Train, Block } from './model';
+import type { Train, Plan, SimEvent } from './model';
 import { indexBodies } from './movement';
-import { resetObservation } from './invariants';
 
 export interface Checkpoint {
   t: number;
@@ -18,20 +18,25 @@ export interface Checkpoint {
   nextEventId: number;
   depLogLen: number;
   drivingStopsLen: number;
+  inputCursor: number;
+  inputs: Sim['inputLog'];
   data: Record<string, unknown>;
   trains: Train[];
-  plan: { tripsLen: number; cancelled: Uint8Array; blocks: Block[]; periodsLen: number; overlaysLen: number; fleetPeak: number };
+  plan: Plan;
+  events: SimEvent[];
+  depLog: Sim['depLog'];
+  drivingStops: Sim['drivingStops'];
 }
 
 const CLONED = [
   'sw', 'sec', 'sig', 'plat', 'zoneState', 'routes', 'routeUnlockedSw', 'berthRes', 'depotStock', 'depotShortLogged', 'blockDone',
   'faults', 'alarms', 'noRouteLogged', 'truncatedTrips', 'yards', 'stabledPool', 'calls', 'pendingCalls', 'env', 'possessions',
-  'metrics', 'scenario', 'dispatcher',
+  'ridership', 'metrics', 'scenario', 'dispatcher', 'integrity', 'bookmarks', 'incidents',
 ] as const;
 
 const SCALARS = [
-  'nextTrainId', 'nextFaultId', 'passengersServed', 'passengersCleared', 'passengersStranded', 'depTotal', 'depOnTime', 'tripsDone',
-  'nextCallId', 'autoRadio', 'autoDispatch', 'scenarioFired', 'randomLevel', 'nextRandomAt',
+  'passengerScale', 'nextTrainId', 'nextFaultId', 'passengersServed', 'passengersCleared', 'passengersStranded', 'depTotal', 'depOnTime', 'tripsDone',
+  'nextCallId', 'autoRadio', 'autoDispatch', 'scenarioFired', 'randomLevel', 'nextRandomAt', 'nextBookmarkId', 'planRev',
 ] as const;
 
 function cloneTrain(tr: Train): Train {
@@ -56,8 +61,6 @@ export function capture(sim: Sim): Checkpoint {
   for (const k of CLONED) data[k] = structuredClone(rec[k]);
   for (const k of SCALARS) data[k] = rec[k];
   const plan = sim.plan;
-  const cancelled = new Uint8Array(plan.trips.length);
-  plan.trips.forEach((t, i) => { cancelled[i] = t.cancelled ? 1 : 0; });
   return {
     t: sim.t,
     secAcc: sim.secAcc,
@@ -65,12 +68,16 @@ export function capture(sim: Sim): Checkpoint {
     nextEventId: sim.nextEventId,
     depLogLen: sim.depLog.length,
     drivingStopsLen: sim.drivingStops.length,
+    inputCursor: sim.inputLog.length,
+    inputs: sim.inputLog.slice(),
     data,
     trains: sim.trainList.map(cloneTrain),
-    plan: {
-      tripsLen: plan.trips.length, cancelled, blocks: plan.blocks.map((b) => ({ ...b, trips: b.trips.slice() })),
-      periodsLen: plan.periods.length, overlaysLen: plan.overlays.length, fleetPeak: plan.fleetPeak,
-    },
+    // Stop arrays are immutable; cancellation and block assignment live on trip objects.
+    plan: { ...plan, trips: plan.trips.map(t => ({ ...t })), blocks: structuredClone(plan.blocks),
+      periods: plan.periods.slice(), overlays: plan.overlays.slice() },
+    events: sim.events.slice(),
+    depLog: sim.depLog.slice(),
+    drivingStops: sim.drivingStops.slice(),
   };
 }
 
@@ -81,31 +88,25 @@ export function restore(sim: Sim, cp: Checkpoint) {
   sim.t = cp.t;
   sim.secAcc = cp.secAcc;
   sim.rngState = cp.rngState;
+  sim.inputLog = cp.inputs?.slice() ?? [];
   // trains
   sim.trains.clear();
   sim.trainList = cp.trains.map(cloneTrain);
   for (const tr of sim.trainList) sim.trains.set(tr.id, tr);
   indexBodies(sim);
   // plan
-  const plan = sim.plan;
-  plan.trips.length = cp.plan.tripsLen;
-  plan.trips.forEach((t, i) => { if (cp.plan.cancelled[i]) t.cancelled = true; else delete t.cancelled; });
-  plan.blocks = cp.plan.blocks.map((b) => ({ ...b, trips: b.trips.slice() }));
-  plan.periods.length = cp.plan.periodsLen;
-  plan.overlays.length = cp.plan.overlaysLen;
-  plan.fleetPeak = cp.plan.fleetPeak;
+  sim.plan = { ...cp.plan, trips: cp.plan.trips.map(t => ({ ...t })), blocks: structuredClone(cp.plan.blocks),
+    periods: cp.plan.periods.slice(), overlays: cp.plan.overlays.slice() };
   sim.planDirty = true;
   // logs
-  sim.events = sim.events.filter((e) => e.id < cp.nextEventId);
+  sim.events = cp.events.slice();
   sim.nextEventId = cp.nextEventId;
   sim.newEvents = [];
   sim.alarmsDirty = true;
-  sim.depLog.length = Math.min(sim.depLog.length, cp.depLogLen);
-  sim.drivingStops.length = Math.min(sim.drivingStops.length, cp.drivingStopsLen);
+  sim.depLog = cp.depLog.slice();
+  sim.drivingStops = cp.drivingStops.slice();
   sim.removedTraces = [];
   sim.reportReady = null;
-  sim.bookmarks = sim.bookmarks.filter((b) => !b.auto || b.t <= cp.t);
-  resetObservation(sim);
 }
 
 /** compact fingerprint of the dynamic state (tests: replay determinism) */

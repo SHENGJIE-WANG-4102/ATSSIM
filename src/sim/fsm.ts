@@ -154,17 +154,19 @@ export const ROUTE: Machine<RouteState> = {
 
 // ---------------------------------------------------------------- turnback (per train)
 
-export type TurnbackState = 'none' | 'arrive' | 'reverse' | 'depart';
+export type TurnbackState = 'none' | 'arrive' | 'reverse' | 'manual' | 'depart';
 
 export const TURNBACK: Machine<TurnbackState> = {
   name: 'turnback',
   label: '折返（含区间折返）',
-  states: ['none', 'arrive', 'reverse', 'depart'],
+  states: ['none', 'arrive', 'reverse', 'manual', 'depart'],
   initial: ['none', 'arrive'],
   table: [
     { from: 'none', to: 'arrive', on: '下一作业为折返：驶向折返股道' },
     { from: 'arrive', to: 'reverse', on: '在折返股道停稳，换端' },
     { from: 'reverse', to: 'depart', on: '换端完成；出发站台空闲时排列牵出进路' },
+    { from: 'reverse', to: 'manual', on: 'TBTC正向折返换端完成，待司机人工牵出（P3 §2.4.1）' },
+    { from: 'manual', to: 'depart', on: '司机越过牵出信号内方，重新获得TBTC授权；或恢复CBTC' },
     { from: 'depart', to: 'none', on: '到达出发站台' },
     { from: 'arrive', to: 'none', on: '折返计划取消' },
     { from: 'depart', to: 'arrive', on: '牵出后再次折返（调度调整）' },

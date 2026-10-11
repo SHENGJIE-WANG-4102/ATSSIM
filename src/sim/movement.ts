@@ -86,6 +86,39 @@ function trainInSection(sim: Sim, sec: number, self: number): number {
   return -1;
 }
 
+/** An assigned rescuer may enter the failed train's existing occupied route
+ * on sight. It cannot realign points, pass another train, or use an opposing
+ * route. Ordinary followers never receive this permission. */
+export function rescueRouteReady(sim: Sim, tr: Train, signal: number): boolean {
+  const task=tr.tasks[0];
+  if(task?.k!=='rescue'||tr.rescuing!==task.target||signal<0)return false;
+  const target=sim.trains.get(task.target);const rid=sim.sig[signal].route;
+  const ar=sim.routes.get(rid);const route=sim.topo.routes[rid];
+  if(!target?.failed||target.rescueBy!==tr.id||!ar||!route||ar.state!=='locked'||ar.cancelAt!==0
+    ||!ar.entered||ar.owner!==target.id||route.steps[0]?.dir!==sim.topo.signals[signal].dir)return false;
+  // A terminal tail can be entered against its nominal track direction.
+  // This permission never extends to opposing moves on the running line.
+  if(route.steps.some(step=>{
+    const link=sim.topo.links[step.link];
+    const tail=link.platform<0&&(Math.max(link.chainA,link.chainB)<sim.topo.stations[0].chain
+      ||Math.min(link.chainA,link.chainB)>sim.topo.stations.at(-1)!.chain);
+    return link.normalDir!==0&&link.normalDir!==step.dir&&!tail;
+  }))return false;
+  if(route.switches.some(({sw,pos})=>sim.sw[sw].failed||swPos(sim,sw)!==pos))return false;
+  // RM sighting can sweep a counter preset. Physical bodies and point proof
+  // still apply, and a foreign route/TD protection cannot be displaced.
+  if(route.sections.some(s=>sim.sec[s].blocked||sim.sec[s].envTsr<0||sim.sec[s].directionEsp
+    ||sim.sec[s].lockRoute>=0&&sim.sec[s].lockRoute!==rid))return false;
+  let found=false;
+  for(const step of route.steps)for(const body of sim.linkBodies.get(step.link)??[]){
+    if(body.train===tr.id)continue;
+    if(body.train!==target.id)return false;
+    if(target.hist.slice().reverse().find(h=>h.link===step.link)?.dir!==step.dir)return false;
+    found=true;
+  }
+  return found;
+}
+
 export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP): ScanResult {
   const { topo } = sim;
   const res: ScanResult = { maDist: Infinity, maReason: '', maCode: 'NONE', maTrain: -1, hardDist: Infinity, stopDist: Infinity, constraints: [], vBody: Infinity, nextSignal: -1, nextSignalDist: Infinity, maSignals: [] };
@@ -102,10 +135,17 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
   for (const b of tr.body) {
     res.vBody = Math.min(res.vBody, linkLimit(sim, b.link));
     const p = topo.links[b.link].platform;
-    if (p >= 0 && sim.plat[p].esp && tr.phase === 'run') { res.maDist = 0; res.maReason = '站台紧急关闭'; res.maCode = 'ESP'; }
+    if (p >= 0 && sim.plat[p].esp) { res.maDist = 0; res.maReason = '站台紧急关闭'; res.maCode = 'ESP'; }
   }
   res.vBody = Math.min(res.vBody, PERF.vMax);
-  if (tr.mode === 'RM') res.vBody = Math.min(res.vBody, PERF.vRM);
+  if (tr.mode === 'RM') res.vBody = Math.min(res.vBody, rescueTarget >= 0 ? PERF.vCouple : PERF.vRM);
+  if (tr.tbStage === 'manual' && tr.level === 'TBTC' && tr.mode !== 'RM')
+    obstacle(res, 0, 'TBTC牵出须司机人工越过牵出信号内方', 'DIRECTION_WAIT');
+  const pulloutStart = ['manual', 'depart'].includes(tr.tbStage) && berth?.kind === 'platform' && tr.v < 0.05;
+  if (pulloutStart) {
+    const holder = trainInSection(sim, topo.links[berth.link].section, tr.id);
+    if (holder >= 0) obstacle(res, 0, '折返发车站台有车，等待平台出清', 'BERTH_WAIT', false, holder);
+  }
 
 
 
@@ -127,7 +167,7 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
   // without a ZC (zone failed, train-ground link lost) no new authority comes in: the
   // onboard keeps the last MA it received and stops within it (it is never pulled
   // back under a moving train); tr.maDist was measured before the last movement
-  const kept = Number.isFinite(tr.maDist) ? Math.max(0, tr.maDist - tr.lastDs) : 0;
+  const kept = tr.v > .01 && Number.isFinite(tr.maDist) ? Math.max(0, tr.maDist - tr.lastDs) : 0;
   if (atp && tr.level === 'CBTC' && z0 === 'ZCFAIL' && tr.rmAuth <= 0) obstacle(res, kept, '区域控制器故障', 'ZC_FAULT');
   if (atp && tr.level === 'CBTC' && !tr.comm) obstacle(res, kept, '车地通信中断', 'COMM_LOSS');
 
@@ -177,9 +217,15 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
         let swOk = true;
         for (const x of topo.routes[sg.route].switches) if (swPos(sim, x.sw) !== x.pos) { swOk = false; break; }
         if (atp) ok = ar.state === 'locked' && ar.cancelAt === 0 && !ar.guide && !consumed && !sg.failed && swOk;
-        else ok = (ar.state === 'locked' || ar.guide) && ar.cancelAt === 0 && !consumed && (sg.aspect !== 'R' && sg.aspect !== 'FAIL' || (tr.rmSig === sigId && tr.rmAuth > d));
+        else {
+          const rescuePass=tr.rmSig===sigId&&tr.rmAuth>d&&swOk&&rescueRouteReady(sim,tr,sigId);
+          ok = (ar.state === 'locked' || ar.guide) && ar.cancelAt === 0 && (!consumed||rescuePass)
+            && (sg.aspect !== 'R' && sg.aspect !== 'FAIL' || (tr.rmSig === sigId && tr.rmAuth > d));
+          if(rescuePass)res.constraints.push(0,PERF.vCouple);
+        }
         // a committed train keeps the authority of a route cancelled in front of it
         if (!ok && ar.committed === tr.id && ar.state === 'locked' && !consumed && swOk) ok = true;
+        if (atp && tr.level === 'TBTC' && ar.directionReverse) ok = false;
         if (ok && atp) sigPass.push(sigId, d);
       } else if (!atp && tr.rmSig === sigId && tr.rmAuth > d && !topo.signals[sigId].routes.some((r) => topo.routes[r].switches.length > 0)) {
         ok = true; // authorised (for this one signal) to pass it at danger on plain line
@@ -187,8 +233,14 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
       if (!ok) {
         // a locked route over a switch without detection waits on the switch fault, not on ARS
         const swLost = sg.route >= 0 && topo.routes[sg.route].switches.some((x) => sim.sw[x.sw].failed && swPos(sim, x.sw) !== x.pos);
-        if (sg.failed) obstacle(res, d - SIGNAL_MARGIN, '信号机故障', 'SIGNAL_FAULT');
+        if (atp && tr.level === 'TBTC' && sg.route >= 0 && sim.routes.get(sg.route)?.directionReverse)
+          obstacle(res, d - SIGNAL_MARGIN, 'TBTC不能自动反向区间折返', 'DIRECTION_WAIT');
+        else if (sg.failed) obstacle(res, d - SIGNAL_MARGIN, '信号机故障', 'SIGNAL_FAULT');
         else if (swLost) obstacle(res, d - SIGNAL_MARGIN, '进路内道岔失表', 'SWITCH_FAULT');
+        else if (!atp && sg.route >= 0 && topo.routes[sg.route].sections.some(s => sim.sec[s].preset))
+          obstacle(res, d - SIGNAL_MARGIN, '计轴预复位区段', 'AXLE_PRESET');
+        else if (!atp && sg.route >= 0 && topo.routes[sg.route].sections.some(s => sim.sec[s].disturbed))
+          obstacle(res, d - SIGNAL_MARGIN, '计轴故障占用', 'AXLE_FAULT');
         else obstacle(res, d - SIGNAL_MARGIN, '信号/进路未开放', 'ROUTE_WAIT');
         if (!onSight) break;
       }
@@ -206,6 +258,9 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
         if (!onSight) break;
       }
       if (atp && tr.rmAuth <= d) {
+        if (st.tdRoute >= 0 && (st.td === 0 || st.directionEsp && st.tdTrain !== tr.id || nl.normalDir !== 0 && st.td !== nx.dir)) {
+          obstacle(res, d - 5, '反向折返区域TD切除/紧急停车防护', 'DIRECTION_WAIT', false, st.tdTrain === tr.id ? -1 : st.tdTrain); break;
+        }
         // the MA already issued into the failed zone stays valid (kept); no new one is given
         if (tr.level === 'CBTC' && zs === 'ZCFAIL') { obstacle(res, Math.max(d - 5, kept), 'ZC故障区域', 'ZC_FAULT'); if (kept <= d - 5) break; }
         if (st.disturbed || st.preset) { obstacle(res, d - 5, st.preset ? '计轴预复位区段' : '计轴故障占用', st.preset ? 'AXLE_PRESET' : 'AXLE_FAULT'); break; }
@@ -236,6 +291,13 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
   }
   // the walk ended without meeting an authority limit (RM on sight, scan cap)
   if (res.maDist === Infinity && !onSight) { res.maDist = Math.min(d, cap); res.maReason = MA_CAP_REASON; res.maCode = 'NONE'; }
+  // P3: a stopped train obtains pull-out authority only after the complete
+  // departure path is locked and clear. Creeping toward a closed tail signal
+  // before this point can force a sudden zero target when the platform fills.
+  if (pulloutStart && tr.mode !== 'RM' && (res.stopDist === Infinity || res.maDist < res.stopDist - 0.5)) {
+    const code = res.maCode === 'NONE' ? 'ROUTE_WAIT' : res.maCode;
+    obstacle(res, 0, res.maReason || '等待折返牵出进路锁闭并到达发车站台', code, false, res.maTrain);
+  }
   if (res.nextSignal < 0) { res.nextSignalDist = Infinity; }
   for (let i = 0; i < sigPass.length; i += 2) if (sigPass[i + 1] < res.maDist) res.maSignals.push(sigPass[i]);
   return res;
@@ -438,6 +500,10 @@ function spad(sim: Sim, tr: Train, sigId: number) {
 }
 
 export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
+  // A withdrawn target may be inside the braking distance. The onboard keeps
+  // its last issued authority while braking; after standstill it can accept
+  // the shorter replacement. This is not permission to overrun an issued MA.
+  if (tr.maCut && tr.v <= 0.01) tr.maCut = false;
   const moving = tr.phase === 'run' && !tr.failed;
   if (!moving) {
     tr.lastDs = 0;
@@ -480,8 +546,10 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   // the line / train ceiling; the platform stopping point is an ATO target only,
   // the ATP curves end at the movement authority.
   const rm = tr.mode === 'RM';
+  const regulated = !rm && !tr.manual && tr.inService && (tr.mode === 'DTO' || tr.mode === 'AM');
+  const atoMargin = regulated && tr.delay > 2 ? PERF.atoFastMargin : PERF.atoMargin;
   const stopAt = Math.min(scan.stopDist, scan.maDist);
-  let vT = scan.vBody - (rm ? 0.3 : PERF.atoMargin);
+  let vT = scan.vBody - (rm ? 0.3 : atoMargin);
   let vPerm = scan.vBody;
   let vEbi = scan.vBody + PERF.atpTolerance;
   // most restrictive target ahead (for the DMI)
@@ -496,7 +564,7 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   for (let i = 0; i < scan.constraints.length; i += 2) {
     const d = scan.constraints[i];
     const v = scan.constraints[i + 1];
-    vT = Math.min(vT, brakingSpeed(d - 3, v - (rm ? 0.2 : PERF.atoMargin), PERF.bPlan));
+    vT = Math.min(vT, brakingSpeed(d - 3, v - (rm ? 0.2 : atoMargin), PERF.bPlan));
     const c = brakingSpeed(d, v, PERF.bEbGuaranteed);
     vPerm = Math.min(vPerm, c);
     vEbi = Math.min(vEbi, c + PERF.atpTolerance);
@@ -511,6 +579,16 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   }
   consider(tr.maDist, 0, tr.maReason || 'MA终点');
   if (scan.stopDist !== Infinity && scan.stopDist <= scan.maDist) consider(scan.stopDist, 0, '停车点');
+  if (regulated && tr.delay < -2) {
+    const next = tr.tasks[0];
+    const budget = next?.k === 'stop' && next.arr !== null ? next.arr - sim.t : 0;
+    if (budget > 20 && Number.isFinite(scan.stopDist)) {
+      // Lower cruise performance spreads excess earliness along the section.
+      // The normal braking targets and ATP curves always remain restrictive.
+      vT = Math.min(vT, Math.max(12 / 3.6, scan.stopDist / Math.max(1, budget - 18)));
+    }
+  }
+  vT = Math.min(vT, vPerm);
   if (tr.mode === 'CM') vT *= 0.96;
   if (tr.hold && tr.v < 0.1) vT = 0;
   if (standStill) vT = 0;
@@ -565,17 +643,18 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     if (ds > hard) { ds = hard; tr.v = Math.min(tr.v, 0.3); }
     if (stopAt < 0.4 && tr.v < 0.35 && !tr.eb) tr.v = 0;
   }
-  // MA withdrawn under the train (the EOA moved back to where even the guaranteed emergency
-  // brake cannot stop): the ATP has tripped the EB above; the overrun is logged, not hidden
+  // Distinguish the new restrictive braking target from the authority already
+  // issued. Do not replace an issued EOA with an unreachable one under a train.
   const prevEoa = tr.lastMa - tr.lastDs;
   if (!rm && !tr.maCut && Number.isFinite(prevEoa) && scan.maDist < prevEoa - 0.5 && scan.maDist < (v0 * v0) / (2 * PERF.bEbGuaranteed)) {
     tr.maCut = true;
     if (!tr.eb) triggerEB(sim, tr, `移动授权回撤(${scan.maReason})`, 'atp');
     sim.log('B', '信号', `列车 ${tr.svc}-${tr.tripNo} 移动授权被回撤（${scan.maReason}），紧急制动`, { key: `macut-${tr.id}`, code: scan.maCode, train: tr.id });
   }
-  if (tr.v <= 0.01) tr.maCut = false;
+  const issued = !rm && tr.maCut && tr.eb ? Math.max(0, prevEoa) : scan.maDist;
+  if (!rm && tr.maCut && tr.eb) tr.maDist = issued;
   tr.lastDs = ds;
-  tr.lastMa = tr.manual && rm ? Infinity : scan.maDist;
+  tr.lastMa = tr.manual && rm ? Infinity : issued;
   if (ds > 0) {
     const ok = advance(sim, tr, ds);
     tr.maFar -= ds;

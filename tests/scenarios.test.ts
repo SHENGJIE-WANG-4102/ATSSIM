@@ -229,6 +229,11 @@ describe('dispatcher commands', () => {
   it('manual turnback, withdraw, add train and added-service template', () => {
     const sim = makeSim('weekday', H);
     const rm = st(sim, '人民广场');
+    // Calibration changes the phase at 08:00. Wait for a real approaching
+    // train rather than requiring this incidental snapshot to contain one.
+    const suitable = () => sim.trainList.some(t => t.inService && t.phase==='run' && dirOf(sim,t)==='DN'
+      && sim.trainChain(t)<rm.chain-1500 && sim.trainChain(t)>rm.chain-5000);
+    const until=sim.t+900;while(!suitable()&&sim.t<until)runFor(sim,10,stepCheck);
     const tr = pickTrain(sim, (t, ch) => dirOf(sim, t) === 'DN' && ch < rm.chain - 1500 && ch > rm.chain - 5000);
     const r1 = sim.command({ c: 'turnback', train: tr.id, station: rm.index });
     expect(r1.ok).toBe(true);
@@ -242,14 +247,21 @@ describe('dispatcher commands', () => {
     expect(sim.trains.has(w.id)).toBe(false);
 
     const lyd = sim.topo.depots.findIndex((d) => d.key === 'LYD');
-    const add = sim.command({ c: 'addTrain', depot: lyd, dir: 'DN', to: st(sim, '广兰路').index, time: sim.t + 600 });
-    expect(add.ok).toBe(true);
+    let add = {ok:false,msg:'no insertion tried'};
+    for(let ahead=600;ahead<=2400&&!add.ok;ahead+=60)
+      add=sim.command({c:'addTrain',depot:lyd,dir:'DN',to:st(sim,'广兰路').index,time:sim.t+ahead});
+    expect(add.ok,add.msg).toBe(true);
     const blk = sim.plan.blocks[sim.plan.blocks.length - 1];
-    const ov = sim.command({ c: 'overlay', id: 'ciie', from: sim.t + 1200, to: sim.t + 4800, headway: 900 });
+    // Morning-peak withdrawals fill the shared yard approach. Exercise the
+    // template in a feasible off-peak band, with actual live trips, rather
+    // than counting capacity omissions as added service.
+    const overlayFrom = Math.max(sim.t+1200,10.5*3600);
+    const overlayTo = overlayFrom+3600;
+    const ov = sim.command({ c: 'overlay', id: 'ciie', from: overlayFrom, to: overlayTo, headway: 900 });
     expect(ov.ok).toBe(true);
-    const extra = sim.plan.trips.filter((t) => t.overlay?.startsWith('ciie')).length;
+    const extra = sim.plan.trips.filter((t) => !t.cancelled && t.overlay?.startsWith('ciie')).length;
     expect(extra).toBeGreaterThan(4);
-    runFor(sim, 6000, stepCheck);
+    runFor(sim, overlayTo+1800-sim.t, stepCheck);
     expect(sim.blockDone.has(blk.id)).toBe(true);
     const done = sim.depLog.filter((d) => sim.plan.trips[d.trip].overlay?.startsWith('ciie')).length;
     expect(done).toBeGreaterThan(20);

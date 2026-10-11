@@ -9,7 +9,8 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.test.ts'],
-    testTimeout: 600_000,
+    testTimeout: 1_800_000,
+    hookTimeout: 60_000,
     // the simulation tests are long synchronous loops; running files one at a
     // time keeps the worker RPC responsive
     fileParallelism: false,

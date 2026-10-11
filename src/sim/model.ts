@@ -43,8 +43,10 @@ export interface Trip {
   stops: PlanStop[];
   revenue: boolean;
   block: number;
-  /** turnback mode at the destination, when the block continues from here */
+  /** Revenue endpoint reached; rescue cancellation preserves already completed trips. */
+  completed?: boolean;
   cancelled?: boolean;
+  cancelReason?: string;
   /** label of the overlay template that created it */
   overlay?: string;
 }
@@ -62,6 +64,7 @@ export interface Block {
   trips: number[];
   /** train that is running this block (filled at runtime) */
   train?: number;
+  /** Attached state for an integrity alarm. */
 }
 
 export interface Plan {
@@ -151,6 +154,8 @@ export interface Train {
   spadSig: number;
   /** turnback and depot-move stages (fsm.ts TURNBACK / DEPOT) */
   tbStage: TurnbackState;
+  tbExitSig: number;
+  tbCallAt: number;
   depotStage: DepotState;
   maDist: number;
   maReason: string;
@@ -191,6 +196,8 @@ export interface Train {
   doorsOpen: boolean;
   arrivedAt: number;
   depReadyAt: number;
+  /** Door cycle complete; DEP is recorded only when wheels start. */
+  pendingDeparture?: StopTask;
   load: number;
   delay: number;
   hold: boolean;
@@ -200,6 +207,8 @@ export interface Train {
   failRecoverAt: number;
   failRecoverable: boolean;
   rescueBy: number;
+  /** Stationary change of ends made for an opposing terminal-tail rescue. */
+  rescueReverse?: boolean;
   rescuing: number;
   coupledLen: number;
   inService: boolean;
@@ -302,6 +311,11 @@ export interface SectionState {
   poss: number;
   /** environmental speed restriction (wind / rain), km/h, 0 = none; -1 = suspended */
   envTsr: number;
+  /** CI direction control for a reverse turnback protection region (P3). */
+  td: -1 | 0 | 1;
+  tdRoute: number;
+  tdTrain: number;
+  directionEsp: boolean;
 }
 
 export interface ActiveRoute {
@@ -322,6 +336,10 @@ export interface ActiveRoute {
   /** train that could no longer stop before the signal when the route was cancelled: keeps its authority (-1 none) */
   committed: number;
   setAt: number;
+  directionTrain?: number;
+  directionReverse?: boolean;
+  directionPullout?: boolean;
+  directionGoal?: number;
 }
 
 export interface SignalState {
@@ -373,6 +391,8 @@ export interface SimEvent {
   code?: string;
   /** train concerned */
   train?: number;
+  /** integrity alarm evidence, retained in diagnostics and replay */
+  snapshot?: import('./invariants').DiagSnapshot;
 }
 
 export type FaultKind =
@@ -400,6 +420,8 @@ export interface Fault {
   /** extra parameters */
   param?: number;
   recoverable?: boolean;
+  /** Timed field intervention for a failed train blocking an existing rescue. */
+  maintenanceAt?: number;
   /** inject → effect → procedure → recovery → closed (fsm.ts FAULT) */
   stage: FaultState;
   /** when the stage was entered */
@@ -429,6 +451,7 @@ export type Command =
   | { c: 'trainSkip'; train: number; station: number; on: boolean }
   | { c: 'turnback'; train: number; station: number }
   | { c: 'withdraw'; train: number }
+  | { c: 'recoverService'; train: number }
   | { c: 'authRM'; train: number; signal?: number }
   | { c: 'ebRelease'; train: number }
   | { c: 'trainLevel'; train: number; level: ForceLevel }
@@ -439,6 +462,7 @@ export type Command =
   | { c: 'ack'; ids: number[] }
   | { c: 'fault'; kind: FaultKind; target: number; duration: number; param?: number; recoverable?: boolean }
   | { c: 'repair'; fault: number }
+  | { c: 'trainMaintenance'; fault: number }
   | { c: 'sectionBlock'; sections: number[]; on: boolean }
   | { c: 'switchBlock'; sw: number; on: boolean }
   | { c: 'manual'; train: number; mode: 'CM' | 'RM' | 'AUTO' }
@@ -479,6 +503,8 @@ export type ToWorker =
   | { type: 'dmi'; train: number }
   | { type: 'rewind'; to: number; replay: boolean }
   | { type: 'takeover' }
+  | { type: 'diagnostics' }
+  | { type: 'planPreview'; id: number; cmd: Extract<Command, { c: 'overlay' | 'addTrain' }> }
   | { type: 'restart'; config: SimConfig };
 
 export interface TrainSnap {
@@ -497,6 +523,8 @@ export interface TrainSnap {
   mode: Mode;
   eb: boolean;
   phase: TrainPhase;
+  tbStage: TurnbackState;
+  depotStage: DepotState;
   delay: number;
   load: number;
   hold: boolean;
@@ -530,7 +558,8 @@ export interface TrainSnap {
   len: number;
 }
 
-export interface PisRow { dest: string; eta: number; status: 'eta' | 'arriving' | 'at' | 'departing'; trip: string; load: number }
+export interface PisRow {
+  dwellRemaining?: number; dest: string; eta: number; status: 'eta' | 'arriving' | 'at' | 'departing'; trip: string; load: number }
 export interface PisData { station: number; DN: PisRow[]; UP: PisRow[]; notice: string }
 
 export interface RadioCall {
@@ -606,6 +635,15 @@ export interface ScenarioReport {
 }
 
 export interface Bookmark { id: number; t: number; label: string; auto: boolean }
+export interface Incident { type: string; t: number; eventId: number; text: string }
+
+export interface Ridership {
+  generated: number;
+  boardings: number[][];
+  alightings: number[][];
+  maxLoad: number;
+  peakSectionLoad: number;
+}
 
 export interface Snapshot {
   t: number;
@@ -623,6 +661,7 @@ export interface Snapshot {
   trains: TrainSnap[];
   depotCounts: number[];
   traces: { train: number; pts: number[] }[];
+  ridership: Ridership;
   stats: {
     online: number;
     inService: number;
@@ -648,6 +687,7 @@ export interface Snapshot {
   metrics: Metrics;
   replay: { from: number; to: number; replaying: boolean; pending: number };
   bookmarks: Bookmark[];
+  incidents: Incident[];
 }
 
 export type FromWorker =
@@ -660,7 +700,9 @@ export type FromWorker =
   | { type: 'progress'; t: number; target: number }
   | { type: 'rewound'; t: number; nextEventId: number }
   | { type: 'report'; report: ScenarioReport }
-  | { type: 'call'; call: RadioCall };
+  | { type: 'call'; call: RadioCall }
+  | { type: 'diagnostics'; json: string }
+  | { type: 'planPreview'; id: number; preview: import('./planning').PlanPreview };
 
 // bit flags for packed state arrays
 export const SEC = { OCC: 1, COMM: 2, LOCK: 4, DIST: 8, PRESET: 16, TSR: 32, TRAIN: 64, ROUTEFLEET: 128, BLOCK: 256, POSS: 512, ENV: 1024, ROUTEMAN: 2048, GUIDE: 4096 } as const;

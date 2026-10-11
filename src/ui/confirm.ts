@@ -6,6 +6,7 @@
 import { h } from './dom';
 import type { Store } from './store';
 import type { Command } from '../sim/model';
+import { previewBody } from './planpreview';
 
 let overlayRoot: HTMLElement;
 let toastRoot: HTMLElement;
@@ -65,8 +66,28 @@ export interface CmdSpec {
   detail?: string;
 }
 
+export function showIntegritySnapshot(snapshot: import('../sim/invariants').DiagSnapshot) {
+  void modal('仿真完整性快照', '报警证据', [
+    h('pre', { style: 'max-height:480px;overflow:auto;font-size:14px;white-space:pre-wrap' }, JSON.stringify(snapshot, null, 2)),
+  ], false, [{ label: '关闭', cls: '', value: false }]);
+}
+
 /** run the confirmation flow and send the command; resolves with the result */
 export async function confirmAndSend(store: Store, spec: CmdSpec): Promise<boolean> {
+  if (spec.cmd.c === 'overlay' || spec.cmd.c === 'addTrain') {
+    const paused = store.snap?.paused ?? false;
+    store.send({ type: 'pause', paused: true });
+    try {
+      const preview = await store.preview(spec.cmd);
+      const confirmed = await modal('运行图变更预览', '校验', previewBody(store, preview), false,
+        preview.ok ? [{ label: '取消', cls: '', value: false }, { label: '确认应用', cls: 'primary', value: true }]
+          : [{ label: '关闭', cls: '', value: false }]);
+      if (!confirmed) return false;
+      const result = await store.command(spec.cmd);
+      toast(result.msg, result.ok);
+      return result.ok;
+    } finally { store.send({ type: 'pause', paused }); }
+  }
   const body: (Node | string)[] = [
     h('div', {}, '即将下达调度命令：'),
     h('div', { class: 'cmdline' }, spec.title),

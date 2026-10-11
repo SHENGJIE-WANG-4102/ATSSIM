@@ -2,13 +2,57 @@
  * Fault injection (教员台) and maintenance completion.
  */
 import type { Sim } from './engine';
-import type { Fault, FaultKind } from './model';
+import type { Fault, FaultKind, Command } from './model';
 import { STATIONS } from '../data/line2';
-import { cancelRoute } from './interlocking';
+import { cancelRoute, committedTrain } from './interlocking';
 import { withdrawAuthority } from './movement';
-import { failTrain, recoverTrain, trainLabel } from './ats';
+import { failTrain, recoverTrain, trainLabel, rescueBlockedByConsist } from './ats';
 import { callRescue, callPecu, callTrackPerson } from './radio';
 import { psdRepaired } from './psd';
+import { allowed, FAULT } from './fsm';
+import { reverseTrain } from './movement';
+
+function stage(sim: Sim, fault: Fault, next: Fault['stage']) {
+  if (!allowed(sim, FAULT, fault.stage, next).ok) return;
+  fault.stage = next;
+  fault.stageAt = sim.t;
+}
+
+/** Dispatcher procedures change only the faults they address. */
+export function faultProcedure(sim: Sim, cmd: Command) {
+  for (const f of sim.faults) {
+    if (f.repaired || f.stage !== 'effect') continue;
+    const train = sim.trains.get(f.target);
+    const addressed = (cmd.c === 'zoneLevel' && f.kind === 'zcFail' && (f.target < 0 || cmd.zones.includes(f.target)))
+      || (cmd.c === 'switchFieldLock' && f.kind === 'switch' && cmd.sw === f.target)
+      || (cmd.c === 'psdBypass' && f.kind === 'psd' && cmd.platform === f.target)
+      || (cmd.c === 'rescue' && f.kind === 'trainFail' && cmd.failed === f.target)
+      || (cmd.c === 'axleReset' && f.kind === 'axle' && cmd.section === f.target)
+      || (cmd.c === 'authRM' && (f.kind === 'signal' && cmd.signal === f.target || train?.id === cmd.train && f.kind === 'trainComm'))
+      || (cmd.c === 'radio' && sim.calls.some(c => c.id === cmd.call && c.train === train?.id && ['degrade', 'ebRelease', 'rescue'].includes(c.kind)));
+    if (addressed) stage(sim, f, 'procedure');
+  }
+}
+
+function recovered(sim: Sim, f: Fault): boolean {
+  if (!f.repaired) return false;
+  if (f.kind === 'axle') return !sim.sec[f.target].disturbed && !sim.sec[f.target].preset;
+  if (f.kind === 'switch') return !sim.sw[f.target].failed;
+  if (f.kind === 'zcFail') {
+    const zones = f.target < 0 ? sim.zoneState.map((_, z) => z) : [f.target];
+    return zones.every(z => sim.zoneState[z] === 'CBTC' && sim.trainList.every(tr => sim.topo.links[tr.link].zone !== z || tr.forceLevel === 'TBTC' || tr.manual || tr.phase === 'stabled' || tr.level === 'CBTC' && !tr.eb));
+  }
+  if (f.kind === 'trainComm') { const tr = sim.trains.get(f.target); return !tr || tr.comm && !tr.eb && (tr.level === 'CBTC' || tr.forceLevel === 'TBTC' || tr.manual); }
+  return true;
+}
+
+/** Called after the equipment tick; repaired and recovered are distinct states. */
+export function updateFaultLifecycle(sim: Sim) {
+  for (const f of sim.faults) {
+    if (f.repaired && (f.stage === 'effect' || f.stage === 'procedure')) stage(sim, f, 'recovery');
+    if (f.stage === 'recovery' && recovered(sim, f)) stage(sim, f, 'closed');
+  }
+}
 
 export const FAULT_LABELS: Record<FaultKind, string> = {
   trainComm: '列车车地通信中断',
@@ -69,19 +113,25 @@ export function injectFault(sim: Sim, kind: FaultKind, target: number, duration:
       s.failed = true;
       s.fieldLock = false;
       // the interlocking reports the lost detection: the ZC pulls every MA back before the switch
-      for (const tr of sim.trainList) if (tr.phase === 'run') withdrawAuthority(sim, tr);
+      for (const tr of sim.trainList) withdrawAuthority(sim, tr);
       f.text = `道岔 ${topo.switches[target].name} 失去表示`;
       sim.log('A', '信号', `${f.text}（${STATIONS[topo.switches[target].station].name}）`, { key: `sw-${target}` });
       break;
     }
     case 'signal': {
       const s = sim.sig[target];
+      const committed = committedTrain(sim, target);
       s.failed = true;
       // the signal drops to danger; its route is cancelled as by the desk (approach locking
       // holds it for a train that can no longer stop, an occupied route stays until cleared)
-      if (s.route >= 0) cancelRoute(sim, target);
+      if (s.route >= 0) {
+        // Occupancy may prohibit cancellation before cancelRoute reaches its
+        // approach-locking branch. Keep the already issued MA in that case too.
+        if (committed >= 0) sim.routes.get(s.route)!.committed = committed;
+        cancelRoute(sim, target);
+      }
       // the ZC takes the failure into the next MA at once (not a ZC cycle later)
-      for (const tr of sim.trainList) if (tr.phase === 'run') withdrawAuthority(sim, tr);
+      for (const tr of sim.trainList) withdrawAuthority(sim, tr);
       f.text = `信号机 ${topo.signals[target].name} 故障（无法开放）`;
       sim.log('B', '信号', `${f.text}（${STATIONS[topo.signals[target].station].name}）`, { key: `sig-${target}` });
       break;
@@ -133,6 +183,20 @@ export function repairFault(sim: Sim, id: number): { ok: boolean; msg: string } 
   return { ok: true, msg: `现场处置完成：${f.text}` };
 }
 
+export const TRAIN_MAINTENANCE_TIME = 20 * 60; // field response/work assumption, D35
+export function requestTrainMaintenance(sim: Sim, id: number): { ok: boolean; msg: string } {
+  const fault = sim.faults.find(f => f.id === id);
+  const tr = fault?.kind === 'trainFail' ? sim.trains.get(fault.target) : undefined;
+  if (!fault || fault.repaired || !tr || fault.maintenanceAt !== undefined) return {ok:false,msg:'无可申请现场抢修的列车故障'};
+  const blocker = rescueBlockedByConsist(sim,tr);
+  if (blocker < 0) return {ok:false,msg:'正常救援仍可实施，不能用现场抢修替代'};
+  fault.maintenanceAt = sim.t + TRAIN_MAINTENANCE_TIME;
+  fault.repairAt = fault.maintenanceAt;
+  if (fault.stage === 'effect') stage(sim,fault,'procedure');
+  sim.log('B','列车',`故障列车 ${tr.svc} 阻挡救援列车 ${sim.trains.get(blocker)!.svc}（连挂体或占用待转换道岔），申请现场抢修（假设20min），完成后清客回段`);
+  return {ok:true,msg:'现场抢修已申请，20min内维持故障防护'};
+}
+
 export function faultsTick(sim: Sim) {
   const { topo } = sim;
   for (const f of sim.faults) {
@@ -153,6 +217,18 @@ export function faultsTick(sim: Sim) {
         f.repaired = true;
         sim.clearAlarm(`tf-${tr.id}`);
         sim.clearAlarm(`tfr-${tr.id}`);
+        if (f.maintenanceAt !== undefined) {
+          sim.log('C','列车',`列车 ${tr.svc} 现场抢修完成，恢复牵引能力，清客回段`);
+          const rescuer=sim.trains.get(tr.rescueBy);
+          const first=tr.tasks[0];
+          const reversedForRescue=tr.rescueReverse || rescuer && first?.k==='stop'
+            && sim.topo.berths[first.berth].dir!==tr.dir && ['arrive','depart','manual'].includes(tr.tbStage);
+          tr.rescueBy=-1;
+          if(reversedForRescue){reverseTrain(sim,tr);tr.rescueReverse=false;tr.tbStage='depart';}
+          if(rescuer){rescuer.rescuing=-1;sim.command({c:'withdraw',train:rescuer.id},'现场抢修后解除救援');}
+          const result = sim.command({c:'withdraw',train:tr.id},'现场抢修');
+          if (!result.ok) sim.log('A','列车',`抢修后回段需调度处理：${result.msg}`);
+        }
       }
       continue;
     }

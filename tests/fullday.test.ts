@@ -44,8 +44,27 @@ describe('full service day', () => {
       // after the night: only overnight-stabled trains remain on the line
       expect(sim.trainList.every((t) => t.phase === 'stabled')).toBe(true);
       expect(maxOnline).toBeLessThanOrEqual(76);
-      // punctuality: departures within 2 minutes of plan
-      expect(sim.depOnTime / sim.depTotal).toBeGreaterThan(0.98);
+      // Final revenue arrivals, including passenger dwell propagation.
+      const arrivals = sim.metrics.tripDelays;
+      expect(arrivals.filter(d=>Math.abs(d)<=120).length/arrivals.length).toBeGreaterThanOrEqual(.98);
+      expect(Math.max(0,...arrivals)).toBeLessThanOrEqual(300);
+      const target = dayType==='weekday'?1_090_000:763_000;
+      expect(sim.passengersServed).toBeGreaterThanOrEqual(target*.9);
+      expect(sim.passengersServed).toBeLessThanOrEqual(target*1.1);
+      if(dayType==='weekday'){
+        expect(sim.ridership.peakSectionLoad/2480).toBeGreaterThanOrEqual(.9);
+        expect(sim.ridership.peakSectionLoad/2480).toBeLessThanOrEqual(1.3);
+        // Actual 北新泾 departures at the leading and trailing peak edges.
+        for(const dir of ['DN','UP'] as const)for(const edge of [24600,34200,60600,70200]){
+          const times=sim.depLog.filter(d=>d.st===5&&sim.plan.trips[d.trip].dir===dir
+            &&d.t>=edge-300&&d.t<=edge+300).map(d=>d.t).sort((a,b)=>a-b);
+          expect(times.length).toBeGreaterThanOrEqual(3);
+          for(let i=1;i<times.length;i++){
+            expect(times[i]-times[i-1]).toBeGreaterThanOrEqual(90);
+            expect(times[i]-times[i-1]).toBeLessThanOrEqual(210);
+          }
+        }
+      }
       // no in-service train held at a red signal / behind a blockage for long
       expect(worstStuck).toBeLessThan(420);
       // no emergency brakes in normal operation

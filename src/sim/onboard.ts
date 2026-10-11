@@ -19,6 +19,7 @@ import { trainLabel } from './ats';
 import { openCall, unsafeAhead } from './radio';
 import { nextLink } from './topology';
 import { swPos } from './interlocking';
+import { withdrawAuthority } from './movement';
 
 /** driver action time for a mode / level change at standstill (s) 【假设】 */
 export const MODE_CHANGE_TIME = 10;
@@ -63,6 +64,9 @@ export function setMode(sim: Sim, tr: Train, mode: Mode, level: Level, why: stri
   tr.level = level;
   tr.modeSince = sim.t;
   if (mode !== 'RM') { tr.rmAuth = 0; tr.rmSig = -1; tr.rmReason = ''; }
+  // A sighting scan is not an ATP authority. Mode/level changes can happen
+  // after the second's ZC refresh, so validate the new protection immediately.
+  withdrawAuthority(sim, tr);
   if (why) sim.log('I', '列车', `列车 ${trainLabel(tr)} ${why}：${stateLabel(from)} → ${stateLabel(to)}`, { train: tr.id });
   return true;
 }
@@ -139,8 +143,7 @@ export function answerEbRelease(sim: Sim, tr: Train, option: string): { ok: bool
   if (option === 'rm') {
     const why = unsafeAhead(sim, tr);
     if (why) {
-      sim.metrics.safety.unsafeAuth++;
-      sim.log('A', '安全', `不安全授权：列车 ${trainLabel(tr)} 前方${why}，仍授权RM运行`);
+      return { ok: false, msg: `不能授权RM：${why}` };
     }
     const r = authoriseEBRelease(sim, tr, '调度授权');
     if (!r.ok) return r;
@@ -168,6 +171,15 @@ export function grantRM(sim: Sim, tr: Train, metres: number, signal: number, rea
   tr.modeSince = sim.t;
   sim.log('C', '列车', `列车 ${trainLabel(tr)} 以RM模式（≤25km/h）运行：${reason}`, { train: tr.id });
   return true;
+}
+
+/** P3 §2.4.1: only after the cab passes the pull-out signal's inside point. */
+export function turnbackSignalPassed(sim: Sim, tr: Train, signal: number) {
+  if (tr.tbStage !== 'manual' || tr.tbExitSig !== signal || tr.mode !== 'RM') return;
+  tr.rmAuth = 0;
+  tr.tbStage = 'depart';
+  tr.tbExitSig = -1;
+  setMode(sim, tr, tr.manual ? 'CM' : 'AM', 'TBTC', '越过牵出信号内方，重新获取TBTC授权');
 }
 
 export function distToNextSignal(sim: Sim, tr: Train): number {
@@ -300,7 +312,8 @@ export function updateOnboard(sim: Sim) {
     if (!avail || tr.forceLevel === 'TBTC' || nextStopZone(sim, tr) !== 'CBTC') { tr.relocSec = -1; continue; }
     const sec = topo.links[tr.link].section;
     if (tr.relocSec < 0) { tr.relocSec = sec; continue; }
-    if (sec !== tr.relocSec || tr.phase === 'dwell') {
+    const atBeacon = tr.v < 0.1 && topo.berths.some(b => b.link === tr.link && Math.abs(b.offset - tr.off) < 1);
+    if (sec !== tr.relocSec || tr.phase === 'dwell' || atBeacon) {
       if (setMode(sim, tr, tr.mode === 'CM' ? 'CM' : 'DTO', 'CBTC', '升级CBTC')) tr.relocSec = -1;
     }
   }

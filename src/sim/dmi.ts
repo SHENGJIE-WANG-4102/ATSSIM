@@ -84,7 +84,7 @@ export function computeDmi(sim: Sim, id: number): DmiData | null {
     break;
   }
   const dwelling = tr.phase === 'dwell' || tr.phase === 'reversing';
-  if (dwelling) dep = Math.max(tr.dwellUntil, dep);
+  if (dwelling) dep = tr.dwellUntil;
   // platform screen doors where the head stands
   let psd: DmiData['psd'] = 'none';
   const pi = topo.links[tr.link].platform;

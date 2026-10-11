@@ -9,6 +9,8 @@ import { Sim, FIXED_DT } from './engine';
 import type { Command, FromWorker, ToWorker, SimConfig } from './model';
 import { dayTypeOf, dateLabel, parseIso, isoDate } from './calendar';
 import { capture, restore, type Checkpoint } from './state';
+import { compactCheckpoints, exportDiagnostics, stringifyDiagnostics } from './diagnostics';
+import { preparePlan } from './planning';
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -25,7 +27,6 @@ let jumping = false;
 const SNAP_INTERVAL = 50; // ms (20 Hz)
 const STEP_BUDGET = 9; // ms of simulation work per tick
 const CP_INTERVAL = 60; // s of sim time between checkpoints
-const CP_KEEP = 120; // checkpoints kept (2 h)
 
 type LogEntry = { t: number; cmd: Command } | { t: number; drive: { train: number; notch: number } };
 let checkpoints: Checkpoint[] = [];
@@ -52,6 +53,7 @@ function start(config: SimConfig) {
   cmdLog = [];
   pending = [];
   replayUntil = 0;
+  checkpoint();
   // warm up from the start of the service day to the requested start time
   if (config.startTime > sim.t) runUntil(config.startTime, true);
   checkpoint();
@@ -62,8 +64,11 @@ function start(config: SimConfig) {
 
 function checkpoint() {
   if (!sim) return;
-  checkpoints.push(capture(sim));
-  if (checkpoints.length > CP_KEEP) checkpoints.splice(0, checkpoints.length - CP_KEEP);
+  const cp = capture(sim);
+  cp.inputCursor = cmdLog.length - pending.length;
+  cp.inputs = cmdLog.slice(0, cp.inputCursor);
+  checkpoints.push(cp);
+  checkpoints = compactCheckpoints(checkpoints, sim.t);
 }
 
 /** one fixed step incl. replayed commands and periodic checkpoints */
@@ -71,8 +76,11 @@ function stepOnce(keepCheckpoints = true) {
   if (!sim) return;
   while (pending.length && pending[0].t <= sim.t + 1e-6) {
     const e = pending.shift()!;
+    sim.replaying = true;
     if ('cmd' in e) sim.command(e.cmd);
     else applyDrive(e.drive.train, e.drive.notch);
+    sim.replaying = false;
+    sim.inputLog.push(structuredClone(e));
   }
   sim.step(FIXED_DT);
   const last = checkpoints[checkpoints.length - 1];
@@ -88,8 +96,7 @@ function runUntil(target: number, initial = false) {
   jumping = true;
   let lastProgress = performance.now();
   while (sim.t < target) {
-    // during the initial warm-up only the last two hours are worth checkpointing
-    stepOnce(!initial || target - sim.t < CP_KEEP * CP_INTERVAL);
+    stepOnce();
     if (performance.now() - lastProgress > 200) {
       lastProgress = performance.now();
       post({ type: 'progress', t: sim.t, target });
@@ -129,17 +136,15 @@ function sendSnapshot() {
 }
 
 function applyDrive(train: number, notch: number) {
-  const tr = sim?.trains.get(train);
-  if (!tr || !tr.manual) return;
-  tr.notch = Math.max(-8, Math.min(4, Math.round(notch)));
+  return sim?.drive(train, notch) ?? false;
 }
 
 /** the dispatcher acts during a replay: the recorded future is discarded */
 function takeOver() {
   if (!sim || !pending.length) return;
+  cmdLog = cmdLog.slice(0, cmdLog.length - pending.length);
   pending = [];
   replayUntil = 0;
-  cmdLog = cmdLog.filter((e) => e.t <= sim!.t + 1e-6);
 }
 
 function rewind(to: number, replay: boolean) {
@@ -152,14 +157,15 @@ function rewind(to: number, replay: boolean) {
   restore(sim, cp);
   checkpoints = checkpoints.slice(0, idx + 1);
   if (replay) {
-    pending = cmdLog.filter((e) => e.t > cp.t + 1e-6);
+    pending = cmdLog.slice(cp.inputCursor);
     replayUntil = now;
   } else {
     pending = [];
     replayUntil = 0;
-    cmdLog = cmdLog.filter((e) => e.t <= cp.t + 1e-6);
+    cmdLog = cmdLog.slice(0, cp.inputCursor);
   }
   acc = 0;
+  if (replay && to > sim.t) runUntil(Math.min(to, now));
   post({ type: 'rewound', t: sim.t, nextEventId: sim.nextEventId });
   flushEvents(true);
   sendSnapshot();
@@ -228,7 +234,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       if (!sim) return;
       takeOver();
       const r = sim.command(m.cmd);
-      if (m.cmd.c !== 'bookmark') cmdLog.push({ t: sim.t, cmd: m.cmd });
+      cmdLog.push({ t: sim.t, cmd: m.cmd });
       post({ type: 'cmdResult', id: m.id, ok: r.ok, msg: r.msg });
       flushEvents();
       sendSnapshot();
@@ -236,9 +242,9 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
     }
     case 'drive':
       if (!sim) return;
+      if (!sim.trains.get(m.train)?.manual || !Number.isFinite(m.notch)) return;
       takeOver();
-      applyDrive(m.train, m.notch);
-      cmdLog.push({ t: sim.t, drive: { train: m.train, notch: m.notch } });
+      if (applyDrive(m.train, m.notch)) cmdLog.push(structuredClone(sim.inputLog.at(-1)!));
       break;
     case 'pis':
       wantPis = m.station;
@@ -255,6 +261,12 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
     case 'takeover':
       takeOver();
       sendSnapshot();
+      break;
+    case 'diagnostics':
+      if (sim) post({ type: 'diagnostics', json: stringifyDiagnostics(exportDiagnostics(sim, cmdLog.slice(0, cmdLog.length - pending.length))) });
+      break;
+    case 'planPreview':
+      if (sim) post({ type: 'planPreview', id: m.id, preview: preparePlan(sim, m.cmd) });
       break;
   }
 };

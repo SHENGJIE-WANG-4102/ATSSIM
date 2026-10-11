@@ -8,41 +8,64 @@ import type { StopTask, Train } from './model';
 import { STATIONS, LINE_INFO } from '../data/line2';
 import { callCrowd } from './radio';
 
-const WEEKDAY: [number, number][] = [
-  [4.5, 0], [5.4, 0.12], [6.2, 0.45], [6.9, 1.1], [7.5, 1.8], [8.1, 2.2], [8.8, 1.9], [9.6, 1.0], [11, 0.75], [13, 0.8],
-  [16, 0.9], [17.2, 1.6], [18, 2.1], [18.8, 1.7], [19.8, 1.0], [21, 0.6], [22.5, 0.35], [23.5, 0.15], [24.5, 0],
-];
-const WEEKEND: [number, number][] = [
-  [4.5, 0], [5.4, 0.1], [7, 0.4], [9, 0.9], [10.5, 1.15], [14, 1.2], [17, 1.25], [19, 1.1], [21, 0.7], [22.5, 0.4], [23.5, 0.15], [24.5, 0],
-];
+import { profile, rawDemand, passengerMinimum, RIDERSHIP_TARGET } from './calibration';
 
-/** passengers per second per platform at demand weight 1 and profile 1 */
-const BASE_RATE = 0.42;
-
-export function demandProfile(sim: Sim, t: number): number {
-  const prof = sim.plan.dayType === 'weekday' ? WEEKDAY : WEEKEND;
-  const h = t / 3600;
-  for (let i = 0; i + 1 < prof.length; i++) {
-    if (h >= prof[i][0] && h < prof[i + 1][0]) {
-      const k = (h - prof[i][0]) / (prof[i + 1][0] - prof[i][0]);
-      return prof[i][1] + k * (prof[i + 1][1] - prof[i][1]);
-    }
+// Assumption: directional boarding demand starts 15 minutes before the first
+// usable train. A closed service cannot accumulate hours of rush-hour demand
+// before that direction's first train reaches an outer station.
+const serviceWindows = new WeakMap<Sim, { rev: number; trips: Sim['plan']['trips']; first: number[]; last: number[] }>();
+function boardingWindows(sim: Sim) {
+  let windows = serviceWindows.get(sim);
+  if (!windows || windows.rev !== sim.planRev || windows.trips !== sim.plan.trips) {
+    const first = sim.topo.platforms.map(() => Infinity);
+    const last = sim.topo.platforms.map(() => -Infinity);
+    for (const trip of sim.plan.trips) if (trip.revenue && !trip.cancelled)
+      for (let i = 0; i < trip.stops.length - 1; i++) {
+        const stop = trip.stops[i];
+        if (!stop.stop) continue;
+        const platform = sim.topo.stations[stop.st].platforms[trip.dir];
+        first[platform] = Math.min(first[platform], stop.dep - 900);
+        last[platform] = Math.max(last[platform], stop.dep);
+      }
+    windows = { rev: sim.planRev, trips: sim.plan.trips, first, last };
+    serviceWindows.set(sim, windows);
   }
-  return 0;
+  return windows;
+}
+
+export function demandProfile(sim: Sim, t: number): number { return profile(sim.plan.dayType, t); }
+
+/** Integrate the base service windows once. Persist the scale in checkpoints:
+ * cancelling service during faults must not redistribute that lost demand. */
+function scaleFor(sim: Sim): number {
+  if (sim.passengerScale > 0) return sim.passengerScale;
+  const windows = boardingWindows(sim);
+  let total = 0;
+  for (const p of sim.topo.platforms) {
+    if ((p.track === 'DN' && p.station === STATIONS.length - 1) || (p.track === 'UP' && p.station === 0)) continue;
+    for (let t = windows.first[p.id]; t < windows.last[p.id]; t += 60)
+      total += rawDemand(sim.plan.dayType, p.station, p.track as 'DN' | 'UP', t + 30) * Math.min(60, windows.last[p.id] - t);
+  }
+  sim.passengerScale = RIDERSHIP_TARGET[sim.plan.dayType] / Math.max(1, total);
+  return sim.passengerScale;
 }
 
 /** per second update of waiting passengers */
 export function passengersTick(sim: Sim, dt: number) {
-  const prof = demandProfile(sim, sim.t);
+  const scale = scaleFor(sim);
   const { topo } = sim;
+  const windows = boardingWindows(sim);
   for (const p of topo.platforms) {
     const ps = sim.plat[p.id];
     const st = STATIONS[p.station];
     // no boarding demand towards the line end
     const towardsEnd = (p.track === 'DN' && p.station === STATIONS.length - 1) || (p.track === 'UP' && p.station === 0);
     if (towardsEnd) { ps.waiting = 0; continue; }
-    const lambda = BASE_RATE * st.demand * prof * ps.surge;
+    const lambda = scale * rawDemand(sim.plan.dayType, p.station, p.track as 'DN' | 'UP', sim.t) * ps.surge;
     const inflow = lambda * dt * (0.85 + 0.3 * sim.rng());
+    if (sim.t < windows.first[p.id]) { ps.waiting = 0; continue; }
+    if (sim.t > windows.last[p.id]) continue;
+    sim.ridership.generated += inflow;
     if (ps.limitUntil > sim.t) {
       // station inflow control (限流): part of the demand is held outside the station
       ps.waiting += inflow * 0.6;
@@ -69,7 +92,7 @@ export function boardAndAlight(sim: Sim, tr: Train, platform: number, task: Stop
   let rem = 0;
   for (let i = st; dirDN ? i < STATIONS.length : i >= 0; i += dirDN ? 1 : -1) rem += STATIONS[i].demand;
   const isEnd = task.dep === null;
-  const alightFrac = isEnd ? 1 : Math.min(1, (STATIONS[st].demand / Math.max(0.1, rem)) * 1.4);
+  const alightFrac = isEnd ? 1 : Math.min(1, (STATIONS[st].demand / Math.max(0.1, rem)));
   const alight = Math.round(tr.load * alightFrac);
   tr.load -= alight;
   let board = 0;
@@ -81,11 +104,12 @@ export function boardAndAlight(sim: Sim, tr: Train, platform: number, task: Stop
     ps.stranded = Math.floor(ps.waiting);
   }
   sim.passengersServed += board;
-  const crowded = tr.load > LINE_INFO.capacity * 0.95;
-  const rate = 40 * (crowded ? 0.55 : 0.9);
-  let dwell = 12 + (alight + board) / rate;
-  if (crowded) dwell += 8;
-  // a surge (大客流) at the platform: boarding takes longer still
-  if (ps.surge > 1) dwell += Math.min(30, (ps.surge - 1) * 6);
-  return Math.min(ps.surge > 1 ? 150 : 90, dwell);
+  const hour = Math.min(27, Math.floor(sim.t / 3600));
+  sim.ridership.boardings[st][hour] += board;
+  sim.ridership.alightings[st][hour] += alight;
+  sim.ridership.maxLoad = Math.max(sim.ridership.maxLoad, tr.load);
+  const h = sim.t / 3600;
+  if (sim.plan.dayType === 'weekday' && st >= 4 && st <= 22 && ((h >= 6.8333 && h < 9.5) || (h >= 16.8333 && h < 19.5)))
+    sim.ridership.peakSectionLoad = Math.max(sim.ridership.peakSectionLoad, tr.load);
+  return passengerMinimum(board, alight, tr.load > LINE_INFO.capacity * .95, ps.surge);
 }

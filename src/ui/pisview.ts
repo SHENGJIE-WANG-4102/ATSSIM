@@ -12,7 +12,7 @@ function etaText(r: PisRow): string {
 }
 
 function loadText(f: number): string {
-  if (f > 1.0) return '拥挤';
+  if (f >= .9) return '拥挤';
   if (f > 0.75) return '较拥挤';
   return '舒适';
 }
@@ -35,7 +35,7 @@ export function renderPis(el: HTMLElement, pis: PisData | null, t: number) {
       const arr = r.status !== 'eta' || r.eta < 45;
       board.append(h('div', { class: `row ${arr && i === 0 ? 'arr' : ''}` },
         h('span', {}, `${i === 0 ? '本次' : '下次'} ${r.dest === '本站终到' ? '终到列车 请勿上车' : `往 ${r.dest}`}`, h('span', { class: 'sub' }, r.dest === '本站终到' ? '' : loadText(r.load))),
-        h('span', { class: 'eta' }, etaText(r))));
+        h('span', { class: 'eta' }, r.dwellRemaining !== undefined ? `${Math.ceil(r.dwellRemaining)} 秒发车` : etaText(r))));
     });
   }
   board.append(h('div', { class: 'notice' }, h('span', {}, pis.notice)));

@@ -22,6 +22,7 @@ type Listener = () => void;
 export const TRACE_STRIDE = 4;
 
 export class Store {
+  private previews = new Map<number, (p: import('../sim/planning').PlanPreview) => void>();
   topo: Topology;
   worker: Worker;
   plan: Plan | null = null;
@@ -83,6 +84,11 @@ export class Store {
     });
   }
 
+  preview(cmd: Extract<Command, { c: 'overlay' | 'addTrain' }>): Promise<import('../sim/planning').PlanPreview> {
+    const id = this.nextCmd++;
+    return new Promise(resolve => { this.previews.set(id, resolve); this.send({ type: 'planPreview', id, cmd }); });
+  }
+
   /** emit a pending 'snap' (called once per render frame) */
   flushSnap() {
     if (!this.snapDirty) return;
@@ -139,6 +145,20 @@ export class Store {
       case 'cmdResult': {
         const p = this.pending.get(m.id);
         if (p) { this.pending.delete(m.id); p({ ok: m.ok, msg: m.msg }); }
+        break;
+      }
+      case 'diagnostics': {
+        const url = URL.createObjectURL(new Blob([m.json], { type: 'application/json' }));
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = `line2-diagnostics-${Math.round(this.snap?.t ?? 0)}.json`;
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        break;
+      }
+      case 'planPreview': {
+        this.previews.get(m.id)?.(m.preview);
+        this.previews.delete(m.id);
         break;
       }
       case 'progress':

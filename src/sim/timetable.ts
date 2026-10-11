@@ -12,6 +12,7 @@
 import type { Topology } from './topology';
 import type { RunTimes } from './dynamics';
 import type { Block, DayType, Plan, PlanStop, Task, Trip, TripKind, TrackDir } from './model';
+import { plannedDwell } from './calibration';
 import { STATIONS, OPERATIONS, LINE_INFO } from '../data/line2';
 
 export interface Template {
@@ -123,7 +124,7 @@ function minTurn(st: number): number {
 }
 
 export function dwellOf(st: number, factor: number): number {
-  return Math.round((STATIONS[st].dwell * factor) / 5) * 5;
+  return Math.min(30, Math.max(20, STATIONS[st].dwell * Math.min(1, factor)));
 }
 
 /** stations visited from a to b inclusive */
@@ -135,7 +136,7 @@ function seq(a: number, b: number): number[] {
 }
 
 /** dwellFactor: a constant, or the factor in force at a time (dwell follows the period at each stop, so successive trains never close up across a period change) */
-export function buildStops(ctx: PlanContext, dir: TrackDir, from: number, to: number, originDep: number, revenue: boolean, dwellFactor: number | ((t: number) => number)): PlanStop[] {
+export function buildStops(ctx: PlanContext, dir: TrackDir, from: number, to: number, originDep: number, revenue: boolean, _dwellFactor: number | ((t: number) => number)): PlanStop[] {
   const sts = seq(from, to);
   const stops: PlanStop[] = [];
   let t = originDep;
@@ -151,7 +152,7 @@ export function buildStops(ctx: PlanContext, dir: TrackDir, from: number, to: nu
     if (dir === 'DN') run = prevStops && stopHere ? ctx.rt.dn[idx] : ctx.rt.passDn[idx] + (prevStops ? 10 : 0) + (stopHere ? 12 : 0);
     else run = prevStops && stopHere ? ctx.rt.up[idx] : ctx.rt.passUp[idx] + (prevStops ? 10 : 0) + (stopHere ? 12 : 0);
     const arr = t + run;
-    const dw = stopHere && !isLast ? dwellOf(st, typeof dwellFactor === 'number' ? dwellFactor : dwellFactor(arr)) : 0;
+    const dw = stopHere && !isLast ? plannedDwell(ctx.dayType, st, dir, arr) : 0;
     stops.push({ st, arr, dep: arr + dw, stop: stopHere });
     t = arr + dw;
   }
@@ -176,6 +177,7 @@ export function generatePlan(ctx: PlanContext): Plan {
   const E = nS - 1;
   const SHR = 4;
   const GLL = 22;
+  const upPhase = 10; // origin phase fitting the single GLL turnback; D30
 
   const addTrip = (dir: TrackDir, kind: TripKind, from: number, to: number, stops: PlanStop[], revenue: boolean, overlay?: string): GenTrip => {
     const tr: GenTrip = { id: trips.length, no: '', dir, kind, from, to, stops, revenue, block: -1, overlay };
@@ -184,41 +186,79 @@ export function generatePlan(ctx: PlanContext): Plan {
   };
 
   const factorAt = (t: number) => TEMPLATES[periodAt(periods, t).template].dwellFactor;
+  // A peak is a whole-core promise, not an origin departure change. Allow
+  // the complete core traversal plus one headway for its leading wave.
+  const coreLead = Math.ceil(Math.max(
+    ...periods.filter(p => p.template === 'weekdayAM' || p.template === 'weekdayPM').flatMap(p =>
+      (['DN', 'UP'] as const).map(dir => {
+        const from = dir === 'DN' ? SHR : GLL, to = dir === 'DN' ? GLL : SHR;
+        const stops = buildStops(ctx, dir, from, to, p.from, true, factorAt);
+        return stops.at(-1)!.arr - p.from + 150 + 30;
+      }))
+  ) / 150) * 150;
+  const peaks = periods.filter(p => p.template === 'weekdayAM' || p.template === 'weekdayPM');
+  const streamAt = (t: number): Period => {
+    for (const peak of peaks) {
+      const start = peak.from - coreLead, transition = start - 1200;
+      if (t >= start && t < peak.to) return { ...peak, from: start, headway: 150 };
+      if (t >= transition && t < start) return { ...peak, from: transition, to: start,
+        headway: 150 + 150 * (start - t) / 1200, label: `${peak.label}渐进预置` };
+    }
+    return periodAt(periods, t);
+  };
   const headwayAt = (t: number) => {
-    const p = periodAt(periods, t);
+    const p = streamAt(t);
     return p.headway ?? TEMPLATES[p.template].headway;
   };
 
-  // offsets from origin departure to reference departure
-  const refOffset = (dir: TrackDir, from: number, ref: number, factor: number) => {
-    const s = buildStops(ctx, dir, from, ref, 0, true, factor);
-    return s[s.length - 1].dep + dwellOf(ref, factor);
+  // Solve the origin departure so every big/small train uses the same core
+  // slot, with the demand at its actual stop times. Intermediate holds are
+  // never used to achieve phasing.
+  const atReference = (dir: TrackDir, from: number, to: number, ref: number, departure: number) => {
+    let origin = departure;
+    let stops = buildStops(ctx, dir, from, to, origin, true, factorAt);
+    for (let i = 0; i < 8; i++) {
+      const error = stops.find(x => x.st === ref)!.dep - departure;
+      if (Math.abs(error) < .001) break;
+      origin -= error;
+      stops = buildStops(ctx, dir, from, to, origin, true, factorAt);
+    }
+    return stops;
+  };
+  const firstReference = (dir: TrackDir, from: number, to: number, ref: number, first: number) =>
+    buildStops(ctx, dir, from, to, first, true, factorAt).find(x => x.st === ref)!.dep;
+  const nextSlot = (t: number, dir: TrackDir) => {
+    const p = streamAt(t);
+    const candidate = t + headwayAt(p.headway === 150 ? t : t + headwayAt(t) / 2);
+    // Join the leading peak wave without a short insertion or a long gap.
+    const boundary = peaks.map(p => p.from - coreLead + (dir === 'UP' ? (p.template === 'weekdayPM' ? 0 : upPhase) : 0)).find(b => b > t && b <= candidate);
+    if (boundary !== undefined) return boundary - t >= 90 ? boundary : boundary + 150;
+    return candidate;
   };
 
   // ---- DN stream (reference: 淞虹路 departure)
   {
     let idx = 0;
     let lastPeriod = '';
-    let t = OPERATIONS.firstWestTerminusDep + refOffset('DN', W, SHR, factorAt(OPERATIONS.firstWestTerminusDep));
+    let t = firstReference('DN', W, E, SHR, OPERATIONS.firstWestTerminusDep);
     for (let guard = 0; guard < 2000; guard++) {
-      const p = periodAt(periods, t);
+      const p = streamAt(t);
       const tpl = TEMPLATES[p.template];
-      if (p.label !== lastPeriod) { idx = 0; lastPeriod = p.label; }
+      if (p.label !== lastPeriod) { idx = p.template === 'weekdayAM' ? 1 : 0; lastPeriod = p.label; }
       let kind = tpl.pattern[idx % tpl.pattern.length] as 'big' | 'small' | 'late';
-      const f = tpl.dwellFactor;
       if (kind === 'big' || kind === 'late') {
-        const originDep = t - refOffset('DN', W, SHR, f);
+        const originDep = atReference('DN', W, E, SHR, t)[0].dep;
         if (originDep > OPERATIONS.lastBigEastboundDep) kind = 'late';
         if (originDep > OPERATIONS.lastLateEastboundDep + 1) break;
         const to = kind === 'big' ? E : GLL;
-        const stops = buildStops(ctx, 'DN', W, to, originDep, true, factorAt);
+        const stops = atReference('DN', W, to, SHR, t);
         addTrip('DN', kind, W, to, stops, true);
       } else {
         const stops = buildStops(ctx, 'DN', SHR, GLL, t, true, factorAt);
         addTrip('DN', 'small', SHR, GLL, stops, true);
       }
       idx++;
-      t += headwayAt(t);
+      t = nextSlot(t, 'DN');
     }
   }
   // ---- UP stream (reference: 广兰路 departure)
@@ -230,17 +270,18 @@ export function generatePlan(ctx: PlanContext): Plan {
       return s[s.length - 1].arr;
     };
     const lastBigWestDep = OPERATIONS.lastBigWestboundArrival - fullUp(0.95);
-    let t = OPERATIONS.firstEastTerminusDep + refOffset('UP', E, GLL, factorAt(OPERATIONS.firstEastTerminusDep));
+    const firstThrough = firstReference('UP', E, W, GLL, OPERATIONS.firstEastTerminusDep);
+    let t = (peaks.length ? Math.min(firstThrough, peaks[0].from - coreLead - 1200) : firstThrough) + (ctx.dayType === 'weekday' ? upPhase : 0);
     for (let guard = 0; guard < 2000; guard++) {
-      const p = periodAt(periods, t);
+      const p = streamAt(t);
       const tpl = TEMPLATES[p.template];
-      if (p.label !== lastPeriod) { idx = 0; lastPeriod = p.label; }
+      if (p.label !== lastPeriod) { idx = p.template === 'weekdayPM' ? 1 : 0; lastPeriod = p.label; }
       let kind = tpl.pattern[idx % tpl.pattern.length] as 'big' | 'small' | 'late';
-      const f = tpl.dwellFactor;
+      if (kind === 'big' && atReference('UP', E, W, GLL, t)[0].dep < OPERATIONS.firstEastTerminusDep - .01) kind = 'small';
       if (kind === 'big') {
-        const originDep = t - refOffset('UP', E, GLL, f);
+        const originDep = atReference('UP', E, W, GLL, t)[0].dep;
         if (originDep > lastBigWestDep) kind = 'late';
-        else addTrip('UP', 'big', E, W, buildStops(ctx, 'UP', E, W, originDep, true, factorAt), true);
+        else addTrip('UP', 'big', E, W, atReference('UP', E, W, GLL, t), true);
       }
       if (kind === 'late') {
         if (t > OPERATIONS.lastLateWestboundDep + 1) break;
@@ -248,7 +289,7 @@ export function generatePlan(ctx: PlanContext): Plan {
       }
       if (kind === 'small') addTrip('UP', 'small', GLL, SHR, buildStops(ctx, 'UP', GLL, SHR, t, true, factorAt), true);
       idx++;
-      t += headwayAt(t);
+      t = nextSlot(t, 'UP');
     }
   }
 
@@ -308,7 +349,7 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
     for (const ev of evs) {
       // trains idle longer than the maximum layover go back to the depot
       for (let i = present.length - 1; i >= 0; i--) {
-        if (ev.time - present[i].ready > MAX_LAYOVER) out.push(present.splice(i, 1)[0].trip);
+        if (ev.time - present[i].ready > (T > 0 && T < topo.stations.length - 1 ? 450 : MAX_LAYOVER)) out.push(present.splice(i, 1)[0].trip);
       }
       if (ev.trip.cancelled) continue;
       if (ev.kind === 0) {
@@ -316,9 +357,10 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
         const base = (baseOcc?.get(T) ?? []).filter((o) => o.from <= ev.time + mt && o.to > ev.time).length;
         if (overlay && base >= cap) { dropArrival(ev.trip); continue; }
         present.push({ trip: ev.trip, ready: ev.time + mt });
-        if (present.length + base > cap) out.push(present.pop()!.trip);
+        if (present.length + base > cap) out.push(present.shift()!.trip);
       } else {
-        const i = present.findIndex((p) => p.ready <= ev.time);
+        const i = present.findIndex((p) => p.ready <= ev.time && frontTurnClear(ctx, allForGaps(),
+          p.trip, ev.time, new Set([p.trip.id, ev.trip.id])));
         if (i >= 0) pairs.push({ a: present.splice(i, 1)[0].trip, d: ev.trip });
         else src.push(ev.trip);
       }
@@ -351,20 +393,21 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
   };
   /** a trip keeps the minimum headway to every other train at every station on its path (P1) */
   const pathClear = (stops: PlanStop[], dir: TrackDir) =>
-    stops.every((p) => depsAt(p.st, dir).every((x) => Math.abs(x - p.dep) >= MIN_HEADWAY));
+    stops.every(p => depsAt(p.st, dir).every(x => Math.abs(x - p.dep) >= MIN_HEADWAY));
   /** stops of a move starting at or before `latest` that fit between the other trains along the whole path */
-  const fitBefore = (dir: TrackDir, latest: number, build: (t0: number) => PlanStop[]): PlanStop[] | null => {
+  const fitBefore = (dir: TrackDir, latest: number, build: (t0: number) => PlanStop[], continuation?: GenTrip, accept: (st: PlanStop[]) => boolean = () => true): PlanStop[] | null => {
+    const protection = continuation ? new DepIndex(allForGaps().filter(t => t !== continuation)) : null;
     for (let k = 0; k <= 240; k++) {
       const st = build(latest - k * 10);
-      if (pathClear(st, dir)) return st;
+      if (accept(st) && (protection ? protection.clear(st,dir) : pathClear(st, dir))) return st;
     }
     return null;
   };
   /** stops of a move starting at or after `earliest` that fit between the other trains along the whole path */
-  const fitAfter = (dir: TrackDir, earliest: number, build: (t0: number) => PlanStop[]): PlanStop[] | null => {
+  const fitAfter = (dir: TrackDir, earliest: number, build: (t0: number) => PlanStop[], accept: (st: PlanStop[]) => boolean = () => true): PlanStop[] | null => {
     for (let k = 0; k <= 240; k++) {
       const st = build(earliest + k * 10);
-      if (pathClear(st, dir)) return st;
+      if (accept(st) && pathClear(st, dir)) return st;
     }
     return null;
   };
@@ -431,7 +474,7 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
     const T = D.from;
     const dep = D.stops[0].dep;
     const depot = depotIndex(topo, TERMINAL_DEPOT[T]);
-    const early = dep <= firstDepFrom(T) + 1500 && !overlay;
+    const early = !overlay && (dep <= firstDepFrom(T) + 1500 || D.kind === 'small');
     if (early && (stabling[T] ?? 0) > 0) {
       stabling[T]--;
       startOf.set(D.id, { kind: 'stable', station: T });
@@ -443,14 +486,15 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
       startOf.set(D.id, { kind: 'depot', depot, time: 0 });
       continue;
     }
-    const mt = minTurn(T);
+    const mt = towardDir === D.dir ? 0 : minTurn(T);
     if (early) {
       // non-revenue positioning move before service
       const probe = buildStops(ctx, towardDir, ex, T, 0, false, 1);
       const run = probe[probe.length - 1].arr;
-      const st = fitBefore(towardDir, placeBefore(ex, towardDir, dep - mt - 60 - run), (t0) => buildStops(ctx, towardDir, ex, T, t0, false, 1))
-        ?? buildStops(ctx, towardDir, ex, T, dep - mt - 60 - run, false, 1);
+      const st = fitBefore(towardDir, placeBefore(ex, towardDir, dep - mt - (towardDir === D.dir ? 0 : 60) - run), (t0) => buildStops(ctx, towardDir, ex, T, t0, false, 1), towardDir === D.dir ? D : undefined)
+        ?? buildStops(ctx, towardDir, ex, T, dep - mt - (towardDir === D.dir ? 0 : 60) - run, false, 1);
       st[0].stop = false;
+      if (towardDir === D.dir) st[st.length-1].stop = false;
       const e = addTo(trips, towardDir, 'empty', ex, T, st, false, overlay);
       e.next = D.id;
       D.prev = e.id;
@@ -460,7 +504,8 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
       const probe = buildStops(ctx, towardDir, ex, T, 0, true, f);
       const run = probe[probe.length - 1].arr;
       const latest = dep - mt - run;
-      let st = fitBefore(towardDir, Math.min(latest, placeBefore(ex, towardDir, latest)), (t0) => buildStops(ctx, towardDir, ex, T, t0, true, f));
+      let st = fitBefore(towardDir, Math.min(latest, placeBefore(ex, towardDir, latest)), (t0) => buildStops(ctx, towardDir, ex, T, t0, true, f), undefined,
+        stops => frontTurnClear(ctx, allForGaps(), { dir: towardDir, to: T, stops }, dep, new Set([D.id])));
       if (!st && overlay) { dropSource(D); continue; }
       st ??= buildStops(ctx, towardDir, ex, T, placeBefore(ex, towardDir, latest), true, f);
       const ins = addTo(trips, towardDir, overlay ? 'extra' : 'ins', ex, T, st, true, overlay);
@@ -501,7 +546,9 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
       e.prev = A.id;
       endOf.set(e.id, { kind: 'depot', depot });
     } else {
-      let st = fitAfter(awayDir, placeAfter(T, awayDir, arr + mt), (t0) => buildStops(ctx, awayDir, T, en, t0, true, 1));
+      const earliest = placeAfter(T, awayDir, arr + mt);
+      let st = fitAfter(awayDir, overlay ? Math.max(arr+mt,earliest) : earliest, (t0) => buildStops(ctx, awayDir, T, en, t0, true, 1),
+        stops => frontTurnClear(ctx, allForGaps(), A, stops[0].dep, new Set([A.id])));
       if (!st && overlay && A.prev !== undefined) {
         // an added-service train that cannot get back to the depot between the other trains
         // (peak headway) does not run its last trip: it goes back after the trip before
@@ -513,6 +560,7 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
         sinkQueue.splice(i < 0 ? sinkQueue.length : i, 0, P);
         continue;
       }
+      if (!st && overlay) { dropArrival(A); continue; }
       st ??= buildStops(ctx, awayDir, T, en, placeAfter(T, awayDir, arr + mt), true, 1);
       const wd = addTo(trips, awayDir, overlay ? 'extra' : 'wd', T, en, st, true, overlay);
       A.next = wd.id;
@@ -554,8 +602,9 @@ export function depotStartTime(ctx: PlanContext, depot: number, first: Trip): nu
   const J = topo.depots[depot].junctionChain;
   const st0 = first.stops[0].st;
   const dist = Math.abs(topo.stations[st0].chain - J);
-  const firstStop = first.stops.find((s) => s.stop) ?? first.stops[0];
-  const refTime = first.stops[0].stop ? first.stops[0].dep : firstStop.arr;
+  // Both the time and the distance must refer to the first station, even
+  // when an empty feeder passes it without stopping.
+  const refTime = first.stops[0].dep;
   // transfer track (~470 m at 25 km/h) + junction + run on the main line
   const travel = 95 + dist / 13 + 25;
   return Math.round(refTime - travel - (first.stops[0].stop ? 75 : 30));
@@ -584,8 +633,10 @@ function blockStart(plan: Plan, b: Block) {
 export function fleetPeak(plan: Plan): number {
   const ev: [number, number][] = [];
   for (const b of plan.blocks) {
-    const first = plan.trips[b.trips[0]];
-    const last = plan.trips[b.trips[b.trips.length - 1]];
+    const live = b.trips.map(id => plan.trips[id]).filter(t => !t.cancelled);
+    if (!live.length) continue;
+    const first = live[0];
+    const last = live[live.length - 1];
     const s = b.start.kind === 'depot' ? b.start.time : first.stops[0].dep - 600;
     const e = last.stops[last.stops.length - 1].arr + (b.end.kind === 'depot' ? 300 : 0);
     if (b.start.kind === 'stable' || b.end.kind === 'stable') continue;
@@ -595,7 +646,7 @@ export function fleetPeak(plan: Plan): number {
   let cur = 0;
   let max = 0;
   for (const [, d] of ev) { cur += d; max = Math.max(max, cur); }
-  const stabled = plan.blocks.filter((b) => b.start.kind === 'stable' || b.end.kind === 'stable').length;
+  const stabled = plan.blocks.filter((b) => b.trips.some(id => !plan.trips[id].cancelled) && (b.start.kind === 'stable' || b.end.kind === 'stable')).length;
   return max + stabled;
 }
 
@@ -617,7 +668,15 @@ export function applyOverlay(ctx: PlanContext, plan: Plan, preset: { id: string;
     for (let k = 0; k * 10 <= preset.headway / 2; k++) {
       for (const t0 of k ? [t + k * 10, t - k * 10] : [t]) {
         const st = buildStops(ctx, dir, from, to, t0, true, 1);
-        if (idx.clear(st, dir)) return st;
+        if (!idx.clear(st, dir)) continue;
+        // Fit front-turn slots while placing the revenue streams, rather
+        // than discovering after FIFO matching that every arrival occupies
+        // a platform needed by the opposite stream.
+        if (!frontTurnClear(ctx, trips, {dir,to,stops:st}, st.at(-1)!.arr+minTurn(to), new Set())) continue;
+        const incoming = dir === 'DN' ? 'UP' : 'DN';
+        const arrival = {...st[0],arr:t0-minTurn(from),dep:t0-minTurn(from)};
+        if (!frontTurnClear(ctx, trips, {dir:incoming,to:from,stops:[arrival]},t0,new Set())) continue;
+        return st;
       }
     }
     return null;
@@ -636,6 +695,16 @@ export function applyOverlay(ctx: PlanContext, plan: Plan, preset: { id: string;
   const maxSvc = Math.max(0, ...plan.blocks.filter((x) => x.svc).map((x) => parseInt(x.svc, 10)));
   numberPlan(plan, maxSvc + 1);
   plan.fleetPeak = fleetPeak(plan);
+  // Fault cancellations change the available gaps and terminal occupancy.
+  // Check complete added circulations after matching, including every point
+  // inside a layover, rather than only the occupancy at its arrival event.
+  for (let attempt = 0; attempt < blocks.length; attempt++) {
+    const issue = validatePlan(ctx, plan).find(i => i.blocks?.some(id => blocks.some(b => b.id === id && b.trips.some(t => !trips[t].cancelled))));
+    if (!issue) break;
+    const block = blocks.filter(b => issue.blocks!.includes(b.id) && b.trips.some(t => !trips[t].cancelled)).at(-1)!;
+    for (const id of block.trips) { trips[id].cancelled = true; trips[id].cancelReason = `加开能力不足：${issue.text}`; }
+    plan.fleetPeak = fleetPeak(plan);
+  }
   const live = trips.slice(n0).filter((t) => !t.cancelled);
   return { trips: live.length, blocks: blocks.length, skipped: skipped + trips.slice(n0).filter((t) => t.cancelled && t.revenue).length };
 }
@@ -649,10 +718,21 @@ export function addExtraTrain(ctx: PlanContext, plan: Plan, depot: number, dir: 
   if (!turnbackAt(topo, to, dir)) return `${STATIONS[to].name} 无该方向折返条件`;
   const en = entryStation(topo, depot, back);
   const trips = plan.trips as GenTrip[];
-  const s1 = buildStops(ctx, dir, ex, to, time, true, 1);
+  const index = new DepIndex(plan.trips);
+  let s1: PlanStop[] = [], s2: PlanStop[] = [];
+  for (let offset = 0; offset <= 900; offset += 10) {
+    const out = buildStops(ctx, dir, ex, to, time + offset, true, 1);
+    if (!index.clear(out,dir)) continue;
+    // Opposing streams need not have a usable slot exactly 240 seconds after
+    // arrival. Search the permitted terminal layover; never hold ordinary stops.
+    for(let wait=0;wait<=Math.max(0,(to===0||to===topo.stations.length-1?1500:450)-minTurn(to));wait+=10){
+      const into = buildStops(ctx, back, to, en, out[out.length - 1].arr + minTurn(to)+wait, true, 1);
+      if(index.clear(into,back)){s1=out;s2=into;break;}
+    }
+    if(s1.length)break;
+  }
+  if (!s1.length) return '未来15分钟内无全路径可行的加开及回段时隙';
   const t1 = addTo(trips, dir, 'extra', ex, to, s1, true, 'adhoc');
-  const arr = s1[s1.length - 1].arr;
-  const s2 = buildStops(ctx, back, to, en, arr + minTurn(to), true, 1);
   const t2 = addTo(trips, back, 'extra', to, en, s2, true, 'adhoc');
   const b: Block = { id: plan.blocks.length, svc: '', start: { kind: 'depot', depot, time: 0 }, end: { kind: 'depot', depot }, trips: [t1.id, t2.id] };
   t1.block = t2.block = b.id;
@@ -660,6 +740,7 @@ export function addExtraTrain(ctx: PlanContext, plan: Plan, depot: number, dir: 
   plan.blocks.push(b);
   const maxSvc = Math.max(0, ...plan.blocks.filter((x) => x.svc).map((x) => parseInt(x.svc, 10)));
   numberPlan(plan, maxSvc + 1);
+  plan.fleetPeak = fleetPeak(plan);
   return b;
 }
 
@@ -704,7 +785,9 @@ export function blockTasks(topo: Topology, plan: Plan, block: Block, fromTrip = 
     if (trip.cancelled) continue;
     tripTasks(topo, trip, tasks, k === 0 && block.start.kind === 'depot' && fromTrip === 0);
     const next = ids.slice(k + 1).map((i) => plan.trips[i]).find((t) => !t.cancelled);
-    if (next) addTurnback(topo, trip, tasks);
+    if (next) {
+      if (next.dir !== trip.dir) addTurnback(topo, trip, tasks);
+    }
     else if (block.end.kind === 'depot') tasks.push({ k: 'depot', depot: block.end.depot });
     else if (block.end.kind === 'stable') {
       const tb = turnbackAt(topo, trip.to, trip.dir);
@@ -745,8 +828,10 @@ export function addTurnback(topo: Topology, trip: Trip, tasks: Task[]) {
 // ---------------------------------------------------------------- validation
 
 export interface PlanIssue {
+  /** Circulations contributing to this conflict; used by pure overlay fitting. */
+  blocks?: number[];
   severity: 'error' | 'warn';
-  code: 'TURN_SHORT' | 'BLOCK_BREAK' | 'TERMINAL_FULL' | 'HEADWAY' | 'FLEET' | 'TIME_ORDER' | 'UNASSIGNED';
+  code: 'TURN_SHORT' | 'BLOCK_BREAK' | 'TERMINAL_FULL' | 'TAIL_ORDER' | 'FRONT_CONFLICT' | 'LAYOVER_LONG' | 'DEPOT_CONFLICT' | 'HEADWAY' | 'FLEET' | 'TIME_ORDER' | 'UNASSIGNED';
   t: number;
   text: string;
 }
@@ -756,9 +841,19 @@ const MIN_TURN_ABS = 120;
 /** shortest station headway (s): P1 table 1, CBTC design headway ≤ 90 s */
 const MIN_HEADWAY = 90;
 
+/** A front turn occupies the opposite platform from arrival to departure.
+ * Its timetable slot must protect normal-direction arrivals through that
+ * platform as well as the incoming train's own departure stream. */
+function frontTurnClear(ctx: PlanContext, trips: Trip[], arrival: Pick<Trip, 'dir' | 'to' | 'stops'>, departure: number, excluded: Set<number>): boolean {
+  if (turnbackAt(ctx.topo, arrival.to, arrival.dir)?.kind !== 'front') return true;
+  const arr = arrival.stops.at(-1)!.arr;
+  return !trips.some(trip => !trip.cancelled && !excluded.has(trip.id) && trip.dir !== arrival.dir
+    && trip.stops.some(stop => stop.st === arrival.to && stop.dep > arr - MIN_HEADWAY && stop.arr < departure + MIN_HEADWAY));
+}
+
 /** time intervals trains spend turning back / laying over at each station (between two trips in opposite directions) */
-export function terminalOccupancy(plan: Plan): Map<number, { from: number; to: number }[]> {
-  const occ = new Map<number, { from: number; to: number }[]>();
+export function terminalOccupancy(plan: Plan): Map<number, { from: number; to: number; block: number }[]> {
+  const occ = new Map<number, { from: number; to: number; block: number }[]>();
   for (const b of plan.blocks) {
     const ts = b.trips.map((i) => plan.trips[i]).filter((t) => !t.cancelled);
     for (let i = 0; i + 1 < ts.length; i++) {
@@ -766,7 +861,7 @@ export function terminalOccupancy(plan: Plan): Map<number, { from: number; to: n
       const d = ts[i + 1];
       if (a.to !== d.from || a.dir === d.dir) continue;
       if (!occ.has(a.to)) occ.set(a.to, []);
-      occ.get(a.to)!.push({ from: a.stops[a.stops.length - 1].arr, to: d.stops[0].dep });
+      occ.get(a.to)!.push({ from: a.stops[a.stops.length - 1].arr, to: d.stops[0].dep, block: b.id });
     }
   }
   return occ;
@@ -829,10 +924,21 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
       const arr = a.stops[a.stops.length - 1].arr;
       const dep = d.stops[0].dep;
       if (a.to !== d.from) { out.push({ severity: 'error', code: 'BLOCK_BREAK', t: arr, text: `车底 ${b.svc}：${a.no} 终到 ${name(a.to)}，下一车次 ${d.no} 从 ${name(d.from)} 出发` }); continue; }
-      if (dep - arr < MIN_TURN_ABS) out.push({ severity: 'error', code: 'TURN_SHORT', t: arr, text: `车底 ${b.svc} 在 ${name(a.to)} 折返仅 ${Math.round(dep - arr)} s（${a.no}→${d.no}，最小 ${MIN_TURN_ABS} s）` });
+      if (a.dir !== d.dir && dep - arr < MIN_TURN_ABS - 1e-6) out.push({ severity: 'error', code: 'TURN_SHORT', t: arr, text: `车底 ${b.svc} 在 ${name(a.to)} 折返仅 ${Math.round(dep - arr)} s（${a.no}→${d.no}，最小 ${MIN_TURN_ABS} s）` });
+      if (a.dir !== d.dir && !frontTurnClear(ctx, live, a, dep, new Set(ts.map(trip => trip.id))))
+        out.push({severity:'error',code:'FRONT_CONFLICT',t:arr,blocks:[b.id],text:`${name(a.to)} 站前折返占用时段与正常方向列车冲突`});
+      if (a.overlay && a.dir !== d.dir && a.to > 0 && a.to < topo.stations.length - 1 && dep-arr > minTurn(a.to)+450+.01)
+        out.push({severity:'error',code:'LAYOVER_LONG',t:arr,blocks:[b.id],text:`${name(a.to)} 加开接续等待超过中间折返站能力`});
     }
   }
   for (const [st, list] of occ) {
+    // A single rear turnback cannot dispatch its second arrival before its
+    // first: the first would have to hold either the tail or the exit platform.
+    if (topo.stations[st].turnbackBerths.length === 1) {
+      const ordered = list.slice().sort((a,b) => a.from-b.from);
+      for (let i=1;i<ordered.length;i++) if (ordered[i-1].to > ordered[i].to + .01)
+        out.push({severity:'error',code:'TAIL_ORDER',t:ordered[i].from,blocks:[ordered[i-1].block,ordered[i].block],text:`${name(st)} 单一折返线到达次序与发车次序相反`});
+    }
     const cap = TERMINAL_CAP[st] ?? (topo.stations[st].turnbackBerths.length || 1);
     const evs = list.flatMap((o) => [[o.from, 1], [o.to, -1]] as [number, number][]).sort((x, y) => x[0] - y[0] || x[1] - y[1]);
     let cur = 0;
@@ -841,18 +947,51 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
       cur += dlt;
       if (cur > cap && t - reported > 1800) {
         reported = t;
-        out.push({ severity: 'error', code: 'TERMINAL_FULL', t, text: `${name(st)} 同时折返/待发 ${cur} 列，超过能力 ${cap} 列` });
+        const blocks = plan.blocks.filter(block => {
+          const ts = block.trips.map(id => plan.trips[id]).filter(trip => !trip.cancelled);
+          return ts.some((a,i) => { const d = ts[i+1]; return d && a.to === st && d.from === st && a.dir !== d.dir
+            && a.stops.at(-1)!.arr <= t && d.stops[0].dep > t; });
+        }).map(block => block.id);
+        out.push({ severity: 'error', code: 'TERMINAL_FULL', t, blocks, text: `${name(st)} 同时折返/待发 ${cur} 列，超过能力 ${cap} 列` });
+      }
+    }
+  }
+  // BZL/CSD share their conversion track. A returning added train receives
+  // physical priority inside 1500 m; reserve that approach and its low-speed
+  // entry against planned yard exits, rather than delaying a peak origin.
+  // LYD's independent inbound/outbound tracks have no such conflict.
+  for (const depot of topo.depots) {
+    if (depot.gateLink !== depot.outGateLink) continue;
+    const exits = plan.blocks.filter(b => b.start.kind==='depot' && b.start.depot===depot.id
+      && b.trips.some(id => !plan.trips[id].cancelled));
+    for (const inbound of plan.blocks) {
+      if (inbound.end.kind!=='depot' || inbound.end.depot!==depot.id) continue;
+      const trips = inbound.trips.map(id => plan.trips[id]).filter(trip => !trip.cancelled);
+      const last = trips.at(-1);if (!last) continue;
+      const distance = Math.abs(topo.stations[last.to].chain-depot.junctionChain);
+      const approach = last.stops.at(-1)!.arr+15+Math.max(0,distance-1500)/20;
+      const transfer = depot.transferPaths[0].links.reduce((sum,id) => sum+topo.links[id].len,0);
+      const clear = last.stops.at(-1)!.arr+15+distance/20+(transfer+LINE_INFO.trainLength)/(25/3.6)+25;
+      for (const outbound of exits) {
+        if (outbound===inbound || outbound.start.kind!=='depot') continue;
+        const added = last.overlay || outbound.trips.some(id => !plan.trips[id].cancelled && plan.trips[id].overlay);
+        if (added && outbound.start.time < clear && outbound.start.time+depot.exitTime > approach)
+          out.push({severity:'error',code:'DEPOT_CONFLICT',t:Math.max(approach,outbound.start.time),blocks:[inbound.id,outbound.id],
+            text:`${depot.name} 加开回段接近与图定出段共用转换轨时隙冲突`});
       }
     }
   }
   // station headways per direction (passing / departing)
   for (const dir of ['DN', 'UP'] as TrackDir[]) {
-    const byStation = new Map<number, { t: number; no: string }[]>();
+    const byStation = new Map<number, { t: number; no: string; block: number }[]>();
     for (const t of live) {
       if (t.dir !== dir) continue;
       for (const s of t.stops) {
+        const block = plan.blocks[t.block];
+        const next = block && plan.trips[block.trips[block.trips.indexOf(t.id) + 1]];
+        if (s === t.stops.at(-1) && next?.dir === t.dir && next.from === s.st) continue;
         if (!byStation.has(s.st)) byStation.set(s.st, []);
-        byStation.get(s.st)!.push({ t: s.dep, no: t.no });
+        byStation.get(s.st)!.push({ t: s.dep, no: t.no, block: t.block });
       }
     }
     for (const [st, list] of byStation) {
@@ -862,7 +1001,7 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
         const h = list[i].t - list[i - 1].t;
         if (h < MIN_HEADWAY && list[i].t - reported > 1800) {
           reported = list[i].t;
-          out.push({ severity: h < MIN_HEADWAY - 30 ? 'error' : 'warn', code: 'HEADWAY', t: list[i].t, text: `${name(st)} ${dir === 'DN' ? '下行' : '上行'} ${list[i - 1].no}/${list[i].no} 间隔 ${Math.round(h)} s（最小 ${MIN_HEADWAY} s）` });
+          out.push({ severity: h < MIN_HEADWAY - 30 ? 'error' : 'warn', code: 'HEADWAY', t: list[i].t, blocks: [list[i-1].block,list[i].block], text: `${name(st)} ${dir === 'DN' ? '下行' : '上行'} ${list[i - 1].no}/${list[i].no} 间隔 ${Math.round(h)} s（最小 ${MIN_HEADWAY} s）` });
         }
       }
     }
