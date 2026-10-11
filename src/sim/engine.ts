@@ -232,9 +232,11 @@ export class Sim {
     for (const c of this.calls) if (c.state === 'ringing' && c.train === tr.id) c.state = 'expired';
   }
 
-  log(level: AlarmLevel, cat: string, text: string, opts: { key?: string; manual?: boolean } = {}) {
+  log(level: AlarmLevel, cat: string, text: string, opts: { key?: string; manual?: boolean; code?: string; train?: number } = {}) {
     if (opts.key && this.alarms.has(opts.key)) return;
     const ev: SimEvent = { id: this.nextEventId++, t: this.t, level, cat, text, manual: opts.manual };
+    if (opts.code) ev.code = opts.code;
+    if (opts.train !== undefined) ev.train = opts.train;
     if (opts.key && level !== 'I') {
       ev.alarm = true;
       ev.key = opts.key;

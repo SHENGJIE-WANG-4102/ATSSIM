@@ -3,6 +3,7 @@
  * shared with the UI thread.
  */
 import type { Dir } from './topology';
+import type { HaltCode, Halt, ArsWait } from './halt';
 
 export type DayType = 'weekday' | 'weekend';
 export type Level = 'CBTC' | 'TBTC';
@@ -126,6 +127,18 @@ export interface Train {
   ebSince: number;
   maDist: number;
   maReason: string;
+  /** machine-readable cause of the MA end and the train causing it (-1 none) */
+  maCode: HaltCode;
+  maTrain: number;
+  maFarCode: HaltCode;
+  maFarTrain: number;
+  /** distance moved and MA in force during the last fixed step (invariant checks) */
+  lastDs: number;
+  lastMa: number;
+  /** ATS route-setting wait (why the next route is not set) */
+  arsWait: ArsWait | null;
+  /** current stop reason */
+  halt: Halt;
   /** full-length MA from the last 1 s refresh, reduced by the distance travelled since */
   maFar: number;
   maFarReason: string;
@@ -319,6 +332,10 @@ export interface SimEvent {
   key?: string;
   ack?: boolean;
   cleared?: number;
+  /** machine-readable code (stop reason / integrity violation kind) */
+  code?: string;
+  /** train concerned */
+  train?: number;
 }
 
 export type FaultKind =

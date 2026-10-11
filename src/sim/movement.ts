@@ -8,6 +8,7 @@ import { nextLink, type Dir } from './topology';
 import { swPos } from './interlocking';
 import { PERF, brakingSpeed, controlAccel, tractionAccel } from './dynamics';
 import { routeLeadsTo } from './ats';
+import type { HaltCode } from './halt';
 
 /** speed limits / platform stops further than this do not influence the braking curves */
 const LOOKAHEAD = 1400;
@@ -34,6 +35,9 @@ const SIGNAL_MARGIN = 6; // m before a signal at danger
 export interface ScanResult {
   maDist: number;
   maReason: string;
+  maCode: HaltCode;
+  /** train that limits the MA (-1 none) */
+  maTrain: number;
   /** nearest physical obstacle (train, buffer, undetected switch) */
   hardDist: number;
   stopDist: number;
@@ -63,14 +67,23 @@ export function goalBerth(tr: Train): number {
   return -1;
 }
 
-function obstacle(res: ScanResult, d: number, reason: string, hard = false) {
-  if (d < res.maDist) { res.maDist = Math.max(0, d); res.maReason = reason; }
+function obstacle(res: ScanResult, d: number, reason: string, code: HaltCode, hard = false, train = -1) {
+  if (d < res.maDist) { res.maDist = Math.max(0, d); res.maReason = reason; res.maCode = code; res.maTrain = train; }
   if (hard && d < res.hardDist) res.hardDist = Math.max(0, d);
+}
+
+/** a train (other than self) with its body in the section, -1 none */
+function trainInSection(sim: Sim, sec: number, self: number): number {
+  for (const lid of sim.topo.sections[sec].links) {
+    const segs = sim.linkBodies.get(lid);
+    if (segs) for (const s of segs) if (s.train !== self) return s.train;
+  }
+  return -1;
 }
 
 export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP): ScanResult {
   const { topo } = sim;
-  const res: ScanResult = { maDist: Infinity, maReason: '', hardDist: Infinity, stopDist: Infinity, constraints: [], vBody: Infinity, nextSignal: -1, nextSignalDist: Infinity };
+  const res: ScanResult = { maDist: Infinity, maReason: '', maCode: 'NONE', maTrain: -1, hardDist: Infinity, stopDist: Infinity, constraints: [], vBody: Infinity, nextSignal: -1, nextSignalDist: Infinity };
   const atp = tr.mode !== 'RM';
   // a manually driven RM train is on sight: authority limits are advisory, the scan goes on to find physical obstacles
   const onSight = tr.manual && tr.mode === 'RM';
@@ -84,7 +97,7 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
   for (const b of tr.body) {
     res.vBody = Math.min(res.vBody, linkLimit(sim, b.link));
     const p = topo.links[b.link].platform;
-    if (p >= 0 && sim.plat[p].esp && tr.phase === 'run') { res.maDist = 0; res.maReason = '站台紧急关闭'; }
+    if (p >= 0 && sim.plat[p].esp && tr.phase === 'run') { res.maDist = 0; res.maReason = '站台紧急关闭'; res.maCode = 'ESP'; }
   }
   res.vBody = Math.min(res.vBody, PERF.vMax);
   if (tr.mode === 'RM') res.vBody = Math.min(res.vBody, PERF.vRM);
@@ -106,8 +119,8 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
 
   // zone check for current position
   const z0 = sim.zoneState[l0.zone];
-  if (atp && tr.level === 'CBTC' && z0 === 'ZCFAIL' && tr.rmAuth <= 0) obstacle(res, 0, '区域控制器故障');
-  if (atp && tr.level === 'CBTC' && !tr.comm) obstacle(res, 0, '车地通信中断');
+  if (atp && tr.level === 'CBTC' && z0 === 'ZCFAIL' && tr.rmAuth <= 0) obstacle(res, 0, '区域控制器故障', 'ZC_FAULT');
+  if (atp && tr.level === 'CBTC' && !tr.comm) obstacle(res, 0, '车地通信中断', 'COMM_LOSS');
 
   let lastSec = l0.section;
   let guard = 0;
@@ -134,7 +147,9 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
     }
     if (!nx) {
       const n = topo.nodes[node];
-      obstacle(res, d - (n.kind === 'end' ? 3 : SIGNAL_MARGIN), n.kind === 'end' ? (n.endKind === 'depot' ? '段界' : '车挡') : '道岔无表示', true);
+      const swFailed = n.kind === 'switch' && sim.sw[n.sw!].failed;
+      const code: HaltCode = n.kind === 'end' ? (n.endKind === 'depot' ? 'DEPOT_LIMIT' : 'BUFFER') : swFailed ? 'SWITCH_FAULT' : 'SWITCH_MOVING';
+      obstacle(res, d - (n.kind === 'end' ? 3 : SIGNAL_MARGIN), n.kind === 'end' ? (n.endKind === 'depot' ? '段界' : '车挡') : '道岔无表示', code, true);
       break;
     }
     const nl = topo.links[nx.link];
@@ -156,10 +171,10 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
       } else if (!atp && tr.rmAuth > d && !topo.signals[sigId].routes.some((r) => topo.routes[r].switches.length > 0)) {
         ok = true; // authorised to pass a signal at danger on plain line
       }
-      if (!ok) { obstacle(res, d - SIGNAL_MARGIN, sg.failed ? '信号机故障' : '信号/进路未开放'); if (!onSight) break; }
+      if (!ok) { obstacle(res, d - SIGNAL_MARGIN, sg.failed ? '信号机故障' : '信号/进路未开放', sg.failed ? 'SIGNAL_FAULT' : 'ROUTE_WAIT'); if (!onSight) break; }
       // ATS departure / route check: the set route must lead towards the train's goal
       const routeGoal = gb >= 0 ? gb : sim.rescueGoal(tr);
-      if (ok && !tr.manual && res.stopDist === Infinity && routeGoal >= 0 && sg.route >= 0 && !routeLeadsTo(sim, sg.route, routeGoal)) { obstacle(res, d - SIGNAL_MARGIN, '进路与计划不符'); break; }
+      if (ok && !tr.manual && res.stopDist === Infinity && routeGoal >= 0 && sg.route >= 0 && !routeLeadsTo(sim, sg.route, routeGoal)) { obstacle(res, d - SIGNAL_MARGIN, '进路与计划不符', 'ROUTE_MISMATCH'); break; }
     }
     // section checks
     if (nl.section !== lastSec) {
@@ -167,23 +182,23 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
       const zs = sim.zoneState[nl.zone];
       lastSec = nl.section;
       if (st.blocked || st.envTsr < 0) {
-        obstacle(res, d - 5, st.poss >= 0 ? '施工封锁区段' : st.envTsr < 0 ? '大风停运区段' : '区段封锁');
+        obstacle(res, d - 5, st.poss >= 0 ? '施工封锁区段' : st.envTsr < 0 ? '大风停运区段' : '区段封锁', st.poss >= 0 ? 'POSSESSION' : st.envTsr < 0 ? 'WEATHER' : 'BLOCKED');
         if (!onSight) break;
       }
       if (atp && tr.rmAuth <= d) {
-        if (tr.level === 'CBTC' && zs === 'ZCFAIL') { obstacle(res, d - 5, 'ZC故障区域'); break; }
-        if (st.disturbed || st.preset) { obstacle(res, d - 5, st.preset ? '计轴预复位区段' : '计轴故障占用'); break; }
+        if (tr.level === 'CBTC' && zs === 'ZCFAIL') { obstacle(res, d - 5, 'ZC故障区域', 'ZC_FAULT'); break; }
+        if (st.disturbed || st.preset) { obstacle(res, d - 5, st.preset ? '计轴预复位区段' : '计轴故障占用', st.preset ? 'AXLE_PRESET' : 'AXLE_FAULT'); break; }
         if (st.occ) {
           const passable = cbtc && zs === 'CBTC' && st.commOnly;
-          if (!passable) { obstacle(res, d - 5, cbtc ? '非通信车占用' : '前方区段占用'); break; }
+          if (!passable) { obstacle(res, d - 5, cbtc ? '非通信车占用' : '前方区段占用', 'TRAIN_AHEAD', false, trainInSection(sim, nl.section, tr.id)); break; }
         }
       }
     }
     // platform protections
     if (nl.platform >= 0) {
       const ps = sim.plat[nl.platform];
-      if (ps.esp) { obstacle(res, d - 3, '站台紧急关闭'); if (!onSight) break; }
-      if (ps.psd === 'fault' && !ps.psdBypass && atp) { obstacle(res, d - 3, '站台门未关闭锁紧'); break; }
+      if (ps.esp) { obstacle(res, d - 3, '站台紧急关闭', 'ESP'); if (!onSight) break; }
+      if (ps.psd === 'fault' && !ps.psdBypass && atp) { obstacle(res, d - 3, '站台门未关闭锁紧', 'PSD_FAULT'); break; }
     }
     // other trains on this link
     checkTrainsOnLink(sim, tr, nx.link, nx.dir, d, rescueTarget, cbtc, atp, res);
@@ -199,7 +214,7 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
     dir = nx.dir;
   }
   // the walk ended without meeting an authority limit (RM on sight, scan cap)
-  if (res.maDist === Infinity && !onSight) { res.maDist = d; res.maReason = MA_CAP_REASON; }
+  if (res.maDist === Infinity && !onSight) { res.maDist = d; res.maReason = MA_CAP_REASON; res.maCode = 'NONE'; }
   if (res.nextSignal < 0) { res.nextSignalDist = Infinity; }
   return res;
 }
@@ -265,7 +280,7 @@ function checkTrainsOnLink(
     const dist = dEntry + near;
     if (dist < -0.5) continue; // behind us on the same link
     if (s.train === rescueTarget) {
-      obstacle(res, dist - 0.3, '救援连挂', true);
+      obstacle(res, dist - 0.3, '救援连挂', 'RESCUE', true, s.train);
       res.constraints.push(Math.max(0, dist - 25), PERF.vCouple);
       continue;
     }
@@ -274,8 +289,8 @@ function checkTrainsOnLink(
     let margin = SIGHT_MARGIN;
     if (atp) margin = cbtc && otherComm ? CBTC_SAFETY : 25;
     // a manual RM driver may close up to the train ahead (on sight); the physical limit is 1 m
-    if (tr.manual && !atp) { obstacle(res, dist - margin, '前方列车(目视)'); obstacle(res, dist - 1, '前方列车(目视)', true); continue; }
-    obstacle(res, dist - margin, otherComm ? '前车' : '前方列车(非通信)', true);
+    if (tr.manual && !atp) { obstacle(res, dist - margin, '前方列车(目视)', 'TRAIN_AHEAD', false, s.train); obstacle(res, dist - 1, '前方列车(目视)', 'TRAIN_AHEAD', true, s.train); continue; }
+    obstacle(res, dist - margin, otherComm ? '前车' : '前方列车(非通信)', 'TRAIN_AHEAD', true, s.train);
   }
 }
 
@@ -379,6 +394,7 @@ export function advance(sim: Sim, tr: Train, ds: number): boolean {
 export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   const moving = tr.phase === 'run' && !tr.failed;
   if (!moving) {
+    tr.lastDs = 0;
     // standing (dwell, turnback, stabled, failed): authority, next signal and the
     // permitted speed come from the 1 Hz refresh
     tr.v = 0;
@@ -394,9 +410,13 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     // authority reaches beyond the near scan: last full MA, shifted by our own travel
     tr.maDist = tr.maFar;
     tr.maReason = tr.maFarReason;
+    tr.maCode = tr.maFarCode;
+    tr.maTrain = tr.maFarTrain;
   } else {
     tr.maDist = scan.maDist;
     tr.maReason = scan.maReason;
+    tr.maCode = scan.maCode;
+    tr.maTrain = scan.maTrain;
   }
   tr.nextSignal = scan.nextSignal;
   tr.nextSignalDist = scan.nextSignalDist;
@@ -503,6 +523,8 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     if (ds > hard) { ds = hard; tr.v = Math.min(tr.v, 0.3); }
     if (stopAt < 0.4 && tr.v < 0.35 && !tr.eb) tr.v = 0;
   }
+  tr.lastDs = ds;
+  tr.lastMa = tr.manual && rm ? Infinity : scan.maDist;
   if (ds > 0) {
     const ok = advance(sim, tr, ds);
     tr.maFar -= ds;
@@ -524,11 +546,15 @@ export function refreshAuthority(sim: Sim) {
     const s = scanAhead(sim, tr, goalBerth(tr));
     tr.maFar = s.maDist;
     tr.maFarReason = s.maReason;
+    tr.maFarCode = s.maCode;
+    tr.maFarTrain = s.maTrain;
     const moving = tr.phase === 'run' && !tr.failed;
     // a moving train keeps this step's near scan; only the far end is taken over
     if (moving && tr.maReason !== MA_CAP_REASON) continue;
     tr.maDist = s.maDist;
     tr.maReason = s.maReason;
+    tr.maCode = s.maCode;
+    tr.maTrain = s.maTrain;
     if (moving) continue;
     tr.nextSignal = s.nextSignal;
     tr.nextSignalDist = s.nextSignalDist;
