@@ -19,6 +19,29 @@ const WEEKEND: [number, number][] = [
 /** passengers per second per platform at demand weight 1 and profile 1 */
 const BASE_RATE = 0.42;
 
+// Assumption: directional boarding demand starts 15 minutes before the first
+// usable train. A closed service cannot accumulate hours of rush-hour demand
+// before that direction's first train reaches an outer station.
+const serviceWindows = new WeakMap<Sim, { rev: number; trips: Sim['plan']['trips']; first: number[]; last: number[] }>();
+function boardingWindows(sim: Sim) {
+  let windows = serviceWindows.get(sim);
+  if (!windows || windows.rev !== sim.planRev || windows.trips !== sim.plan.trips) {
+    const first = sim.topo.platforms.map(() => Infinity);
+    const last = sim.topo.platforms.map(() => -Infinity);
+    for (const trip of sim.plan.trips) if (trip.revenue && !trip.cancelled)
+      for (let i = 0; i < trip.stops.length - 1; i++) {
+        const stop = trip.stops[i];
+        if (!stop.stop) continue;
+        const platform = sim.topo.stations[stop.st].platforms[trip.dir];
+        first[platform] = Math.min(first[platform], stop.dep - 900);
+        last[platform] = Math.max(last[platform], stop.dep);
+      }
+    windows = { rev: sim.planRev, trips: sim.plan.trips, first, last };
+    serviceWindows.set(sim, windows);
+  }
+  return windows;
+}
+
 export function demandProfile(sim: Sim, t: number): number {
   const prof = sim.plan.dayType === 'weekday' ? WEEKDAY : WEEKEND;
   const h = t / 3600;
@@ -35,6 +58,7 @@ export function demandProfile(sim: Sim, t: number): number {
 export function passengersTick(sim: Sim, dt: number) {
   const prof = demandProfile(sim, sim.t);
   const { topo } = sim;
+  const windows = boardingWindows(sim);
   for (const p of topo.platforms) {
     const ps = sim.plat[p.id];
     const st = STATIONS[p.station];
@@ -43,6 +67,8 @@ export function passengersTick(sim: Sim, dt: number) {
     if (towardsEnd) { ps.waiting = 0; continue; }
     const lambda = BASE_RATE * st.demand * prof * ps.surge;
     const inflow = lambda * dt * (0.85 + 0.3 * sim.rng());
+    if (sim.t < windows.first[p.id]) { ps.waiting = 0; continue; }
+    if (sim.t > windows.last[p.id]) continue;
     if (ps.limitUntil > sim.t) {
       // station inflow control (限流): part of the demand is held outside the station
       ps.waiting += inflow * 0.6;

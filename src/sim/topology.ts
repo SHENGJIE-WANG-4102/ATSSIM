@@ -54,6 +54,8 @@ export interface TLink {
   limit: number; // km/h
   zone: number;
   platform: number; // -1 if none
+  /** Paper-specific conversion-track direction; other links remain bidirectional. */
+  depotFlow?: 'in' | 'out';
 }
 
 export interface TSwitch {
@@ -148,6 +150,10 @@ export interface TDepot {
   station: number;
   gateNode: number;
   gateLink: number;
+  /** LYD has independent entry and exit conversion tracks (P5 fig.2). */
+  outGateNode: number;
+  outGateLink: number;
+  transferPaths: { gate: number; links: number[]; throat: number; flow: 'in' | 'out' | 'shared' }[];
   berth: number; // entry berth at gate
   exitSignal: number;
   capacity: number;
@@ -388,7 +394,7 @@ export function buildTopology(): Topology {
   interface JunctionBuild {
     depotIdx: number; J: number;
     pu1: SwBuild; pu2: SwBuild; pd1: SwBuild; pd2: SwBuild;
-    quSw: TSwitch; qdSw: TSwitch; zSw: TSwitch;
+    quSw: TSwitch; qdSw: TSwitch; zSw?: TSwitch;
   }
   const junctions: JunctionBuild[] = [];
   LAYOUT.depots.forEach((dp, di) => {
@@ -403,7 +409,8 @@ export function buildTopology(): Topology {
     addSwitchPt('DN', J + JUNC.pd, 'east', pd1); // exit → eastbound
     junctions.push({
       depotIdx: di, J, pu1, pu2, pd1, pd2,
-      quSw: newSwitch('depot', dp.station), qdSw: newSwitch('depot', dp.station), zSw: newSwitch('depot', dp.station),
+      quSw: newSwitch('depot', dp.station), qdSw: newSwitch('depot', dp.station),
+      zSw: dp.id === 'LYD' ? undefined : newSwitch('depot', dp.station),
     });
   });
 
@@ -514,13 +521,12 @@ export function buildTopology(): Topology {
   }
 
   // depot junction links
-  interface DepotBuild { jb: JunctionBuild; gate: TNode; gateLink: TLink; exitNode: number; exitLink: number; qu: number; qd: number; z: number; tLinks: number[] }
+  interface DepotBuild { jb: JunctionBuild; gate: TNode; gateLink: TLink; outGate: TNode; outGateLink: TLink; exitNode: number; exitLink: number; qu: number; qd: number; z?: number; tLinks: number[]; paths: { gate: number; links: number[]; throat: number; flow: 'in' | 'out' | 'shared' }[] }
   const depotBuild: DepotBuild[] = [];
   for (const jb of junctions) {
     const mkSw = (sw: TSwitch, ch: number) => { const n = newNode('switch', ch); n.sw = sw.id; sw.nodes.push(n.id); return n; };
     const qu = mkSw(jb.quSw, jb.J - 25);
     const qd = mkSw(jb.qdSw, jb.J + 25);
-    const z = mkSw(jb.zSw, jb.J);
     const mkLeg = (p: TNode, q: TNode): number => {
       const mid = newNode('joint', (p.chain + q.chain) / 2);
       const half = Math.hypot(Math.abs(p.chain - q.chain), 8) / 2 + 3;
@@ -530,6 +536,38 @@ export function buildTopology(): Topology {
       p.reverse = a.id;
       return b.id;
     };
+    if (LAYOUT.depots[jb.depotIdx].id === 'LYD') {
+      // Independent entry and exit mergers. Each connects to its own pair
+      // of mainline points, so an inbound reservation never locks the exit
+      // conversion track or vice versa (P5 fig.2).
+      qu.normal = mkLeg(findMainNode(jb.pu1), qu);
+      qu.reverse = mkLeg(findMainNode(jb.pd1), qu);
+      qd.normal = mkLeg(findMainNode(jb.pu2), qd);
+      qd.reverse = mkLeg(findMainNode(jb.pd2), qd);
+      const transfer = (throat: TNode) => {
+        const j1 = newNode('joint', jb.J);
+        const j2 = newNode('joint', jb.J);
+        const gate = newNode('end', jb.J);
+        gate.endKind = 'depot'; gate.depot = jb.depotIdx;
+        const t0 = newLink(throat.id, j1.id, SW_HALF + 10, 'DEP', 0, jb.J, jb.J);
+        const t1 = newLink(j1.id, j2.id, 220, 'DEP', 0, jb.J, jb.J);
+        const t2 = newLink(j2.id, gate.id, 220, 'DEP', 0, jb.J, jb.J);
+        for (const l of [t0, t1, t2]) l.limit = TURNOUT_SPEEDS.depot;
+        throat.toe = t0.id;
+        return { gate, gateLink: t2, exitNode: j1.id, exitLink: t0.id, links: [t0.id, t1.id, t2.id] };
+      };
+      const out = transfer(qu);
+      const entry = transfer(qd);
+      for (const id of out.links) links[id].depotFlow = 'out';
+      for (const id of entry.links) links[id].depotFlow = 'in';
+      depotBuild.push({ jb, ...entry, outGate: out.gate, outGateLink: out.gateLink,
+        exitNode: out.exitNode, exitLink: out.exitLink, qu: qu.id, qd: qd.id,
+        tLinks: [...out.links.slice(1), ...entry.links.slice(1)],
+        paths: [{ gate: out.gate.id, links: out.links, throat: qu.id, flow: 'out' },
+          { gate: entry.gate.id, links: entry.links, throat: qd.id, flow: 'in' }] });
+      continue;
+    }
+    const z = mkSw(jb.zSw!, jb.J);
     qu.normal = mkLeg(findMainNode(jb.pu1), qu);
     qu.reverse = mkLeg(findMainNode(jb.pu2), qu);
     qd.normal = mkLeg(findMainNode(jb.pd1), qd);
@@ -552,7 +590,8 @@ export function buildTopology(): Topology {
     for (const l of [lzq, lzd, t0, t1, t2]) l.limit = TURNOUT_SPEEDS.depot;
     z.toe = t0.id;
     // exit signal at j1 governing entry into t0 travelling toward z (t0 runs z→j1, so dir -1)
-    depotBuild.push({ jb, gate, gateLink: t2, exitNode: j1.id, exitLink: t0.id, qu: qu.id, qd: qd.id, z: z.id, tLinks: [t1.id, t2.id] });
+    depotBuild.push({ jb, gate, gateLink: t2, outGate: gate, outGateLink: t2, exitNode: j1.id, exitLink: t0.id, qu: qu.id, qd: qd.id, z: z.id, tLinks: [t1.id, t2.id],
+      paths: [{ gate: gate.id, links: [t0.id, t1.id, t2.id], throat: z.id, flow: 'shared' }] });
   }
 
   // tail limits: main links beyond the outer scissors
@@ -696,8 +735,10 @@ export function buildTopology(): Topology {
       const sid = newSection('switch', 'DEP', db.jb.J).id;
       for (const lid of [n.toe!, n.normal!, n.reverse!]) reassign(lid, sid);
     }
-    const zs = newSection('switch', 'DEP', db.jb.J).id;
-    reassign(nodes[db.z].toe!, zs);
+    if (db.z !== undefined) {
+      const zs = newSection('switch', 'DEP', db.jb.J).id;
+      reassign(nodes[db.z].toe!, zs);
+    }
     for (const lid of db.tLinks) {
       const sec = newSection('depot', 'DEP', db.jb.J);
       links[lid].section = -1;
@@ -885,7 +926,8 @@ export function buildTopology(): Topology {
     const berth = addBerth({ kind: 'depot', link: db.gateLink.id, offset: db.gateLink.len - 5, dir: 1, platform: -1, station: dp.station, depot: depots.length, reverse: false, name: `${dp.name}入段` });
     depots.push({
       id: depots.length, key: dp.id, name: dp.name, short: dp.short, station: dp.station, gateNode: db.gate.id,
-      gateLink: db.gateLink.id, berth, exitSignal: signalByEntry.get(sigEntryKey(db.exitNode, db.exitLink))!,
+      gateLink: db.gateLink.id, outGateNode: db.outGate.id, outGateLink: db.outGateLink.id,
+      transferPaths: db.paths, berth, exitSignal: signalByEntry.get(sigEntryKey(db.exitNode, db.exitLink))!,
       capacity: dp.capacity, stablingTracks: dp.stablingTracks, exitTime: dp.exitTime, junctionChain: db.jb.J,
     });
   }
@@ -929,6 +971,9 @@ export function buildTopology(): Topology {
         else if (last.link === n.reverse) nexts.push({ link: n.toe!, sw: { sw, pos: 'R' } });
       }
       for (const nx of nexts) {
+        const nl = links[nx.link];
+        const ndir: Dir = nl.a === exitNode ? 1 : -1;
+        if (nl.depotFlow && (nl.depotFlow === 'in' ? ndir !== 1 : ndir !== -1)) continue;
         const sigId = signalByEntry.get(sigEntryKey(exitNode, nx.link));
         // consistent position for paired switches
         if (nx.sw) {
@@ -943,8 +988,6 @@ export function buildTopology(): Topology {
           routes[routes.length - 1].diverging = sws.some((s) => s.pos === 'R');
           continue;
         }
-        const nl = links[nx.link];
-        const ndir: Dir = nl.a === exitNode ? 1 : -1;
         if (fr.steps.some((s) => s.link === nx.link)) continue;
         if (fr.len > 7000) continue; // no end signal within reach
         stack.push({ steps: [...fr.steps, { link: nx.link, dir: ndir }], sws, len: fr.len + nl.len });
@@ -1121,10 +1164,9 @@ export function buildTopology(): Topology {
   for (const db of depotBuild) {
     const qu = nodes[db.qu];
     const qd = nodes[db.qd];
-    const z = nodes[db.z];
     qu.pos = posFor(qu.chain, g.depotQY + 10);
     qd.pos = posFor(qd.chain, g.depotQY + 10);
-    z.pos = posFor(z.chain, g.depotQY - 8);
+    if (db.z !== undefined) nodes[db.z].pos = posFor(nodes[db.z].chain, g.depotQY - 8);
     for (const q of [qu, qd]) {
       for (const lid of [q.normal!, q.reverse!]) {
         const mid = links[lid].a;
@@ -1134,12 +1176,12 @@ export function buildTopology(): Topology {
         nodes[mid].pos = posFor(nodes[mid].chain, (py + g.depotQY + 10) / 2);
       }
     }
-    const t0 = links[z.toe!];
-    const j1 = nodes[t0.b];
-    j1.pos = posFor(db.jb.J, g.depotQY - 22);
-    const j2 = nodes[links[db.tLinks[0]].b];
-    j2.pos = posFor(db.jb.J, g.depotQY - 40);
-    db.gate.pos = posFor(db.jb.J, g.depotGateY);
+    for (const path of db.paths) {
+      const x = db.jb.J + (path.flow === 'out' ? -50 : path.flow === 'in' ? 50 : 0);
+      nodes[links[path.links[0]].b].pos = posFor(x, g.depotQY - 22);
+      nodes[links[path.links[1]].b].pos = posFor(x, g.depotQY - 40);
+      nodes[path.gate].pos = posFor(x, g.depotGateY);
+    }
   }
   for (const n of nodes) if (n.pos.length === 0) n.pos = posFor(n.chain, g.midY);
 

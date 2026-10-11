@@ -124,7 +124,7 @@ export function violate(sim: Sim, kind: ViolationKind, trains: number[], detail:
   const v: Violation = { t: sim.t, kind, trains, detail, snapshot: diagSnapshot(sim, trains) };
   g.violations.push(v);
   if (g.violations.length > MAX_KEPT) g.violations.splice(0, g.violations.length - MAX_KEPT);
-  sim.log('A', '完整性', `仿真完整性：${VIOLATION_LABEL[kind]} — ${detail}`, { key: `integrity-${kind}`, code: `INTEGRITY_${kind}`, train: trains[0] });
+  sim.log('A', '完整性', `仿真完整性：${VIOLATION_LABEL[kind]} — ${detail}`, { key: `integrity-${kind}`, code: `INTEGRITY_${kind}`, train: trains[0], snapshot: v.snapshot });
 }
 
 // ---------------------------------------------------------------- safety (every step)
@@ -165,8 +165,9 @@ function checkMotion(sim: Sim, tr: Train) {
   if (tr.phase !== 'run' || tr.rescuing >= 0) return;
   const rm = tr.mode === 'RM';
   // the train did not run past the authority it had at the start of the step
-  // an MA withdrawn under the train (tr.maCut) may be overrun, but only under EB
-  if (!rm && Number.isFinite(tr.lastMa) && tr.lastDs > tr.lastMa + 0.5 && !(tr.maCut && tr.eb)) {
+  // Withdrawal changes the braking target, not the last issued authority.
+  // EB gives no exemption from this bound.
+  if (!rm && Number.isFinite(tr.lastMa) && tr.lastDs > tr.lastMa + 0.5) {
     violate(sim, 'BEYOND_MA', [tr.id], `${tr.svc}-${tr.tripNo} 本步行驶 ${tr.lastDs.toFixed(2)} m，授权仅 ${tr.lastMa.toFixed(2)} m（${tr.maReason}）`);
   }
   if (tr.eb && prev !== undefined && tr.v > prev + 1e-6) {
@@ -192,7 +193,10 @@ function checkMaRoutes(sim: Sim, tr: Train) {
   let dir = tr.dir;
   let d = dir === 1 ? topo.links[link].len - tr.off : tr.off;
   for (let i = 0; i < 120 && d < ma - 0.5; i++) {
-    const nx = nextLink(topo, link, dir, (sw) => swPos(sim, sw));
+    // Loss of detection does not physically throw a locked point. A train
+    // braking within an already issued MA uses its retained locked position;
+    // new authority scans still require current detection.
+    const nx = nextLink(topo, link, dir, (sw) => swPos(sim, sw) ?? (tr.maCut && tr.eb && sim.sw[sw].lockCount > 0 ? sim.sw[sw].pos : null));
     if (!nx) {
       violate(sim, 'MA_NO_ROUTE', [tr.id], `${tr.svc}-${tr.tripNo} 授权 ${ma.toFixed(0)} m 越过线路终点/未到位道岔（距 ${d.toFixed(0)} m）`, `${tr.id}`);
       return;
@@ -245,18 +249,20 @@ function reachable<S extends string>(m: Machine<S>, from: S, to: S): boolean {
   return m.table.some((x) => x.from === from && m.table.some((y) => y.from === x.to && y.to === to));
 }
 
-function observe<S extends string>(sim: Sim, m: Machine<S>, id: string, state: S, seen: Set<string>, tr?: Train) {
+const observationKeys: Record<string, string[]> = {};
+function observe<S extends string>(sim: Sim, m: Machine<S>, id: number, state: S, seen: Set<string>, tr?: Train) {
   const g = sim.integrity;
-  const key = `${m.name}:${id}`;
+  const keys = observationKeys[m.name] ??= [];
+  const key = keys[id] ??= `${m.name}:${id}`;
   seen.add(key);
   // an entity without a record is in the machine's rest state (a route not in sim.routes is idle)
   const prev = (g.fsm.get(key) ?? (m.name === 'route' ? 'idle' : undefined)) as S | undefined;
+  if (prev === state) return;
   g.fsm.set(key, state);
   if (prev === undefined) {
     if (!m.initial.includes(state)) violate(sim, 'FSM', tr ? [tr.id] : [], `${m.label}[${id}] 初始状态 ${state} 不允许`, key);
     return;
   }
-  if (prev === state) return;
   if (!reachable(m, prev, state)) {
     violate(sim, 'FSM', tr ? [tr.id] : [], `${m.label}[${id}]：${prev}→${state} 不在转换表中`, key);
     return;
@@ -272,16 +278,16 @@ function observeMachines(sim: Sim) {
   const g = sim.integrity;
   const seen = new Set<string>();
   for (const tr of sim.trainList) {
-    const id = String(tr.id);
+    const id = tr.id;
     observe(sim, MODE, id, modeState(tr), seen, tr);
     observe(sim, EB, id, ebState(tr), seen, tr);
     observe(sim, TURNBACK, id, tr.tbStage, seen, tr);
     observe(sim, DEPOT, id, tr.depotStage, seen, tr);
   }
-  for (let p = 0; p < sim.plat.length; p++) observe(sim, PSD, String(p), sim.plat[p].psd, seen);
-  for (const rid of sim.routes.keys()) observe(sim, ROUTE, String(rid), routeState(sim, rid), seen);
-  for (const c of sim.calls) observe(sim, CALL, String(c.id), c.state, seen);
-  for (const f of sim.faults) observe(sim, FAULT, String(f.id), f.stage, seen);
+  for (let p = 0; p < sim.plat.length; p++) observe(sim, PSD, p, sim.plat[p].psd, seen);
+  for (const rid of sim.routes.keys()) observe(sim, ROUTE, rid, routeState(sim, rid), seen);
+  for (const c of sim.calls) observe(sim, CALL, c.id, c.state, seen);
+  for (const f of sim.faults) observe(sim, FAULT, f.id, f.stage, seen);
   // entities that disappeared: routes go back to idle; trains / calls / faults leave the observation
   for (const [key, st] of g.fsm) {
     if (seen.has(key)) continue;

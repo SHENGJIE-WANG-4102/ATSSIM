@@ -62,6 +62,7 @@ export interface Block {
   trips: number[];
   /** train that is running this block (filled at runtime) */
   train?: number;
+  /** Attached state for an integrity alarm. */
 }
 
 export interface Plan {
@@ -151,6 +152,8 @@ export interface Train {
   spadSig: number;
   /** turnback and depot-move stages (fsm.ts TURNBACK / DEPOT) */
   tbStage: TurnbackState;
+  tbExitSig: number;
+  tbCallAt: number;
   depotStage: DepotState;
   maDist: number;
   maReason: string;
@@ -302,6 +305,11 @@ export interface SectionState {
   poss: number;
   /** environmental speed restriction (wind / rain), km/h, 0 = none; -1 = suspended */
   envTsr: number;
+  /** CI direction control for a reverse turnback protection region (P3). */
+  td: -1 | 0 | 1;
+  tdRoute: number;
+  tdTrain: number;
+  directionEsp: boolean;
 }
 
 export interface ActiveRoute {
@@ -322,6 +330,10 @@ export interface ActiveRoute {
   /** train that could no longer stop before the signal when the route was cancelled: keeps its authority (-1 none) */
   committed: number;
   setAt: number;
+  directionTrain?: number;
+  directionReverse?: boolean;
+  directionPullout?: boolean;
+  directionGoal?: number;
 }
 
 export interface SignalState {
@@ -373,6 +385,8 @@ export interface SimEvent {
   code?: string;
   /** train concerned */
   train?: number;
+  /** integrity alarm evidence, retained in diagnostics and replay */
+  snapshot?: import('./invariants').DiagSnapshot;
 }
 
 export type FaultKind =
@@ -479,6 +493,8 @@ export type ToWorker =
   | { type: 'dmi'; train: number }
   | { type: 'rewind'; to: number; replay: boolean }
   | { type: 'takeover' }
+  | { type: 'diagnostics' }
+  | { type: 'planPreview'; id: number; cmd: Extract<Command, { c: 'overlay' | 'addTrain' }> }
   | { type: 'restart'; config: SimConfig };
 
 export interface TrainSnap {
@@ -497,6 +513,8 @@ export interface TrainSnap {
   mode: Mode;
   eb: boolean;
   phase: TrainPhase;
+  tbStage: TurnbackState;
+  depotStage: DepotState;
   delay: number;
   load: number;
   hold: boolean;
@@ -606,6 +624,7 @@ export interface ScenarioReport {
 }
 
 export interface Bookmark { id: number; t: number; label: string; auto: boolean }
+export interface Incident { type: string; t: number; eventId: number; text: string }
 
 export interface Snapshot {
   t: number;
@@ -648,6 +667,7 @@ export interface Snapshot {
   metrics: Metrics;
   replay: { from: number; to: number; replaying: boolean; pending: number };
   bookmarks: Bookmark[];
+  incidents: Incident[];
 }
 
 export type FromWorker =
@@ -660,7 +680,9 @@ export type FromWorker =
   | { type: 'progress'; t: number; target: number }
   | { type: 'rewound'; t: number; nextEventId: number }
   | { type: 'report'; report: ScenarioReport }
-  | { type: 'call'; call: RadioCall };
+  | { type: 'call'; call: RadioCall }
+  | { type: 'diagnostics'; json: string }
+  | { type: 'planPreview'; id: number; preview: import('./planning').PlanPreview };
 
 // bit flags for packed state arrays
 export const SEC = { OCC: 1, COMM: 2, LOCK: 4, DIST: 8, PRESET: 16, TSR: 32, TRAIN: 64, ROUTEFLEET: 128, BLOCK: 256, POSS: 512, ENV: 1024, ROUTEMAN: 2048, GUIDE: 4096 } as const;

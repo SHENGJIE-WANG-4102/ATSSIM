@@ -1,0 +1,11 @@
+import { readFileSync, writeFileSync } from 'node:fs';
+import { parseDiagnostics, replayDiagnostics, stringifyDiagnostics, exportDiagnostics } from '../src/sim/diagnostics';
+import { capture } from '../src/sim/state';
+const file = process.argv[2];
+if (!file) throw new Error('Usage: npm run replay -- <diagnostics.json> [replayed.json]');
+const bundle = parseDiagnostics(readFileSync(file, 'utf8'));
+const sim = replayDiagnostics(bundle);
+const matchesSnapshot = stringifyDiagnostics({ ...bundle, state: capture(sim) }) === stringifyDiagnostics(bundle);
+console.log(JSON.stringify({ t: sim.t, matchesSnapshot, integrity: sim.integrity.counts, trips: sim.tripsDone }));
+if (process.argv[3]) writeFileSync(process.argv[3], stringifyDiagnostics(exportDiagnostics(sim)));
+if (!matchesSnapshot || Object.values(sim.integrity.counts).some(n => n > 0)) process.exitCode = 1;

@@ -70,6 +70,7 @@ export class Header {
         this.scaleV,
         h('button', { class: 'btn icon', title: '放大界面（Ctrl +）', onclick: () => this.stepScale(1) }, 'A+'),
         this.muteBtn,
+        h('button', { class: 'btn', title: '导出种子、运行图、命令及状态供回放', onclick: () => store.send({ type: 'diagnostics' }) }, '诊断导出'),
         h('button', { class: 'btn icon', title: '帮助（F1）', onclick: () => this.hooks.help() }, '?'),
       ),
     );

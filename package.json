@@ -9,7 +9,10 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run && node --test scripts/soak-runner.test.mjs",
+    "soak": "node scripts/soak.mjs",
+    "soak:quick": "node scripts/soak.mjs --quick",
+    "replay": "vite-node scripts/replay.ts",
     "simday": "vitest run tests/fullday.test.ts"
   },
   "dependencies": {

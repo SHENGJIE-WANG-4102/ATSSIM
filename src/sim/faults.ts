@@ -2,13 +2,56 @@
  * Fault injection (教员台) and maintenance completion.
  */
 import type { Sim } from './engine';
-import type { Fault, FaultKind } from './model';
+import type { Fault, FaultKind, Command } from './model';
 import { STATIONS } from '../data/line2';
-import { cancelRoute } from './interlocking';
+import { cancelRoute, committedTrain } from './interlocking';
 import { withdrawAuthority } from './movement';
 import { failTrain, recoverTrain, trainLabel } from './ats';
 import { callRescue, callPecu, callTrackPerson } from './radio';
 import { psdRepaired } from './psd';
+import { allowed, FAULT } from './fsm';
+
+function stage(sim: Sim, fault: Fault, next: Fault['stage']) {
+  if (!allowed(sim, FAULT, fault.stage, next).ok) return;
+  fault.stage = next;
+  fault.stageAt = sim.t;
+}
+
+/** Dispatcher procedures change only the faults they address. */
+export function faultProcedure(sim: Sim, cmd: Command) {
+  for (const f of sim.faults) {
+    if (f.repaired || f.stage !== 'effect') continue;
+    const train = sim.trains.get(f.target);
+    const addressed = (cmd.c === 'zoneLevel' && f.kind === 'zcFail' && (f.target < 0 || cmd.zones.includes(f.target)))
+      || (cmd.c === 'switchFieldLock' && f.kind === 'switch' && cmd.sw === f.target)
+      || (cmd.c === 'psdBypass' && f.kind === 'psd' && cmd.platform === f.target)
+      || (cmd.c === 'rescue' && f.kind === 'trainFail' && cmd.failed === f.target)
+      || (cmd.c === 'axleReset' && f.kind === 'axle' && cmd.section === f.target)
+      || (cmd.c === 'authRM' && (f.kind === 'signal' && cmd.signal === f.target || train?.id === cmd.train && f.kind === 'trainComm'))
+      || (cmd.c === 'radio' && sim.calls.some(c => c.id === cmd.call && c.train === train?.id && ['degrade', 'ebRelease', 'rescue'].includes(c.kind)));
+    if (addressed) stage(sim, f, 'procedure');
+  }
+}
+
+function recovered(sim: Sim, f: Fault): boolean {
+  if (!f.repaired) return false;
+  if (f.kind === 'axle') return !sim.sec[f.target].disturbed && !sim.sec[f.target].preset;
+  if (f.kind === 'switch') return !sim.sw[f.target].failed;
+  if (f.kind === 'zcFail') {
+    const zones = f.target < 0 ? sim.zoneState.map((_, z) => z) : [f.target];
+    return zones.every(z => sim.zoneState[z] === 'CBTC' && sim.trainList.every(tr => sim.topo.links[tr.link].zone !== z || tr.forceLevel === 'TBTC' || tr.manual || tr.phase === 'stabled' || tr.level === 'CBTC' && !tr.eb));
+  }
+  if (f.kind === 'trainComm') { const tr = sim.trains.get(f.target); return !tr || tr.comm && !tr.eb && (tr.level === 'CBTC' || tr.forceLevel === 'TBTC' || tr.manual); }
+  return true;
+}
+
+/** Called after the equipment tick; repaired and recovered are distinct states. */
+export function updateFaultLifecycle(sim: Sim) {
+  for (const f of sim.faults) {
+    if (f.repaired && (f.stage === 'effect' || f.stage === 'procedure')) stage(sim, f, 'recovery');
+    if (f.stage === 'recovery' && recovered(sim, f)) stage(sim, f, 'closed');
+  }
+}
 
 export const FAULT_LABELS: Record<FaultKind, string> = {
   trainComm: '列车车地通信中断',
@@ -69,19 +112,25 @@ export function injectFault(sim: Sim, kind: FaultKind, target: number, duration:
       s.failed = true;
       s.fieldLock = false;
       // the interlocking reports the lost detection: the ZC pulls every MA back before the switch
-      for (const tr of sim.trainList) if (tr.phase === 'run') withdrawAuthority(sim, tr);
+      for (const tr of sim.trainList) withdrawAuthority(sim, tr);
       f.text = `道岔 ${topo.switches[target].name} 失去表示`;
       sim.log('A', '信号', `${f.text}（${STATIONS[topo.switches[target].station].name}）`, { key: `sw-${target}` });
       break;
     }
     case 'signal': {
       const s = sim.sig[target];
+      const committed = committedTrain(sim, target);
       s.failed = true;
       // the signal drops to danger; its route is cancelled as by the desk (approach locking
       // holds it for a train that can no longer stop, an occupied route stays until cleared)
-      if (s.route >= 0) cancelRoute(sim, target);
+      if (s.route >= 0) {
+        // Occupancy may prohibit cancellation before cancelRoute reaches its
+        // approach-locking branch. Keep the already issued MA in that case too.
+        if (committed >= 0) sim.routes.get(s.route)!.committed = committed;
+        cancelRoute(sim, target);
+      }
       // the ZC takes the failure into the next MA at once (not a ZC cycle later)
-      for (const tr of sim.trainList) if (tr.phase === 'run') withdrawAuthority(sim, tr);
+      for (const tr of sim.trainList) withdrawAuthority(sim, tr);
       f.text = `信号机 ${topo.signals[target].name} 故障（无法开放）`;
       sim.log('B', '信号', `${f.text}（${STATIONS[topo.signals[target].station].name}）`, { key: `sig-${target}` });
       break;

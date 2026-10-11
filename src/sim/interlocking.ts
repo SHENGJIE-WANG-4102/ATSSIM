@@ -5,6 +5,7 @@ import type { Sim } from './engine';
 import type { ActiveRoute } from './model';
 import { withdrawAuthority } from './movement';
 import { PERF } from './dynamics';
+import { nextLink } from './topology';
 
 export const SWITCH_TIME = 5; // s, point machine throw time (approx)
 export const APPROACH_RELEASE = 30; // s, delayed release when approach-locked
@@ -19,25 +20,66 @@ export function swPos(sim: Sim, sw: number): 'N' | 'R' | null {
 
 export interface CmdResult { ok: boolean; msg: string }
 
-export function trySetRoute(sim: Sim, rid: number, opts: { manual?: boolean; fleeting?: boolean; guide?: boolean } = {}): CmdResult {
+/** Bind the nearest approach, including routes which were already set/fleeting. */
+export function bindRouteApproach(sim: Sim, rid: number, train: number) {
+  const ar = sim.routes.get(rid);
+  const tr = sim.trains.get(train);
+  if (!ar || !tr || ar.entered && !ar.fleeting && ar.owner !== train) return;
+  ar.directionTrain = train;
+  const task = tr.tasks[tr.phase === 'reversing' ? 1 : 0];
+  ar.directionPullout = tr.phase === 'reversing' || ['manual', 'depart'].includes(tr.tbStage);
+  ar.directionGoal = task?.k === 'stop' ? task.berth : -1;
+}
+
+function reverseIntervalApproach(sim: Sim, rid: number, train?: number) {
+  const tr = train === undefined ? undefined : sim.trains.get(train);
+  const task = tr?.tasks[0];
+  if (tr) {
+    const goal = task?.k === 'reverse' ? task.chosen : task?.k === 'stop' ? task.berth : -1;
+    return goal >= 0 && sim.topo.berths[goal].kind === 'platform' && sim.topo.berths[goal].reverse;
+  }
+  return sim.topo.routes[rid].berths.some(b => sim.topo.berths[b].kind === 'platform' && sim.topo.berths[b].reverse);
+}
+
+export function trySetRoute(sim: Sim, rid: number, opts: { manual?: boolean; fleeting?: boolean; guide?: boolean; train?: number } = {}): CmdResult {
   const topo = sim.topo;
   const r = topo.routes[rid];
   const sg = sim.sig[r.start];
   const sname = topo.signals[r.start].name;
+  if (sg.failed && !opts.guide) return { ok: false, msg: `${sname} 信号机故障，无法开放（可办理引导进路）` };
+  const approaching = opts.train !== undefined ? sim.trains.get(opts.train)
+    : sim.trainList.filter(t => t.nextSignal === r.start).sort((a, b) => a.nextSignalDist - b.nextSignalDist)[0];
+  const reverseInterval = r.wrongDir && reverseIntervalApproach(sim, rid, approaching?.id);
+  if (reverseInterval && approaching?.level === 'TBTC') return { ok: false, msg: 'TBTC不能自动反向区间折返（P3 §2.4.2）' };
   if (sg.route >= 0) {
     if (sg.route === rid) {
       const ar = sim.routes.get(rid)!;
+      if (approaching) bindRouteApproach(sim, rid, approaching.id);
       if (opts.fleeting) ar.fleeting = true;
       if (opts.guide && !ar.guide) {
+        if (ar.entered || r.sections.some(s => sim.sec[s].trainOcc)) return { ok: false, msg: '进路内有车，不能改为引导进路' };
         ar.guide = true;
+        ar.fleeting = false;
+        ar.manual = !!opts.manual;
+        ar.cancelAt = 0;
         ar.guideUntil = sim.t + GUIDE_TIME;
+        for (const tr of sim.trainList) if (tr.maSigs.includes(r.start)) withdrawAuthority(sim, tr);
         return { ok: true, msg: `${sname} 引导信号开放` };
       }
       return { ok: true, msg: '进路已建立' };
     }
     return { ok: false, msg: `${sname} 已有其他进路` };
   }
-  if (sg.failed && !opts.guide) return { ok: false, msg: `${sname} 信号机故障，无法开放（可办理引导进路）` };
+  // A depot entry may not reserve a transfer track already occupied by an exiting
+  // train. Occupancy on a CBTC route can admit following trains, never opposing ones.
+  for (const step of r.steps) {
+    if (topo.links[step.link].track !== 'DEP') continue;
+    for (const body of sim.linkBodies.get(step.link) ?? []) {
+      const train = sim.trains.get(body.train);
+      const direction = train?.hist.slice().reverse().find(h => h.link === step.link)?.dir;
+      if (direction !== undefined && direction !== step.dir) return { ok: false, msg: '出入段转换轨被对向列车占用' };
+    }
+  }
   for (const { sw } of r.switches) if (sim.sw[sw].blocked) return { ok: false, msg: `道岔 ${topo.switches[sw].name} 已封锁` };
   for (const s of r.sections) {
     const st = sim.sec[s];
@@ -62,12 +104,19 @@ export function trySetRoute(sim: Sim, rid: number, opts: { manual?: boolean; fle
     }
   }
   // accept
+  if (reverseInterval) for (const section of r.sections) for (const link of topo.sections[section].links)
+    if (sim.linkBodies.get(link)?.some(body => body.train !== approaching?.id)) return { ok: false, msg: '反向折返防护区域有车，通过列车优先' };
   const ar: ActiveRoute = {
     route: rid, state: 'setting', fleeting: !!opts.fleeting, manual: !!opts.manual, guide: !!opts.guide,
     guideUntil: opts.guide ? sim.t + GUIDE_TIME : 0, occSeen: r.sections.map(() => false), released: r.sections.map(() => false),
     entered: false, owner: -1, cancelAt: 0, committed: -1, setAt: sim.t,
+    directionTrain: approaching?.id ?? -1,
+    directionReverse: reverseInterval,
   };
-  for (const s of r.sections) sim.sec[s].lockRoute = rid;
+  for (const s of r.sections) {
+    sim.sec[s].lockRoute = rid;
+    if (reverseInterval) Object.assign(sim.sec[s], { td: 0, tdRoute: rid, tdTrain: ar.directionTrain, directionEsp: true });
+  }
   for (const { sw, pos } of r.switches) {
     const st = sim.sw[sw];
     st.lockCount++;
@@ -77,7 +126,9 @@ export function trySetRoute(sim: Sim, rid: number, opts: { manual?: boolean; fle
     }
   }
   sim.routes.set(rid, ar);
+  if (approaching) bindRouteApproach(sim, rid, approaching.id);
   sg.route = rid;
+  if (reverseInterval) for (const tr of sim.trainList) withdrawAuthority(sim, tr);
   sim.routeUnlockedSw.set(rid, new Set());
   return { ok: true, msg: `进路 ${r.name} 办理成功` };
 }
@@ -88,6 +139,10 @@ function releaseSection(sim: Sim, ar: ActiveRoute, i: number) {
   const s = r.sections[i];
   ar.released[i] = true;
   if (sim.sec[s].lockRoute === ar.route) sim.sec[s].lockRoute = -1;
+  const protectedTrain = sim.trains.get(ar.directionTrain ?? -1);
+  const regionOccupied = protectedTrain?.body.some(b => r.sections.includes(topo.links[b.link].section));
+  if (sim.sec[s].tdRoute === ar.route && !regionOccupied)
+    Object.assign(sim.sec[s], { td: 0, tdRoute: -1, tdTrain: -1, directionEsp: false });
   const done = sim.routeUnlockedSw.get(ar.route)!;
   for (const { sw } of r.switches) {
     if (done.has(sw)) continue;
@@ -120,12 +175,14 @@ export function signalPassed(sim: Sim, train: number, sig: number) {
   const sg = sim.sig[sig];
   if (sg.route < 0) return;
   const ar = sim.routes.get(sg.route)!;
+  if (ar.committed === train) ar.committed = -1;
   if (ar.fleeting || ar.entered) return;
   ar.entered = true;
   ar.owner = train;
 }
 
 export function approachLocked(sim: Sim, sig: number): boolean {
+  if (committedTrain(sim, sig) >= 0) return true;
   for (const tr of sim.trainList) {
     if (tr.nextSignal === sig && tr.nextSignalDist < 600 && tr.v > 0.5) return true;
   }
@@ -135,9 +192,20 @@ export function approachLocked(sim: Sim, sig: number): boolean {
 /** an approaching train that cannot stop before the signal with the service brake (-1 none) */
 export function committedTrain(sim: Sim, sig: number): number {
   for (const tr of sim.trainList) {
-    if (tr.nextSignal !== sig || tr.v < 0.5 || tr.mode === 'RM') continue;
+    if (tr.v < 0.5 || tr.mode === 'RM' || !tr.maSigs.includes(sig) && !(tr.maCut && tr.eb)) continue;
     const need = (tr.v * tr.v) / (2 * PERF.bService) + 2;
-    if (need >= tr.nextSignalDist - 6) return tr.id;
+    let link = tr.link, dir = tr.dir;
+    let distance = dir === 1 ? sim.topo.links[link].len - tr.off : tr.off;
+    for (let i = 0; i < 120 && distance <= need + 6; i++) {
+      const nx = nextLink(sim.topo, link, dir, sw => swPos(sim, sw));
+      if (!nx) break;
+      const at = sim.topo.signalByEntry.get(nx.node * 65536 + nx.link);
+      // Several closely spaced signals may be inside the stopping distance;
+      // protecting only nextSignal releases an authority already issued over
+      // the second signal.
+      if (at === sig && tr.maDist >= distance - 0.5) return tr.id;
+      link = nx.link; dir = nx.dir; distance += sim.topo.links[link].len;
+    }
   }
   return -1;
 }
@@ -188,7 +256,7 @@ export function sectionUnlock(sim: Sim, sec: number): CmdResult {
 export function moveSwitch(sim: Sim, sw: number, pos: 'N' | 'R'): CmdResult {
   const st = sim.sw[sw];
   const name = sim.topo.switches[sw].name;
-  if (st.failed && pos === st.pos) {
+  if (st.failed && pos === st.pos && st.target === pos) {
     // operating a repaired switch to the position it already holds restores detection without movement
     const f = sim.faults.find((x) => x.kind === 'switch' && x.target === sw && !x.repaired);
     if (!f || sim.t >= f.repairAt) {
@@ -246,6 +314,13 @@ export function computeOccupancy(sim: Sim) {
 
 export function updateInterlocking(sim: Sim) {
   const { topo } = sim;
+  // Protection lasts through cab change; releasing an inbound route does not
+  // invite through traffic into the still occupied reverse-turnback region.
+  for (const sec of sim.sec) if (sec.tdRoute >= 0 && !sim.routes.has(sec.tdRoute)) {
+    const owner = sim.trains.get(sec.tdTrain);
+    if (!owner?.body.some(b => topo.routes[sec.tdRoute].sections.includes(topo.links[b.link].section)))
+      Object.assign(sec, { td: 0, tdRoute: -1, tdTrain: -1, directionEsp: false });
+  }
   // switches
   for (const s of sim.sw) {
     if (!s.failed && s.pos !== s.target && sim.t >= s.moveUntil) s.pos = s.target;
@@ -254,13 +329,31 @@ export function updateInterlocking(sim: Sim) {
   for (const ar of Array.from(sim.routes.values())) {
     const r = topo.routes[ar.route];
     if (ar.state === 'setting') {
-      if (r.switches.every(({ sw, pos }) => swPos(sim, sw) === pos)) ar.state = 'locked';
+      if (r.switches.every(({ sw, pos }) => swPos(sim, sw) === pos)) {
+        ar.state = 'locked';
+        if (ar.directionReverse) for (const section of r.sections) {
+          const step = r.steps.find(x => topo.links[x.link].section === section && topo.links[x.link].normalDir !== 0)
+            ?? r.steps.find(x => topo.links[x.link].section === section)!;
+          sim.sec[section].td = step.dir;
+        }
+      }
       else if (sim.t - ar.setAt > 30) {
         // switch failed to reach position
         sim.log('B', '联锁', `进路 ${r.name} 办理超时（道岔未到位），进路取消`);
         releaseRoute(sim, ar.route);
         continue;
       }
+    }
+    const directionOwner = sim.trains.get(ar.directionTrain ?? -1);
+    const goalSection = ar.directionGoal !== undefined && ar.directionGoal >= 0
+      ? topo.links[topo.berths[ar.directionGoal].link].section : -1;
+    const goalFree = goalSection >= 0 && topo.sections[goalSection].links.every(link =>
+      !(sim.linkBodies.get(link) ?? []).some(b => b.train !== directionOwner?.id));
+    if (ar.state === 'locked' && ar.cancelAt === 0 && !ar.guide && ar.directionPullout && goalFree
+      && directionOwner && directionOwner.v < 0.1 && directionOwner.phase === 'run'
+      && ['manual', 'depart'].includes(directionOwner.tbStage)) {
+      for (const sec of sim.sec) if (sec.tdTrain === directionOwner.id)
+        Object.assign(sec, { td: 0, tdRoute: -1, tdTrain: -1, directionEsp: false });
     }
     if (ar.cancelAt > 0 && sim.t >= ar.cancelAt) {
       // a train that entered during the delay keeps the route (normal sectional release)
@@ -311,7 +404,7 @@ function computeAspect(sim: Sim, i: number) {
   const rid = sg.route;
   if (rid < 0) return sg.failed ? 'FAIL' : 'R';
   const ar = sim.routes.get(rid)!;
-  if (ar.guide) return !ar.entered && sim.t <= ar.guideUntil ? 'GUIDE' : 'R';
+  if (ar.guide) return ar.state === 'locked' && !ar.entered && sim.t <= ar.guideUntil ? 'GUIDE' : 'R';
   if (sg.failed) return 'FAIL';
   if (ar.state !== 'locked' || ar.cancelAt > 0) return 'R';
   if (ar.entered && !ar.fleeting) return 'R';

@@ -75,13 +75,18 @@ export function answerCall(sim: Sim, id: number, option: string, auto = false): 
   if (call.state !== 'ringing') return { ok: false, msg: '通话已结束' };
   const opt = call.options.find((o) => o.key === option);
   if (!opt) return { ok: false, msg: '无此应答' };
+  if (auto && (option === 'rm' || call.kind === 'rmPreset' && option === 'approve')) return { ok: false, msg: '自动应答不能授权RM' };
+  const r = applyAnswer(sim, call, option);
+  if (!r.ok) {
+    sim.log('C', '通话', `【应答拒绝】${call.from}：${r.msg}`, { manual: !auto });
+    return r;
+  }
   call.state = 'answered';
   call.answer = option;
   call.answeredAt = sim.t;
   if (!auto) sim.metrics.callsAnswered++;
-  const r = applyAnswer(sim, call, option);
   sim.log(r.ok ? 'I' : 'C', '通话', `【应答${auto ? '·自动' : ''}】${call.from}：${opt.label}${r.msg ? ` — ${r.msg}` : ''}`, { manual: !auto });
-  return { ok: true, msg: `${opt.label}${r.msg ? `：${r.msg}` : ''}` };
+  return { ok: r.ok, msg: `${opt.label}${r.msg ? `：${r.msg}` : ''}` };
 }
 
 function applyAnswer(sim: Sim, call: RadioCall, option: string): { ok: boolean; msg: string } {
@@ -93,9 +98,22 @@ function applyAnswer(sim: Sim, call: RadioCall, option: string): { ok: boolean; 
     case 'ebRelease':
       if (!tr) return { ok: false, msg: '列车已不在线' };
       return answerEbRelease(sim, tr, option);
+    case 'turnback': {
+      if (!tr || tr.tbStage !== 'manual' || tr.level !== 'TBTC') return { ok: false, msg: 'TBTC人工牵出条件已变化' };
+      if (option === 'wait') return { ok: true, msg: '司机在折返股道等待' };
+      const sig = tr.tbExitSig;
+      const ar = sig >= 0 && sim.routes.get(sim.sig[sig].route);
+      if (!ar || ar.state !== 'locked' || ar.cancelAt || ar.guide) return { ok: false, msg: '牵出进路尚未锁闭' };
+      const unsafe = unsafeAhead(sim, tr);
+      if (unsafe) return { ok: false, msg: unsafe };
+      return grantRM(sim, tr, tr.nextSignalDist + 20, sig, 'TBTC正向折返人工牵出（P3 §2.4.1）')
+        ? { ok: true, msg: '人工越过牵出信号内方后重新获取TBTC授权' } : { ok: false, msg: '须停稳并完成EB缓解' };
+    }
     case 'rmPreset': {
       if (!tr) return { ok: false, msg: '列车已不在线' };
       if (option === 'approve') {
+        const unsafe = unsafeAhead(sim, tr);
+        if (unsafe) return { ok: false, msg: unsafe };
         // the authority covers the preset section ahead and the one signal protecting it
         const sig = tr.nextSignal >= 0 && tr.nextSignalDist <= 450 ? tr.nextSignal : -1;
         if (!grantRM(sim, tr, 450 + tr.len, sig, '预复位区段压道')) return { ok: false, msg: '列车紧急制动中，须先缓解' };
@@ -238,8 +256,14 @@ export function unsafeAhead(sim: Sim, tr: Train): string {
   let link = tr.link;
   let dir = tr.dir;
   let d = 0;
-  for (let i = 0; i < 25 && d < 700; i++) {
+  let passedAuthorisedSignal = false;
+  for (let i = 0; i < 120 && d < 4000; i++) {
     const l = topo.links[link];
+    for (const body of sim.linkBodies.get(link) ?? []) {
+      if (body.train === tr.id) continue;
+      const ahead = i > 0 || (dir === 1 ? body.to > tr.off : body.from < tr.off);
+      if (ahead) return '前方列车占用，须等待';
+    }
     const node = topo.nodes[dir === 1 ? l.b : l.a];
     if (node.kind === 'switch') {
       const st = sim.sw[node.sw!];
@@ -247,6 +271,11 @@ export function unsafeAhead(sim: Sim, tr: Train): string {
     }
     const nx = nextLink(topo, link, dir, (sw) => swPos(sim, sw) ?? sim.sw[sw].pos);
     if (!nx) break;
+    const signal = topo.signalByEntry.get(node.id * 65536 + nx.link);
+    if (signal !== undefined) {
+      if (passedAuthorisedSignal) break;
+      if (signal === tr.nextSignal) passedAuthorisedSignal = true;
+    }
     const sec = sim.sec[topo.links[nx.link].section];
     if (sec.poss >= 0) return '为施工封锁区段';
     if (sec.blocked) return '为封锁区段';
@@ -297,6 +326,16 @@ export function radioTick(sim: Sim) {
   }
   // drivers standing at an obstacle for a long time ask for instructions
   for (const tr of sim.trainList) {
+    if (tr.tbStage === 'manual' && tr.level === 'TBTC' && tr.mode !== 'RM' && tr.tbExitSig >= 0
+      && tr.v < 0.05 && !tr.eb && (tr.tbCallAt === 0 || sim.t - tr.tbCallAt >= 60)) {
+      const ar = sim.routes.get(sim.sig[tr.tbExitSig].route);
+      if (ar?.state === 'locked' && !ar.cancelAt) {
+        openCall(sim, { kind: 'turnback', from: driverOf(tr), train: tr.id,
+          text: 'TBTC正向折返换端完成，请求人工越过牵出信号内方再获取TBTC授权',
+          options: [{ key: 'rm', label: '核实牵出进路后授权司机人工牵出', critical: true }, { key: 'wait', label: '折返股道等待' }], auto: 'wait', timeout: 120 });
+        tr.tbCallAt = sim.t;
+      }
+    }
     const waiting = tr.phase === 'run' && tr.v < 0.05 && !tr.failed && !tr.hold && tr.stopUntil <= sim.t && !tr.pendingMode && !tr.manual
       && tr.maDist < 40 && tr.stopDist > 1.5 && tr.maReason !== '' && tr.tasks[0]?.k !== 'rescue';
     if (!waiting) { tr.waitSince = 0; continue; }

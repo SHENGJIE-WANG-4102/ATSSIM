@@ -199,25 +199,22 @@ export class Geometry {
     // depot structures
     for (const d of topo.depots) {
       if (!inWin(d.junctionChain)) continue;
-      const gate = topo.nodes[d.gateNode];
-      const t2 = topo.links[d.gateLink];
-      const j2 = topo.nodes[t2.a === gate.id ? t2.b : t2.a];
-      const t1 = topo.links[j2.links.find((l) => l !== t2.id)!];
-      const j1 = topo.nodes[t1.a === j2.id ? t1.b : t1.a];
-      const t0 = topo.links[j1.links.find((l) => l !== t1.id)!];
-      const z = topo.nodes[t0.a === j1.id ? t0.b : t0.a];
       const J = d.junctionChain;
       const row = this.chainRow(J);
       const top = this.rows[row].top;
       const xJ = this.chainX(J, row);
-      pos[gate.id] = { row, x: xJ, y: top + p.upY - p.depotDy.gate };
-      pos[j2.id] = { row, x: xJ, y: top + p.upY - p.depotDy.j2 };
-      pos[j1.id] = { row, x: xJ, y: top + p.upY - p.depotDy.j1 };
-      pos[z.id] = { row, x: xJ, y: top + p.upY - p.depotDy.z };
-      for (const lid of [z.normal!, z.reverse!]) {
-        const l = topo.links[lid];
-        const q = topo.nodes[l.a === z.id ? l.b : l.a];
-        pos[q.id] = { row, x: this.chainX(q.chain, row), y: top + p.upY - p.depotDy.q };
+      for (const path of d.transferPaths) {
+        const x = xJ + (path.flow === 'out' ? -50 : path.flow === 'in' ? 50 : 0);
+        pos[path.gate] = { row, x, y: top + p.upY - p.depotDy.gate };
+        pos[topo.links[path.links[2]].a] = { row, x, y: top + p.upY - p.depotDy.j2 };
+        pos[topo.links[path.links[1]].a] = { row, x, y: top + p.upY - p.depotDy.j1 };
+        const z = topo.nodes[path.throat];
+        pos[z.id] = { row, x, y: top + p.upY - p.depotDy.z };
+        if (path.flow === 'shared') for (const lid of [z.normal!, z.reverse!]) {
+          const l = topo.links[lid];
+          const q = topo.nodes[l.a === z.id ? l.b : l.a];
+          pos[q.id] = { row, x: this.chainX(q.chain, row), y: top + p.upY - p.depotDy.q };
+        }
       }
     }
     // the rest (diagonal halves: crossovers, connectors, depot legs) sit between their neighbours

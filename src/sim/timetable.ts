@@ -649,10 +649,15 @@ export function addExtraTrain(ctx: PlanContext, plan: Plan, depot: number, dir: 
   if (!turnbackAt(topo, to, dir)) return `${STATIONS[to].name} 无该方向折返条件`;
   const en = entryStation(topo, depot, back);
   const trips = plan.trips as GenTrip[];
-  const s1 = buildStops(ctx, dir, ex, to, time, true, 1);
+  const index = new DepIndex(plan.trips);
+  let s1: PlanStop[] = [], s2: PlanStop[] = [];
+  for (let offset = 0; offset <= 900; offset += 10) {
+    const out = buildStops(ctx, dir, ex, to, time + offset, true, 1);
+    const into = buildStops(ctx, back, to, en, out[out.length - 1].arr + minTurn(to), true, 1);
+    if (index.clear(out, dir) && index.clear(into, back)) { s1 = out; s2 = into; break; }
+  }
+  if (!s1.length) return '未来15分钟内无全路径可行的加开及回段时隙';
   const t1 = addTo(trips, dir, 'extra', ex, to, s1, true, 'adhoc');
-  const arr = s1[s1.length - 1].arr;
-  const s2 = buildStops(ctx, back, to, en, arr + minTurn(to), true, 1);
   const t2 = addTo(trips, back, 'extra', to, en, s2, true, 'adhoc');
   const b: Block = { id: plan.blocks.length, svc: '', start: { kind: 'depot', depot, time: 0 }, end: { kind: 'depot', depot }, trips: [t1.id, t2.id] };
   t1.block = t2.block = b.id;
@@ -660,6 +665,7 @@ export function addExtraTrain(ctx: PlanContext, plan: Plan, depot: number, dir: 
   plan.blocks.push(b);
   const maxSvc = Math.max(0, ...plan.blocks.filter((x) => x.svc).map((x) => parseInt(x.svc, 10)));
   numberPlan(plan, maxSvc + 1);
+  plan.fleetPeak = fleetPeak(plan);
   return b;
 }
 

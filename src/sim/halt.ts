@@ -22,7 +22,7 @@ export type HaltCode =
   | 'TRAIN_AHEAD' | 'ROUTE_WAIT' | 'BERTH_WAIT' | 'ROUTE_CONFLICT' | 'ROUTE_MISMATCH' | 'ARS_OFF' | 'SWITCH_MOVING'
   | 'SIGNAL_FAULT' | 'SWITCH_FAULT' | 'AXLE_FAULT' | 'AXLE_PRESET' | 'ZC_FAULT' | 'COMM_LOSS' | 'PSD_FAULT'
   | 'BLOCKED' | 'POSSESSION' | 'WEATHER' | 'ESP' | 'BUFFER' | 'DEPOT_LIMIT' | 'NO_TASK' | 'STOP_POINT'
-  | 'SPAD' | 'DISPATCHER' | 'MANUAL';
+  | 'SPAD' | 'DISPATCHER' | 'MANUAL' | 'DIRECTION_WAIT';
 
 export interface HaltInfo { label: string; exempt: boolean }
 
@@ -48,6 +48,7 @@ export const HALT: Record<HaltCode, HaltInfo> = {
   DISPATCHER: { label: '等待调度应答', exempt: true },
   MANUAL: { label: '人工驾驶', exempt: true },
   MODE_CHANGE: { label: '驾驶模式转换', exempt: true },
+  DIRECTION_WAIT: { label: '折返方向防护/待司机牵出', exempt: true },
   INCIDENT: { label: '区间停车处置', exempt: true },
   RM_WAIT: { label: '等待RM授权', exempt: true },
   TRAIN_AHEAD: { label: '前方列车', exempt: false },
@@ -136,7 +137,7 @@ export function classify(sim: Sim, tr: Train): { code: HaltCode; train: number; 
   let code = tr.maCode;
   let train = tr.maTrain;
   let detail = tr.maReason;
-  if (code === 'ROUTE_WAIT') {
+  if (code === 'ROUTE_WAIT' || code === 'ROUTE_MISMATCH') {
     const w = tr.arsWait;
     // the ATS explanation applies when it concerns the signal we stand at
     if (w && sim.t - w.t <= 2.5 && (w.signal === tr.nextSignal || tr.nextSignal < 0)) {
