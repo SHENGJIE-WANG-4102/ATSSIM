@@ -80,6 +80,8 @@ export function injectFault(sim: Sim, kind: FaultKind, target: number, duration:
       // the signal drops to danger; its route is cancelled as by the desk (approach locking
       // holds it for a train that can no longer stop, an occupied route stays until cleared)
       if (s.route >= 0) cancelRoute(sim, target);
+      // the ZC takes the failure into the next MA at once (not a ZC cycle later)
+      for (const tr of sim.trainList) if (tr.phase === 'run') withdrawAuthority(sim, tr);
       f.text = `信号机 ${topo.signals[target].name} 故障（无法开放）`;
       sim.log('B', '信号', `${f.text}（${STATIONS[topo.signals[target].station].name}）`, { key: `sig-${target}` });
       break;

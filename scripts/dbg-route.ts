@@ -1,15 +1,27 @@
+/** debug: per-step state of the routes from one signal and one train. npx vite-node scripts/dbg-route.ts <signal> <svc> <fromSec> <untilSec> [dayType] [seed] [faultLevel] */
 import { Sim } from '../src/sim/engine';
-import { swPos } from '../src/sim/interlocking';
-const sim = new Sim({ dayType: 'weekday', dateLabel: 'probe', startTime: 5 * 3600, seed: 1 });
-const rid = Number(process.argv[2] ?? 242);
-const r = sim.topo.routes[rid];
-console.log(r.name, 'switches', JSON.stringify(r.switches), 'sections', r.sections.map((s) => sim.topo.sections[s].name).join(','));
+const [sigName, svc] = [process.argv[2], process.argv[3]];
+const from = Number(process.argv[4]);
+const until = Number(process.argv[5]);
+const lv = Number(process.argv[8] ?? 0);
+const sim = new Sim({ dayType: (process.argv[6] ?? 'weekday') as 'weekday', dateLabel: 'probe', startTime: 5 * 3600, seed: Number(process.argv[7] ?? 1), autoDispatch: lv > 0 && !process.env.NODISP });
+if (lv) sim.command({ c: 'randomFaults', level: lv as 1 });
+sim.checkIntegrity = false;
+const sig = sim.topo.signals.findIndex((s) => s.name === sigName);
+const log = sim.log.bind(sim);
+sim.log = ((lvl: string, cat: string, text: string, extra?: unknown) => { if (sim.t >= from) console.log('LOG', sim.t.toFixed(1), lvl, cat, text); return log(lvl as 'A', cat, text, extra as never); }) as typeof sim.log;
 let last = '';
-while (sim.t < 5.45 * 3600) {
+while (sim.t < until) {
   sim.step();
-  const ar = sim.routes.get(rid);
-  const st = ar ? `${ar.state} setAt=${ar.setAt.toFixed(0)}` : 'none';
-  const sw = r.switches.map(({ sw }) => { const s = sim.sw[sw]; return `${sim.topo.switches[sw].name}:${s.pos}->${s.target} until=${s.moveUntil.toFixed(0)} lc=${s.lockCount} f=${s.failed} swPos=${swPos(sim, sw)}`; }).join(' | ');
-  const line = `${st} ${ar ? '' : ''}${sw}`;
-  if (line.replace(/setAt=\d+|until=\d+/g, '') !== last.replace(/setAt=\d+|until=\d+/g, '')) { console.log(sim.t.toFixed(1), line); last = line; }
+  if (sim.t < from) continue;
+  const sg = sim.sig[sig];
+  const parts: string[] = [`sig.route=${sg.route >= 0 ? sim.topo.routes[sg.route].name : '-'} aspect=${sg.aspect} failed=${sg.failed}`];
+  for (const rid of sim.topo.signals[sig].routes) {
+    const ar = sim.routes.get(rid);
+    if (ar) parts.push(`${sim.topo.routes[rid].name}:${ar.state} cancelAt=${ar.cancelAt} entered=${ar.entered} guide=${ar.guide} manual=${ar.manual} committed=${ar.committed}`);
+  }
+  for (const tr of sim.trainList) if (tr.svc === svc) parts.push(`T ${tr.phase} ${tr.mode} v=${tr.v.toFixed(2)} ma=${tr.maDist.toFixed(0)} ${tr.maReason} next=${tr.nextSignal >= 0 ? sim.topo.signals[tr.nextSignal].name : '-'}@${tr.nextSignalDist.toFixed(0)} rmSig=${tr.rmSig} rmAuth=${tr.rmAuth.toFixed(0)} manual=${tr.manual} halt=${tr.halt.code}`);
+  const s = parts.join(' | ');
+  if (s !== last) console.log(sim.t.toFixed(1), s);
+  last = s;
 }

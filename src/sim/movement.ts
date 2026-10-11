@@ -469,10 +469,9 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   tr.nextSignalDist = scan.nextSignalDist;
   tr.stopDist = scan.stopDist;
 
-  // pending driver mode change while stopped
-  if (tr.pendingMode && tr.v < 0.05) {
-    if (sim.t < tr.pendingModeAt) { tr.v = 0; tr.lastDs = 0; return; }
-  }
+  // pending driver mode change while stopped: the train stands until the onboard logic
+  // has switched (or dropped) the mode — not just until the switching time is up
+  if (tr.pendingMode && tr.v < 0.05) { tr.v = 0; tr.lastDs = 0; return; }
   // dispatcher / driver stop in section (e.g. passenger emergency alarm)
   const standStill = tr.stopUntil > sim.t;
 

@@ -596,7 +596,11 @@ export function recordTrace(sim: Sim, tr: Train, force = false) {
 
 // ---------------------------------------------------------------- ARS
 
-interface Desire { train: Train; signal: number; route: number; prio: number; eta: number; ready: boolean; berthWait?: boolean; chainSecs?: number[] }
+interface Desire {
+  train: Train; signal: number; route: number; prio: number; eta: number; ready: boolean; berthWait?: boolean; chainSecs?: number[];
+  /** path distance to `signal`, and the signals passed on the way whose route is already set for the train (signal, route, distance) */
+  dist: number; via: [number, number, number][];
+}
 
 export function runARS(sim: Sim) {
   const { topo } = sim;
@@ -617,9 +621,26 @@ export function runARS(sim: Sim) {
     for (const s of d.chainSecs ?? r.sections) desiredSecs.add(s);
     for (const x of r.switches) desiredSw.set(x.sw, x.pos);
   }
+  // a signal serves the first train approaching it: a train behind that wants a different
+  // route from the same signal waits for it (otherwise the two would cancel each other's
+  // route every cycle)
+  const firstAt = new Map<number, { train: Train; route: number; dist: number }>();
+  const claim = (sig: number, train: Train, route: number, dist: number) => {
+    const f = firstAt.get(sig);
+    if (!f || dist < f.dist) firstAt.set(sig, { train, route, dist });
+  };
+  for (const d of desires) {
+    claim(d.signal, d.train, d.route, d.dist);
+    for (const [sig, route, dist] of d.via) claim(sig, d.train, route, dist);
+  }
   for (const d of desires) {
     const r = topo.routes[d.route];
     const secs = d.chainSecs ?? r.sections;
+    const first = firstAt.get(d.signal)!;
+    if (first.train !== d.train && first.route !== d.route) {
+      setArsWait(sim, d.train, 'ROUTE_WAIT', first.train.id, d.signal, `${topo.signals[d.signal].name} 先为前行列车排列进路`);
+      continue;
+    }
     // a reservation never blocks a train that is standing inside the reserved path (it has to clear it)
     const own = new Set(d.train.body.map((b) => topo.links[b.link].section));
     const blocked = secs.some((s) => {
@@ -745,6 +766,7 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
   if (goal < 0 || startSig < 0) return null;
   const table = sim.routeTable.next.get(goal)!;
   let sig = startSig;
+  const via: [number, number, number][] = [];
   for (let level = 0; level < 4; level++) {
     const rid = table[sig];
     if (rid < 0) {
@@ -764,6 +786,7 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
       }
       const r = topo.routes[rid];
       if (r.berths.includes(goal) || r.end < 0) return null;
+      via.push([sig, rid, dist]);
       dist += r.length;
       eta += r.length / Math.max(tr.v, 8);
       sig = r.end;
@@ -814,9 +837,9 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
         berthWait = ok;
         ok = false;
       }
-      return { train: tr, signal: sig, route: rid, prio, eta, ready: ok, berthWait, chainSecs };
+      return { train: tr, signal: sig, route: rid, prio, eta, ready: ok, berthWait, chainSecs, dist, via };
     }
-    return { train: tr, signal: sig, route: rid, prio, eta, ready: ok, berthWait: berthWait && r.wrongDir && topo.berths[goal].reverse };
+    return { train: tr, signal: sig, route: rid, prio, eta, ready: ok, berthWait: berthWait && r.wrongDir && topo.berths[goal].reverse, dist, via };
   }
   return null;
 }

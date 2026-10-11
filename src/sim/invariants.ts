@@ -201,7 +201,9 @@ function checkMaRoutes(sim: Sim, tr: Train) {
     if (sid !== undefined) {
       const sg = sim.sig[sid];
       const ar = sg.route >= 0 ? sim.routes.get(sg.route) : undefined;
-      const ok = ar && ar.state === 'locked' && !ar.guide && !sg.failed;
+      // a train committed to a route (could no longer stop when its signal failed / the route
+      // was cancelled) keeps the authority it already had over it (D3)
+      const ok = ar && ar.state === 'locked' && !ar.guide && (!sg.failed || ar.committed === tr.id);
       if (!ok) {
         violate(sim, 'MA_NO_ROUTE', [tr.id], `${tr.svc}-${tr.tripNo} 授权 ${ma.toFixed(0)} m 越过信号机 ${topo.signals[sid].name}（${ar ? (ar.guide ? '引导进路' : ar.state) : '无进路'}${sg.failed ? '，故障' : ''}）`, `${tr.id}:${sid}`);
         return;

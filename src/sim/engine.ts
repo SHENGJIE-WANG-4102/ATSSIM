@@ -241,6 +241,8 @@ export class Sim {
     this.trains.delete(tr.id);
     this.trainList = this.trainList.filter((x) => x.id !== tr.id);
     for (const [b, t] of this.berthRes) if (t === tr.id) this.berthRes.delete(b);
+    // the occupancy map is rebuilt next step; until then nobody may see the removed train
+    for (const [l, segs] of this.linkBodies) if (segs.some((x) => x.train === tr.id)) this.linkBodies.set(l, segs.filter((x) => x.train !== tr.id));
     for (const k of ['eb', 'comm', 'tf', 'tfr', 'spad', 'late']) this.clearAlarm(`${k}-${tr.id}`);
     for (const c of this.calls) if (c.state === 'ringing' && c.train === tr.id) c.state = 'withdrawn';
   }
@@ -467,7 +469,9 @@ export class Sim {
         if (cmd.from < this.t + 600) return { ok: false, msg: '加开开始时刻须晚于当前时刻10分钟以上' };
         const r = applyOverlay(this.planCtx, this.plan, { ...p, from: cmd.from, to: cmd.to, headway: cmd.headway });
         this.planDirty = true;
-        return { ok: true, msg: `${p.label}：新增 ${r.trips} 个车次、${r.blocks} 列车底` };
+        const short = r.skipped ? `；另有 ${r.skipped} 个车次因追踪间隔或折返能力不足未安排` : '';
+        if (r.skipped) this.log('C', '运营', `${p.label}：${r.skipped} 个加开车次无法安排（高峰追踪间隔 / 折返线能力），已不开行`);
+        return { ok: true, msg: `${p.label}：新增 ${r.trips} 个车次、${r.blocks} 列车底${short}` };
       }
       case 'zoneLevel': {
         const names: string[] = [];
