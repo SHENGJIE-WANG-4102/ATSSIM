@@ -29,9 +29,9 @@ for (const dayType of ['weekday', 'weekend'] as const) {
   }
   console.log(counts.join(' '));
   if (dayType === 'weekday') {
-    const r = applyOverlay({ topo, rt, dayType }, plan, { ...OVERLAY_PRESETS[0] });
+    const r = applyOverlay({ topo, rt, dayType }, plan, { ...OVERLAY_PRESETS[0] }, { now: 0, canExtend: () => true });
     console.log('overlay ciie', JSON.stringify(r), 'fleetPeak', plan.fleetPeak);
-    const r2 = applyOverlay({ topo, rt, dayType }, plan, { ...OVERLAY_PRESETS[1] });
+    const r2 = applyOverlay({ topo, rt, dayType }, plan, { ...OVERLAY_PRESETS[1] }, { now: 0, canExtend: () => true });
     console.log('overlay hq', JSON.stringify(r2), 'fleetPeak', plan.fleetPeak);
   }
 }

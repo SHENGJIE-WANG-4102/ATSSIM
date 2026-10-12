@@ -38,9 +38,11 @@ let steps = 0;
 try { while (sim.t < 27.5 * 3600) {
   if (!applied) {
     const preset = OVERLAY_PRESETS.find(p => p.id === options.template)!;
-    const at = preset.from;
+    // issued half an hour ahead, as a dispatcher would, so that trains for
+    // the first added trips can still leave the depot
+    const at = preset.from - 1800;
     if (sim.t >= at - 1e-6) {
-      const result = sim.command({ c: 'overlay', id: preset.id, from: sim.t, to: preset.to, headway: preset.headway });
+      const result = sim.command({ c: 'overlay', id: preset.id, from: preset.from, to: preset.to, headway: preset.headway });
       if (!result.ok) { failure = `Template rejected: ${result.msg}`; break; }
       applied = true;
     }
@@ -96,8 +98,12 @@ const maxLate = Math.max(0, ...delays);
 const planned = sim.plan.trips.filter(t => t.revenue && !t.cancelled).length;
 // Delivery is measured against every planned passenger trip, including the
 // ones cancelled during the day. Adjusted trips created by a short turn
-// replace a cancelled original and are not counted on either side.
-const original = sim.plan.trips.filter(t => t.revenue && t.kind !== 'adj');
+// replace a cancelled original and are not counted on either side. Trips
+// the added-service planning itself took out ('加开：…': added trips it
+// found no capacity for, base withdrawals replaced by an extended duty)
+// were never in the plan the day was run to; the added-service gate below
+// accounts for them.
+const original = sim.plan.trips.filter(t => t.revenue && t.kind !== 'adj' && !t.cancelReason?.startsWith('加开'));
 const deliveredOriginal = original.filter(t => t.completed).length;
 const delivery = original.length ? deliveredOriginal / original.length : 1;
 const cancelled = sim.plan.trips.filter(t => t.revenue && t.cancelled);
@@ -159,17 +165,22 @@ if (!failure && !options.level) {
   else if (options.dayType === 'weekday' && (peakHeadway.intervals < 3000 || peakHeadway.within < .95 * peakHeadway.intervals))
     failure = `Peak headway: ${peakHeadway.within}/${peakHeadway.intervals} core intervals within 150 s ±30 s, gate 95%`;
 }
-// An added-service template must run at least 90% of the trips it requested
-// fault-free (trips it could not plan count as not run).
-const overlayTrips = sim.plan.trips.filter(t => t.revenue && t.overlay);
-const overlayRun = overlayTrips.filter(t => t.completed).length;
-const overlayRequested = overlayTrips.length;
-if (!failure && !options.level && options.template !== 'base' && overlayRun < .9 * overlayRequested)
+// An added-service template must run at least 90% of the grid trips it
+// requested (each covering the whole added section) fault-free; trips it
+// could not plan count as not run. Grid slots the base plan leaves no room
+// for at all (peak) are reported, not requested (D47).
+const preset = OVERLAY_PRESETS.find(p => p.id === options.template);
+const overlayInfo = sim.plan.overlays.at(-1);
+const gridTrips = preset ? sim.plan.trips.filter(t => t.revenue && t.overlay
+  && t.stops.some(p => p.st === preset.a) && t.stops.some(p => p.st === preset.b)) : [];
+const overlayRun = gridTrips.filter(t => t.completed).length;
+const overlayRequested = overlayInfo?.requested ?? gridTrips.length;
+if (!failure && !options.level && preset && overlayRun < .9 * overlayRequested)
   failure = `Added service: ${overlayRun}/${overlayRequested} trips ran`;
 if (!failure && options.level && (sim.faults.some(f => f.stage !== 'closed') || sim.trainList.some(t => t.forceLevel === 'AUTO' && !t.manual && (t.level !== 'CBTC' || t.mode !== 'DTO')))) failure = 'Unrecovered fault or degraded state';
 const result = { ...options, ok: !failure, failure, until: sim.t, integrity: sim.integrity.counts, completed: sim.tripsDone, planned,
   delivery: { delivered: deliveredOriginal, planned: original.length, ratio: delivery, gate: options.level ? DELIVERY_GATE[options.level] : 1 },
-  addedService: options.template === 'base' ? null : { ran: overlayRun, requested: overlayRequested },
+  addedService: preset ? { ran: overlayRun, requested: overlayRequested, planned: gridTrips.filter(t => !t.cancelled).length, peak: overlayInfo?.peak ?? 0 } : null,
   within2, maxLate, maxOnline, worstStuck, peakHeadway, passengerShares, departurePunctuality: sim.depTotal ? sim.depOnTime / sim.depTotal : 1,
   recoverySeconds: clearedAt && recoveredAt ? recoveredAt - clearedAt : null, lastFaultClearedAt: clearedAt || null, wallSeconds: (Date.now() - wall) / 1000,
   ridership: { boardings: sim.passengersServed, generated: sim.ridership.generated, peakLoad: sim.ridership.peakSectionLoad, maxLoad: sim.ridership.maxLoad },

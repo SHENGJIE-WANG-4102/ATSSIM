@@ -330,6 +330,8 @@ export function spawnDue(sim: Sim) {
   const { topo } = sim;
   for (const b of sim.plan.blocks) {
     if (b.train !== undefined || sim.blockDone.has(b.id)) continue;
+    // a duty whose trips are all cancelled (taken over or withdrawn) stays in
+    if (!b.trips.some(id => !sim.plan.trips[id].cancelled)) continue;
     if (b.start.kind === 'stable') {
       if (sim.t < sim.dayStart + 1) spawnStabled(sim, b);
       continue;
@@ -1358,6 +1360,19 @@ export function cmdRecoverService(sim: Sim, tr: Train) {
     return { ok: false, msg: '已在回段，不能改接载客始发时隙' };
   if (tr.tasks[0]?.k === 'reverse') return { ok: false, msg: '列车正在进入折返线，换端完成后再办理' };
   const current = curStop(tr);
+  // R5: the same at an intermediate station of the trip, for a train more
+  // than SEVERE_DELAY late on it that no duty exchange (R4) could place. A
+  // relieved train has no origin left to position for and is withdrawn:
+  // running out its trip that late keeps the line late for up to a whole trip.
+  if (!tr.failed && !tr.manual && tr.coupledLen === 0 && tr.phase === 'dwell' && tr.inService && tr.block >= 0
+    && current && current.trip >= 0 && current.arr !== null && current.dep !== null) {
+    const lateness = sim.t - current.dep;
+    if (lateness <= SEVERE_DELAY) return { ok: false, msg: `本车次晚点${Math.round(lateness)}s，未超过${SEVERE_DELAY}s` };
+    const late = `本车次晚点${Math.round(lateness / 60)}分钟`;
+    const target = reachableFutureOrigin(sim, tr);
+    if (target < 0) return cmdWithdraw(sim, tr, `故障恢复：${late}，车底剩余始发时隙全部不可达，清客回段`);
+    return positionForOriginalSlot(sim, tr, target, late);
+  }
   if (tr.failed || tr.manual || tr.coupledLen > 0 || tr.phase !== 'dwell' || !current
     || current.dep !== null || current.trip < 0 || !sim.plan.trips[current.trip].completed || tr.block < 0)
     return { ok: false, msg: '须在已完成车次的终点停站办理恢复调度' };
@@ -1370,6 +1385,103 @@ export function cmdRecoverService(sim: Sim, tr: Train) {
   const target = reachableFutureOrigin(sim, tr);
   if (target < 0) return cmdWithdraw(sim, tr, `故障恢复：${late}，车底剩余始发时隙全部不可达，清客回段`);
   return positionForOriginalSlot(sim, tr, target, late);
+}
+
+/** How far from now the departure of the trip a late train takes over by
+ * R4 may be: it runs that trip at most this late, and is not held for it (s). */
+export const EXCHANGE_DELAY = 120;
+
+const exchangeable = (sim: Sim, tr: Train) => !tr.failed && !tr.manual && tr.coupledLen === 0 && !tr.withdrawn
+  && !tr.relievedBy && tr.inService && tr.block >= 0 && tr.rescuing < 0 && tr.rescueBy < 0
+  && !sim.plan.blocks[tr.block].relieved && tr.tasks[0]?.k === 'stop' && tr.tasks[0].trip === tr.tripId;
+
+/** the two trips call at the same stations, the same way, from `from` to the end */
+function sameRoute(a: Trip, b: Trip, from: number): boolean {
+  if (a.dir !== b.dir || a.to !== b.to || !a.revenue || !b.revenue) return false;
+  const rest = (t: Trip) => t.stops.slice(t.stops.findIndex(p => p.st === from));
+  const ra = rest(a), rb = rest(b);
+  return ra.length > 0 && ra.length === rb.length && ra[0].st === from && rb[0].st === from
+    && ra.every((p, i) => p.st === rb[i].st && p.stop === rb[i].stop);
+}
+
+/**
+ * R4 车次调整 (D44): the train `tr`, standing at an intermediate station of
+ * its trip more than SEVERE_DELAY late, and the train running the
+ * same-route trip due to leave that station now, which has not reached it
+ * yet. Null when there is none.
+ */
+export function exchangePartner(sim: Sim, tr: Train): Train | null {
+  const cur = tr.tasks[0];
+  if (tr.phase !== 'dwell' || !exchangeable(sim, tr) || cur?.k !== 'stop' || cur.arr === null || cur.dep === null
+    || sim.t - cur.dep <= SEVERE_DELAY) return null;
+  const own = sim.plan.trips[tr.tripId];
+  let best: Train | null = null;
+  let bestGap = Infinity;
+  for (const w of sim.trainList) {
+    if (w === tr || !exchangeable(sim, w) || w.block === tr.block) continue;
+    const trip = sim.plan.trips[w.tripId];
+    const next = w.tasks[0] as StopTask;
+    // the partner still has to call at every station it would run under the late trip
+    if (!sameRoute(own, trip, next.station) || !sameRoute(own, trip, cur.station)) continue;
+    const at = w.tasks.find(t => t.k === 'stop' && t.trip === trip.id && t.station === cur.station) as StopTask | undefined;
+    if (!at || at.dep === null || at.dep - cur.dep <= EXCHANGE_DELAY) continue;
+    // due now: the late train runs it at most EXCHANGE_DELAY late, and is not held for it
+    const gap = at.dep - sim.t;
+    if (gap < -EXCHANGE_DELAY || gap > 60 || Math.abs(gap) >= bestGap) continue;
+    best = w;
+    bestGap = Math.abs(gap);
+  }
+  return best;
+}
+
+/**
+ * R4 车次调整 (duty exchange, D44). The late train takes the identity (trip,
+ * duty, 表号) of the same-route trip due to leave its station now; the
+ * train of that trip, behind it, takes the late trip and the late train's
+ * duty in exchange. Both trains keep their stations, platforms and the
+ * terminal they run to: only the timetable each one runs to changes, so the
+ * exchange is decided on the two trains' own state. The late trip keeps its
+ * lateness and its record; a later train can pass it on in turn, or it is
+ * cleared by R1/R5.
+ */
+export function cmdExchangeDuty(sim: Sim, tr: Train, other: number) {
+  const w = sim.trains.get(other);
+  if (!w || exchangePartner(sim, tr) !== w) return { ok: false, msg: '无可调整的同交路正点车次' };
+  const { topo, plan } = sim;
+  const bx = plan.blocks[tr.block], bw = plan.blocks[w.block];
+  const tx = plan.trips[tr.tripId], tw = plan.trips[w.tripId];
+  /** the duty of `b` from trip `trip`, from its call at `station` */
+  const rest = (b: Block, trip: Trip, station: number) => {
+    const all = blockTasks(topo, plan, b, b.trips.indexOf(trip.id));
+    return all.slice(all.findIndex(t => t.k === 'stop' && t.trip === trip.id && t.station === station));
+  };
+  const retime = (t: Train, tasks: Task[]) => {
+    const cur = t.tasks[0] as StopTask;
+    const head = tasks[0] as StopTask;
+    // a train at the platform keeps its stop; it now leaves to the new timetable
+    tasks[0] = t.phase === 'dwell' ? { ...cur, trip: head.trip, arr: head.arr, dep: head.dep } : { ...head, berth: cur.berth };
+    return tasks;
+  };
+  const late = Math.round((sim.t - (tr.tasks[0] as StopTask).dep!) / 60);
+  const nx = retime(tr, rest(bw, tw, (tr.tasks[0] as StopTask).station));
+  const nw = retime(w, rest(bx, tx, (w.tasks[0] as StopTask).station));
+  tr.tasks = nx;
+  w.tasks = nw;
+  [tr.block, w.block] = [bw.id, bx.id];
+  bw.train = tr.id;
+  bx.train = w.id;
+  [tr.svc, w.svc] = [bw.svc, bx.svc];
+  for (const t of [tr, w]) {
+    setTripFromTasks(sim, t);
+    const keep = new Set(t.tasks.flatMap(x => x.k === 'stop' ? [x.berth] : x.k === 'reverse' ? [x.chosen] : []));
+    for (const [berth, train] of sim.berthRes) if (train === t.id && !keep.has(berth)) sim.berthRes.delete(berth);
+  }
+  const head = tr.tasks[0] as StopTask;
+  tr.delay = sim.t - (head.dep ?? sim.t);
+  sim.planDirty = true;
+  const msg = `车次调整：列车${tr.vehicle}晚点${late}分钟，改按${tw.no}（表号${bw.svc}）运行；后续列车${w.vehicle}改按${tx.no}（表号${bx.svc}）运行`;
+  sim.log('C', '运营', msg);
+  return { ok: true, msg };
 }
 
 /** R2: at the terminal, cancel the missed whole cycle and take the train's
@@ -1767,7 +1879,16 @@ function completeCoupling(sim: Sim, tr: Train) {
       return;
     }
   }
-  if (next !== undefined) tasks.push({ k: 'stop', berth: platformBerth(topo, next, d), station: next, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 120, note: '故障车清客' });
+  // A failed train that had already passed the stop mark of its terminal
+  // platform (leaving for the turnback) cannot be pushed back to it: the
+  // consist turns back and is cleared on the other platform instead.
+  const passed = (station: number) => {
+    const berth = topo.berths[platformBerth(topo, station, d)];
+    const link = topo.links[berth.link];
+    const mark = link.chainA + (link.chainB - link.chainA) * berth.offset / link.len;
+    return d === 'DN' ? sim.trainChain(tr) > mark + 1 : sim.trainChain(tr) < mark - 1;
+  };
+  if (next !== undefined && !passed(next)) tasks.push({ k: 'stop', berth: platformBerth(topo, next, d), station: next, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 120, note: '故障车清客' });
   const clearChain = next === undefined ? sim.trainChain(tr) : topo.stations[next].chain;
   const forward = topo.depots.map((dp,index)=>({dp,index}))
     .filter(({dp})=>(d==='DN'?dp.junctionChain>clearChain:dp.junctionChain<clearChain)
@@ -1784,7 +1905,7 @@ function completeCoupling(sim: Sim, tr: Train) {
     const tbs = [...new Set([...(next === undefined ? [] : [next]), ...turnbackOptions(sim, tr)])];
     const terminal = tbs.find(s => (s === 0 || s === topo.stations.length - 1) && turnbackAt(topo, s, d)?.kind === 'rear');
     if (terminal !== undefined) {
-      if (!tasks.some(t => t.k === 'stop' && t.station === terminal)) tasks.push({ k: 'stop', berth: platformBerth(topo, terminal, d), station: terminal, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 10 });
+      if (!tasks.some(t => t.k === 'stop' && t.station === terminal) && !passed(terminal)) tasks.push({ k: 'stop', berth: platformBerth(topo, terminal, d), station: terminal, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 10 });
       addTurnback(topo, { id: -1, no: '', dir: d, kind: 'adj', from: terminal, to: terminal, stops: [], revenue: false, block: -1 }, tasks);
       const back = d === 'DN' ? 'UP' : 'DN';
       tasks.push({ k: 'stop', berth: platformBerth(topo, terminal, back), station: terminal, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 10 });
@@ -1792,7 +1913,8 @@ function completeCoupling(sim: Sim, tr: Train) {
     }
   }
   tr.tasks = tasks;
-  sim.log('B', '列车', `救援连挂完成，救援列车推送故障车以RM模式运行至 ${next !== undefined ? STATIONS[next].name : '前方站'} 清客后回段`);
+  const clear = tasks.find((t): t is StopTask => t.k === 'stop');
+  sim.log('B', '列车', `救援连挂完成，救援列车推送故障车以RM模式运行至 ${clear ? `${STATIONS[clear.station].name}${clear.berth === platformBerth(topo, clear.station, d) ? '' : '（折返后）'}` : '前方站'} 清客后回段`);
   void entryStation;
 }
 

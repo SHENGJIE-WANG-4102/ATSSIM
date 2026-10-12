@@ -219,7 +219,8 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
         if (atp) ok = ar.state === 'locked' && ar.cancelAt === 0 && !ar.guide && !consumed && !sg.failed && swOk;
         else {
           const rescuePass=tr.rmSig===sigId&&tr.rmAuth>d&&swOk&&rescueRouteReady(sim,tr,sigId);
-          ok = (ar.state === 'locked' || ar.guide) && ar.cancelAt === 0 && (!consumed||rescuePass)
+          // RM is on sight but not over points still moving or without detection
+          ok = (ar.state === 'locked' || ar.guide) && ar.cancelAt === 0 && (!consumed||rescuePass) && swOk
             && (sg.aspect !== 'R' && sg.aspect !== 'FAIL' || (tr.rmSig === sigId && tr.rmAuth > d));
           if(rescuePass)res.constraints.push(0,PERF.vCouple);
         }

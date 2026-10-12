@@ -83,7 +83,10 @@ export interface Plan {
   blocks: Block[];
   /** service template periods for display */
   periods: { from: number; to: number; template: string; label: string }[];
-  overlays: { id: string; label: string; from: number; to: number }[];
+  /** `requested`: trips of the added-service grid (a↔b) put into the plan;
+   * `peak`: grid trips not requested because the base plan already runs at
+   * line capacity on their path (D47) */
+  overlays: { id: string; label: string; from: number; to: number; requested?: number; peak?: number }[];
   fleetPeak: number;
 }
 
@@ -464,6 +467,7 @@ export type Command =
   | { c: 'turnback'; train: number; station: number }
   | { c: 'withdraw'; train: number; reason?: string }
   | { c: 'recoverService'; train: number }
+  | { c: 'exchangeDuty'; train: number; with: number }
   | { c: 'standby'; train: number }
   | { c: 'authRM'; train: number; signal?: number }
   | { c: 'ebRelease'; train: number }

@@ -6,7 +6,7 @@ import { FAULT_LABELS } from './faults';
 const COMMANDS = new Set([
   'setRoute', 'cancelRoute', 'guideRoute', 'autoPass', 'ars', 'switchMove', 'switchLock', 'switchFieldLock',
   'axleReset', 'sectionUnlock', 'setTsr', 'cancelTsr', 'platformHold', 'platformSkip', 'platformEsp', 'psdBypass',
-  'trainHold', 'trainSkip', 'turnback', 'withdraw', 'recoverService', 'standby', 'authRM', 'ebRelease', 'trainLevel', 'rescue', 'addTrain',
+  'trainHold', 'trainSkip', 'turnback', 'withdraw', 'recoverService', 'exchangeDuty', 'standby', 'authRM', 'ebRelease', 'trainLevel', 'rescue', 'addTrain',
   'overlay', 'zoneLevel', 'ack', 'fault', 'repair', 'trainMaintenance', 'sectionBlock', 'switchBlock', 'manual', 'radio', 'radioAuto',
   'env', 'randomFaults', 'scenarioEnd', 'bookmark',
 ]);
@@ -19,7 +19,7 @@ export function validateCommand(sim: Sim, cmd: Command): string | null {
     switchMove: ['sw', 'pos'], switchLock: ['sw', 'on'], switchFieldLock: ['sw', 'on'], axleReset: ['section'], sectionUnlock: ['section'],
     setTsr: ['sections', 'kmh'], cancelTsr: ['sections'], platformHold: ['platform', 'on'], platformSkip: ['platform', 'on'],
     platformEsp: ['platform', 'on'], psdBypass: ['platform', 'on'], trainHold: ['train', 'on'], trainSkip: ['train', 'station', 'on'],
-    turnback: ['train', 'station'], withdraw: ['train'], recoverService: ['train'], standby: ['train'], authRM: ['train'], ebRelease: ['train'], trainLevel: ['train', 'level'],
+    turnback: ['train', 'station'], withdraw: ['train'], recoverService: ['train'], exchangeDuty: ['train', 'with'], standby: ['train'], authRM: ['train'], ebRelease: ['train'], trainLevel: ['train', 'level'],
     rescue: ['failed', 'rescuer'], addTrain: ['depot', 'dir', 'to', 'time'], overlay: ['id', 'from', 'to', 'headway'],
     zoneLevel: ['zones', 'level'], ack: ['ids'], fault: ['kind', 'target', 'duration'], repair: ['fault'], trainMaintenance: ['fault'],
     sectionBlock: ['sections', 'on'], switchBlock: ['sw', 'on'], manual: ['train', 'mode'], radio: ['call', 'option'],

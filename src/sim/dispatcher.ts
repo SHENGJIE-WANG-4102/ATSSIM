@@ -22,7 +22,10 @@
  *  - train failure that cannot be cleared: rescue by the train behind
  *  - recovery regulation (D44/D45): a standby takes over the departures of a
  *    train that will start them more than RELIEF_DELAY late; with no standby,
- *    the explicit terminal rules R1/R2 of cmdRecoverService
+ *    the explicit terminal rules R1/R2 of cmdRecoverService; at an
+ *    intermediate station, a late train exchanges duties with the trip due
+ *    there now (R4, cmdExchangeDuty), else, more than SEVERE_DELAY late, is
+ *    cleared and positioned or withdrawn (R5)
  *
  * Every RM authorisation first runs the same safety check the desk shows
  * (unsafeAhead) and is never given to a train held by another train.
@@ -31,7 +34,7 @@ import type { Sim } from './engine';
 import type { Command, Train } from './model';
 import { unsafeAhead, rescuerFor } from './radio';
 import { goalBerth } from './movement';
-import { routeLeadsTo, rescueBlockedByConsist, SEVERE_DELAY } from './ats';
+import { routeLeadsTo, rescueBlockedByConsist, SEVERE_DELAY, exchangePartner } from './ats';
 import { predictedLateness, RELIEF_DELAY } from './standby';
 
 /** reaction time before answering a call / starting a procedure (s) */
@@ -206,12 +209,22 @@ function psdProcedures(sim: Sim) {
 }
 
 
-/** Recovery regulation rules R1/R2 (D44, cmdRecoverService). R1 is applied
- * only while no incident is in progress anywhere on the line: positioning a
- * train that is still held by a fault would cancel trips without gaining time. */
+/** Recovery regulation rules (D44): standby relief, R1/R2 at the terminal,
+ * R4/R5 at an intermediate station. Each reads only the train's own state,
+ * the same during and after incidents. */
 function recoveryRegulation(sim: Sim) {
   for (const tr of sim.trainList) {
     if (tr.failed || tr.manual || !tr.inService || tr.coupledLen > 0 || tr.withdrawn) continue;
+    const at = tr.tasks[0];
+    if (tr.phase === 'dwell' && at?.k === 'stop' && at.arr !== null && at.dep !== null && at.trip >= 0) {
+      // at an intermediate station: R4 duty exchange, else R5 (R1 en route)
+      const partner = due(sim, `exchange-${tr.id}`, 5) ? exchangePartner(sim, tr) : null;
+      if (partner) { cmd(sim, { c: 'exchangeDuty', train: tr.id, with: partner.id }); continue; }
+      if (sim.t - at.dep > SEVERE_DELAY && due(sim, `recover-${tr.id}`, 60)) {
+        cmd(sim, { c: 'recoverService', train: tr.id });
+        continue;
+      }
+    }
     // R1: a standby takes over a departure this train will make too late.
     const late = tr.relievedBy ? 0 : predictedLateness(sim, tr);
     const relieved = !tr.relievedBy && late > RELIEF_DELAY && due(sim, `relief-${tr.id}`, 300) && cmd(sim, { c: 'standby', train: tr.id }).ok;

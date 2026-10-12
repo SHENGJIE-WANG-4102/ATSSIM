@@ -3,6 +3,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Sim } from '../src/sim/engine';
+import { exchangePartner } from '../src/sim/ats';
 import { makeSim, runFor, assertNoCollision, assertIntegrity, pickTrain, dirOf } from './helpers';
 
 const st = (sim: Sim, name: string) => sim.topo.stations.find((s) => s.name === name)!;
@@ -104,6 +105,37 @@ describe('dispatcher commands', () => {
     const last = Math.max(...added.map(t => t.stops.at(-1)!.arr));
     runFor(sim, last + 600 - sim.t, stepCheck);
     expect(added.filter(t => t.completed).length).toBeGreaterThanOrEqual(Math.ceil(.9 * added.length));
+  });
+
+  it('R4 exchanges the duty of a late train with the on-time same-route trip behind it', () => {
+    const sim = makeSim('weekday', H);
+    const at = (t: Sim['trainList'][number]) => t.tasks[0];
+    const tr = sim.trainList.find(t => t.phase === 'dwell' && t.inService && at(t)?.k === 'stop'
+      && (at(t) as { station: number }).station >= 8 && (at(t) as { station: number }).station <= 16)!;
+    expect(tr).toBeDefined();
+    expect(sim.command({ c: 'trainHold', train: tr.id, on: true }).ok).toBe(true);
+    let partner: ReturnType<typeof exchangePartner> = null;
+    for (let i = 0; i < 1500 && !partner; i++) { runFor(sim, 1, stepCheck); partner = exchangePartner(sim, tr); }
+    expect(partner).not.toBeNull();
+    const w = partner!;
+    const before = { tr: tr.tripId, w: w.tripId, trSvc: tr.svc, wSvc: w.svc, trBlock: tr.block, wBlock: w.block };
+    expect(sim.command({ c: 'exchangeDuty', train: tr.id, with: w.id }).ok).toBe(true);
+    expect([tr.tripId, w.tripId]).toEqual([before.w, before.tr]);
+    expect([tr.block, w.block]).toEqual([before.wBlock, before.trBlock]);
+    expect([tr.svc, w.svc]).toEqual([before.wSvc, before.trSvc]);
+    expect(sim.plan.blocks[tr.block].train).toBe(tr.id);
+    expect(sim.plan.blocks[w.block].train).toBe(w.id);
+    expect(sim.events.some(e => e.text.includes('车次调整'))).toBe(true);
+    // the late trip is not lost: the train behind runs it, after the train in front runs the on-time one
+    sim.command({ c: 'trainHold', train: tr.id, on: false });
+    const station = (at(tr) as { station: number }).station;
+    // each train left the exchange station still running the trip it took over
+    const left = (t: typeof tr, trip: number) => t.tripId === trip && !t.tasks.some(x => x.k === 'stop' && x.trip === trip && x.station === station);
+    runFor(sim, 900, stepCheck);
+    expect(left(tr, before.w)).toBe(true);
+    expect(left(w, before.tr)).toBe(true);
+    expect(sim.plan.trips[before.tr].cancelled).toBeFalsy();
+    expect(sim.plan.trips[before.w].cancelled).toBeFalsy();
   });
 
   it('manual route cancel / set at a signal', () => {

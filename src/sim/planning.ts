@@ -79,7 +79,8 @@ export function yardShortfall(sim: Sim, plan: Plan): PlanIssue | undefined {
   const balance = sim.depotStock.slice();
   const moves: { at: number; depot: number; delta: number }[] = [];
   for (const block of plan.blocks) {
-    if (block.start.kind === 'depot' && block.train === undefined && !sim.blockDone.has(block.id)) moves.push({ at: Math.max(sim.t, block.start.time), depot: block.start.depot, delta: -1 });
+    if (block.start.kind === 'depot' && block.train === undefined && !sim.blockDone.has(block.id)
+      && block.trips.some(id => !plan.trips[id].cancelled)) moves.push({ at: Math.max(sim.t, block.start.time), depot: block.start.depot, delta: -1 });
     if (block.end.kind === 'depot' && !sim.blockDone.has(block.id)) {
       const trips = block.trips.map(id => plan.trips[id]).filter(trip => !trip.cancelled);
       const last = trips[trips.length - 1];

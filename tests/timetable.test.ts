@@ -21,11 +21,17 @@ describe('timetable validator', () => {
     for (const p of OVERLAY_PRESETS) {
       it(`${dayType} + overlay ${p.id} has no errors`, () => {
         const sim = new Sim({ dayType, dateLabel: 'test', startTime: 4 * 3600, seed: 1 });
-        applyOverlay(sim.planCtx, sim.plan, p);
+        // as ordered from the dispatcher before service: base blocks may be extended (D47)
+        applyOverlay(sim.planCtx, sim.plan, p, { now: sim.t, canExtend: () => true });
         const issues = validatePlan(sim.planCtx, sim.plan).filter((i) => i.severity === 'error');
         expect(fmtIssues(issues)).toBe('');
-        expect(sim.plan.trips.some(t => !t.cancelled && t.overlay && t.from===p.a && t.to===p.b)).toBe(true);
-        expect(sim.plan.trips.some(t => !t.cancelled && t.overlay && t.from===p.b && t.to===p.a)).toBe(true);
+        // a front-turn end may be served by turning at the next rear turnback beyond it (D47)
+        const serves = (t: typeof sim.plan.trips[number], x: number, y: number) => {
+          const i = t.stops.findIndex(s => s.st === x), j = t.stops.findIndex(s => s.st === y);
+          return i >= 0 && j > i;
+        };
+        expect(sim.plan.trips.some(t => !t.cancelled && t.overlay && t.revenue && serves(t, p.a, p.b))).toBe(true);
+        expect(sim.plan.trips.some(t => !t.cancelled && t.overlay && t.revenue && serves(t, p.b, p.a))).toBe(true);
       });
     }
   }
@@ -54,13 +60,23 @@ describe('timetable validator', () => {
   });
   it('rejects a front turn that occupies the normal departure platform during a through train', () => {
     const sim = new Sim({dayType:'weekday',dateLabel:'front slot',startTime:14400,seed:1});
-    applyOverlay(sim.planCtx,sim.plan,OVERLAY_PRESETS[1]);
-    const occupied = terminalOccupancy(sim.plan).get(2)![0];
-    const trip = sim.plan.trips.find(t => !t.overlay && !t.cancelled && t.dir==='DN' && t.stops.some(s => s.st===2))!;
+    const plan = sim.plan;
+    // shorten one 蟠祥路 turn of a base block to a front turn at 虹桥火车站
+    const block = plan.blocks.find(b => b.trips.some((id,i) => {
+      const a = plan.trips[id], d = plan.trips[b.trips[i+1]];
+      return d && a.revenue && d.revenue && a.dir==='UP' && a.to===0 && d.from===0 && a.stops[0].arr > 10*3600;
+    }))!;
+    const index = block.trips.findIndex((id,i) => plan.trips[id].to===0 && plan.trips[block.trips[i+1]]?.from===0 && plan.trips[id].stops[0].arr > 10*3600);
+    const arrival = plan.trips[block.trips[index]], departure = plan.trips[block.trips[index+1]];
+    arrival.stops = arrival.stops.filter(s => s.st >= 2); arrival.to = 2;
+    departure.stops = departure.stops.filter(s => s.st >= 2); departure.from = 2;
+    const occupied = terminalOccupancy(plan).get(2)!.find(o => o.block===block.id)!;
+    expect(occupied).toBeDefined();
+    const trip = plan.trips.find(t => !t.cancelled && t.block!==block.id && t.dir==='DN' && t.stops.some(s => s.st===2))!;
     const stop = trip.stops.find(s => s.st===2)!;
     const shift = occupied.from+30-stop.dep;
     for (const s of trip.stops) {s.arr+=shift;s.dep+=shift;}
-    expect(validatePlan(sim.planCtx,sim.plan).some(issue => issue.code==='FRONT_CONFLICT' && issue.blocks?.includes(occupied.block))).toBe(true);
+    expect(validatePlan(sim.planCtx,plan).some(issue => issue.code==='FRONT_CONFLICT' && issue.blocks?.includes(block.id))).toBe(true);
   });
   it('rejects an added circulation that uses an intermediate terminal as long-term storage', () => {
     const sim = new Sim({dayType:'weekday',dateLabel:'layover',startTime:14400,seed:1});
