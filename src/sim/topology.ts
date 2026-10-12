@@ -16,7 +16,7 @@
  */
 import {
   STATIONS, LAYOUT, SPEED_LIMITS, TURNOUT_SPEEDS, LINE_INFO, stationChainages,
-  type CrossoverKind,
+  type CrossoverKind, type SidingLane,
 } from '../data/line2';
 
 export type TrackKind = 'DN' | 'UP' | 'X' | 'SID' | 'CON' | 'DEP';
@@ -102,6 +102,8 @@ export interface TPlatform {
   link: number;
   section: number;
   name: string;
+  /** platform whose waiting passengers this one shares (广兰路 middle-track face of the UP island) */
+  pool?: number;
 }
 
 export type BerthKind = 'platform' | 'tail' | 'siding' | 'depot';
@@ -296,6 +298,11 @@ export function buildTopology(): Topology {
   const features: { station: number; pts: { track: 'DN' | 'UP'; ch: number }[] }[] = [];
   let curFeature: { station: number; pts: { track: 'DN' | 'UP'; ch: number }[] } | null = null;
   const beginFeature = (station: number) => { curFeature = { station, pts: [] }; features.push(curFeature); };
+  /** join the feature of the same station with a switch point within 150 m (scissors + stubs), else begin one */
+  const joinFeature = (station: number, ch: number) => {
+    const f = features.find((x) => x.station === station && x.pts.some((p) => Math.abs(p.ch - ch) < 150));
+    if (f) curFeature = f; else beginFeature(station);
+  };
   const addSwitchPt = (track: 'DN' | 'UP', ch: number, toeSide: 'west' | 'east', sb: SwBuild) => {
     mainPts[track].push({ ch, kind: 'switch', toeSide, swBuild: sb });
     hardBounds[track].push(ch - SW_HALF, ch + SW_HALF);
@@ -338,7 +345,7 @@ export function buildTopology(): Topology {
   };
 
   for (const x of LAYOUT.crossovers) {
-    beginFeature(x.station);
+    joinFeature(x.station, chains[x.station] + x.offset);
     addCrossover(chains[x.station] + x.offset, x.kind, x.station);
   }
 
@@ -365,27 +372,52 @@ export function buildTopology(): Topology {
     }
   }
 
-  // sidings
-  interface SidingBuild { def: (typeof LAYOUT.sidings)[number]; e: number; dead: number; mainCh: number; y: SwBuild; ysw: TSwitch; u: SwBuild; d: SwBuild }
+  // stub sidings: through a Y to both mains, or a single turnout on one main
+  interface SidingBuild {
+    def: (typeof LAYOUT.sidings)[number]; s: Dir; e: number; dead: number; mainCh: number;
+    y?: SwBuild; ysw?: TSwitch; u?: SwBuild; d?: SwBuild;
+    /** stub link holding the berth, and the joint/link of its exit signal */
+    stub?: number; exitNode?: number; exitLink?: number; cons: number[];
+  }
   const sidings: SidingBuild[] = [];
   for (const sd of LAYOUT.sidings) {
     const c = chains[sd.station];
-    const s = sd.side === 'west' ? -1 : 1;
-    const e = c + s * sd.attachOffset;
+    const s: Dir = sd.side === 'west' ? -1 : 1;
+    const e = c + sd.at;
     const dead = e + s * sd.length;
-    const mainCh = e - s * CON_DX; // U and D switch points (towards the station)
-    const usw = newSwitch('siding', sd.station);
-    const dsw = newSwitch('siding', sd.station);
-    const ysw = newSwitch('siding', sd.station);
-    const u: SwBuild = { sw: usw.id };
-    const d: SwBuild = { sw: dsw.id };
-    const y: SwBuild = { sw: ysw.id };
-    // west-side siding: switches' toe faces east (legs to the west); east-side: toe faces west
+    const mainCh = e - s * CON_DX; // turnout point(s), behind the attached end
+    const connect = sd.connect ?? 'both';
+    // a stub running west has its turnouts' toes facing east (legs to the west), and vice versa
     const toeSide: 'west' | 'east' = s < 0 ? 'east' : 'west';
-    beginFeature(sd.station);
-    addSwitchPt('UP', mainCh, toeSide, u);
-    addSwitchPt('DN', mainCh, toeSide, d);
-    sidings.push({ def: sd, e, dead, mainCh, y, ysw, u, d });
+    joinFeature(sd.station, mainCh);
+    const sb: SidingBuild = { def: sd, s, e, dead, mainCh, cons: [] };
+    if (connect !== 'DN') { sb.u = { sw: newSwitch('siding', sd.station).id }; addSwitchPt('UP', mainCh, toeSide, sb.u); }
+    if (connect !== 'UP') { sb.d = { sw: newSwitch('siding', sd.station).id }; addSwitchPt('DN', mainCh, toeSide, sb.d); }
+    if (connect === 'both') { sb.ysw = newSwitch('siding', sd.station); sb.y = { sw: sb.ysw.id }; }
+    sidings.push(sb);
+  }
+
+  // middle tracks joined at both ends to both mains (待避线 / 广兰路 platform track)
+  interface LoopBuild {
+    def: (typeof LAYOUT.loops)[number]; w: number; e: number;
+    uw: SwBuild; dw: SwBuild; ue: SwBuild; de: SwBuild; ywSw: TSwitch; yeSw: TSwitch;
+    yw?: number; ye?: number; ends: number[]; middle: number[]; platLink?: number;
+    exits: { node: number; link: number }[];
+  }
+  const loops: LoopBuild[] = [];
+  for (const lp of LAYOUT.loops) {
+    const c = chains[lp.station];
+    const w = c + lp.west;
+    const e = c + lp.east;
+    const mk = () => ({ sw: newSwitch('siding', lp.station).id }) as SwBuild;
+    const uw = mk(); const dw = mk(); const ue = mk(); const de = mk();
+    beginFeature(lp.station);
+    addSwitchPt('UP', w - CON_DX, 'west', uw);
+    addSwitchPt('DN', w - CON_DX, 'west', dw);
+    beginFeature(lp.station);
+    addSwitchPt('UP', e + CON_DX, 'east', ue);
+    addSwitchPt('DN', e + CON_DX, 'east', de);
+    loops.push({ def: lp, w, e, uw, dw, ue, de, ywSw: newSwitch('siding', lp.station), yeSw: newSwitch('siding', lp.station), ends: [], middle: [], exits: [] });
   }
 
   // depot junctions: grade-separated double connection (出入段线). Each main
@@ -487,37 +519,83 @@ export function buildTopology(): Topology {
   }
 
   // sidings
+  const conHalf = Math.hypot(CON_DX, 2) / 2 + 1;
+  /** connector from a stub/loop end node to a main-line turnout: end → mid → main */
+  const mkCon = (from: TNode, main: TNode): [number, number] => {
+    const mid = newNode('joint', (from.chain + main.chain) / 2);
+    const c1 = newLink(from.id, mid.id, conHalf, 'CON', 0, from.chain, mid.chain);
+    const c2 = newLink(mid.id, main.id, conHalf, 'CON', 0, mid.chain, main.chain);
+    c1.limit = c2.limit = TURNOUT_SPEEDS.siding;
+    main.reverse = c2.id;
+    return [c1.id, c2.id];
+  };
   const sidingBerthInfo: { sb: SidingBuild; link: number; offset: number; dir: Dir; exitNode: number; exitLink: number }[] = [];
   for (const sb of sidings) {
-    const s = sb.def.side === 'west' ? -1 : 1;
-    const u = findMainNode(sb.u);
-    const d = findMainNode(sb.d);
-    const y = newNode('switch', sb.e);
-    y.sw = sb.ysw.id;
-    sb.ysw.nodes.push(y.id);
-    sb.y.node = y.id;
-    const bnd = newNode('joint', sb.e + s * SW_HALF);
+    const s = sb.s;
     const dead = newNode('end', sb.dead);
     dead.endKind = 'buffer';
-    // siding links run from station side outward: y → bnd → dead
-    const ly = newLink(y.id, bnd.id, SW_HALF, 'SID', 0, sb.e, sb.e + s * SW_HALF);
-    const ls = newLink(bnd.id, dead.id, sb.def.length - SW_HALF, 'SID', 0, sb.e + s * SW_HALF, sb.dead);
-    ly.limit = ls.limit = TURNOUT_SPEEDS.siding;
-    y.toe = ly.id;
-    // connectors: y → mid → main switch
-    const mkCon = (main: TNode): number => {
-      const mid = newNode('joint', (sb.e + main.chain) / 2);
-      const half = Math.hypot(CON_DX, 2) / 2 + 1;
-      const c1 = newLink(y.id, mid.id, half, 'CON', 0, sb.e, mid.chain);
-      const c2 = newLink(mid.id, main.id, half, 'CON', 0, mid.chain, main.chain);
-      c1.limit = c2.limit = TURNOUT_SPEEDS.siding;
-      main.reverse = c2.id;
-      return c1.id;
-    };
-    y.normal = mkCon(u);
-    y.reverse = mkCon(d);
-    // berth: head stops 15 m short of the dead end, travelling outward (y → dead = +1 on ls)
-    sidingBerthInfo.push({ sb, link: ls.id, offset: ls.len - 15, dir: 1, exitNode: bnd.id, exitLink: ly.id });
+    let ls: TLink;
+    if (sb.y) {
+      const y = newNode('switch', sb.e);
+      y.sw = sb.ysw!.id;
+      sb.ysw!.nodes.push(y.id);
+      sb.y.node = y.id;
+      const bnd = newNode('joint', sb.e + s * SW_HALF);
+      // siding links run from station side outward: y → bnd → dead
+      const ly = newLink(y.id, bnd.id, SW_HALF, 'SID', 0, sb.e, sb.e + s * SW_HALF);
+      ls = newLink(bnd.id, dead.id, sb.def.length - SW_HALF, 'SID', 0, sb.e + s * SW_HALF, sb.dead);
+      ly.limit = TURNOUT_SPEEDS.siding;
+      y.toe = ly.id;
+      const cu = mkCon(y, findMainNode(sb.u!));
+      const cd = mkCon(y, findMainNode(sb.d!));
+      y.normal = cu[0];
+      y.reverse = cd[0];
+      sb.exitNode = bnd.id;
+      sb.exitLink = ly.id;
+    } else {
+      // single turnout: main → connector → stub, the stub starting at the attached end
+      const bnd = newNode('joint', sb.e);
+      ls = newLink(bnd.id, dead.id, sb.def.length, 'SID', 0, sb.e, sb.dead);
+      sb.cons = mkCon(bnd, findMainNode(sb.u ?? sb.d!));
+      sb.exitNode = bnd.id;
+      sb.exitLink = sb.cons[0];
+    }
+    ls.limit = TURNOUT_SPEEDS.siding;
+    sb.stub = ls.id;
+    // berth: head stops 15 m short of the dead end, travelling outward (+1 on ls)
+    sidingBerthInfo.push({ sb, link: ls.id, offset: ls.len - 15, dir: 1, exitNode: sb.exitNode, exitLink: sb.exitLink });
+  }
+
+  // loops: yw → bw → [platform] → be → ye, each Y joined to both mains
+  for (const lb of loops) {
+    const c = chains[lb.def.station];
+    const mkY = (sw: TSwitch, ch: number) => { const n = newNode('switch', ch); n.sw = sw.id; sw.nodes.push(n.id); return n; };
+    const yw = mkY(lb.ywSw, lb.w);
+    const ye = mkY(lb.yeSw, lb.e);
+    lb.yw = yw.id; lb.ye = ye.id;
+    const bw = newNode('joint', lb.w + SW_HALF);
+    const be = newNode('joint', lb.e - SW_HALF);
+    const lw = newLink(yw.id, bw.id, SW_HALF, 'SID', 0, lb.w, lb.w + SW_HALF);
+    const le = newLink(be.id, ye.id, SW_HALF, 'SID', 0, lb.e - SW_HALF, lb.e);
+    yw.toe = lw.id;
+    ye.toe = le.id;
+    lb.ends = [lw.id, le.id];
+    const pts = lb.def.platform ? [bw, newNode('joint', c - PLAT_HALF), newNode('joint', c + PLAT_HALF), be] : [bw, be];
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const l = newLink(pts[i].id, pts[i + 1].id, pts[i + 1].chain - pts[i].chain, 'SID', 0, pts[i].chain, pts[i + 1].chain);
+      lb.middle.push(l.id);
+    }
+    if (lb.def.platform) lb.platLink = lb.middle[1];
+    for (const lid of [lw.id, le.id, ...lb.middle]) links[lid].limit = TURNOUT_SPEEDS.siding;
+    yw.normal = mkCon(yw, findMainNode(lb.uw))[0];
+    yw.reverse = mkCon(yw, findMainNode(lb.dw))[0];
+    ye.normal = mkCon(ye, findMainNode(lb.ue))[0];
+    ye.reverse = mkCon(ye, findMainNode(lb.de))[0];
+    // exit signals facing out at both ends of the middle track; with a platform
+    // at the platform ends, so a train reversing there has used its whole route
+    lb.exits = lb.def.platform
+      ? [{ node: pts[1].id, link: lb.middle[0] }, { node: pts[2].id, link: lb.middle[2] }]
+      : [{ node: bw.id, link: lw.id }, { node: be.id, link: le.id }];
   }
 
   // depot junction links
@@ -697,25 +775,38 @@ export function buildTopology(): Topology {
       }
     }
   }
-  // siding Y sections: y-node links (toe ly + connector halves) share one section
-  for (const sb of sidings) {
-    const y = nodes[sb.y.node!];
-    const secId = links[y.normal!].section >= 0 ? links[y.normal!].section : newSection('switch', 'SID', sb.e).id;
-    for (const lid of [y.toe!, y.normal!, y.reverse!]) {
-      const l = links[lid];
-      if (l.section !== secId) {
-        if (l.section >= 0) {
-          const old = sections[l.section];
-          old.links = old.links.filter((x) => x !== lid);
-          old.len -= l.len;
-        }
-        l.section = -1;
-        assign(lid, sections[secId]);
-      }
+  const moveTo = (lid: number, secId: number) => {
+    const l = links[lid];
+    if (l.section === secId) return;
+    if (l.section >= 0) {
+      const old = sections[l.section];
+      old.links = old.links.filter((x) => x !== lid);
+      old.len -= l.len;
     }
-    const ls = links[sidingBerthInfo.find((b) => b.sb === sb)!.link];
+    l.section = -1;
+    assign(lid, sections[secId]);
+  };
+  // siding Y sections: y-node links (toe ly + connector halves) share one section;
+  // a single-turnout stub's connector joins its turnout's section
+  for (const sb of sidings) {
+    if (sb.y) {
+      const y = nodes[sb.y.node!];
+      const secId = links[y.normal!].section >= 0 ? links[y.normal!].section : newSection('switch', 'SID', sb.e).id;
+      for (const lid of [y.toe!, y.normal!, y.reverse!]) moveTo(lid, secId);
+    } else moveTo(sb.cons[0], links[sb.cons[1]].section);
     const sec = newSection('siding', 'SID', sb.dead);
-    assign(ls.id, sec);
+    assign(sb.stub!, sec);
+  }
+  for (const lb of loops) {
+    for (const yid of [lb.yw!, lb.ye!]) {
+      const y = nodes[yid];
+      const secId = newSection('switch', 'SID', y.chain).id;
+      for (const lid of [y.toe!, y.normal!, y.reverse!]) moveTo(lid, secId);
+    }
+    for (const lid of lb.middle) {
+      const l = links[lid];
+      assign(lid, newSection(lid === lb.platLink ? 'platform' : 'siding', 'SID', (l.chainA + l.chainB) / 2));
+    }
   }
   // depot throat sections (QU, QD, Z) and transfer track sections
   const reassign = (lid: number, secId: number) => {
@@ -784,6 +875,17 @@ export function buildTopology(): Topology {
       rec[t] = p.id;
     }
     stationPlat.push(rec);
+  }
+  // middle-track face of an island platform (shares the UP face's waiting passengers)
+  for (const lb of loops) {
+    if (lb.platLink === undefined) continue;
+    const i = lb.def.station;
+    const p: TPlatform = {
+      id: platforms.length, station: i, track: 'UP', link: lb.platLink, section: links[lb.platLink].section,
+      name: `${STATIONS[i].name} 中间线站台`, pool: stationPlat[i].UP,
+    };
+    links[lb.platLink].platform = p.id;
+    platforms.push(p);
   }
 
   // ------------------------------------------------------------------ signals
@@ -881,8 +983,9 @@ export function buildTopology(): Topology {
       signals[sid].role = 'exit';
     }
   }
-  // siding exit signals
+  // siding and middle-track exit signals
   for (const b of sidingBerthInfo) addSignal(b.exitNode, b.exitLink, 'exit');
+  for (const lb of loops) for (const x of lb.exits) addSignal(x.node, x.link, 'exit');
   // depot exit signals
   for (const db of depotBuild) addSignal(db.exitNode, db.exitLink, 'depot');
 
@@ -899,9 +1002,11 @@ export function buildTopology(): Topology {
       // ends the head is exactly at the opposite-direction stopping point
       const offset = dir === 1 ? l.len / 2 + LINE_INFO.trainLength / 2 : l.len / 2 - LINE_INFO.trainLength / 2;
       void stopOff;
+      // the middle-track face serves both directions (arrival east, departure west)
+      const reverse = p.pool === undefined && dir !== normalDir;
       addBerth({
         kind: 'platform', link: p.link, offset, dir, platform: p.id, station: p.station, depot: -1,
-        reverse: dir !== normalDir, name: `${p.name}${dir !== normalDir ? '(反向)' : ''}`,
+        reverse, name: `${p.name}${reverse ? '(反向)' : ''}`,
       });
     }
   }
@@ -918,7 +1023,13 @@ export function buildTopology(): Topology {
   }
   for (const b of sidingBerthInfo) {
     const id = addBerth({ kind: 'siding', link: b.link, offset: b.offset, dir: b.dir, platform: -1, station: b.sb.def.station, depot: -1, reverse: false, name: b.sb.def.name });
-    stationTurnback[b.sb.def.station].push(id);
+    if (b.sb.def.turnback ?? true) stationTurnback[b.sb.def.station].push(id);
+  }
+  // 广兰路: small-loop trains reverse at the middle-track platform (arriving eastbound)
+  for (const lb of loops) {
+    if (lb.platLink === undefined) continue;
+    const id = berths.find((b) => b.link === lb.platLink && b.dir === 1)!.id;
+    stationTurnback[lb.def.station].push(id);
   }
   const depots: TDepot[] = [];
   for (const db of depotBuild) {
@@ -989,7 +1100,7 @@ export function buildTopology(): Topology {
           continue;
         }
         if (fr.steps.some((s) => s.link === nx.link)) continue;
-        if (fr.len > 7000) continue; // no end signal within reach
+        if (fr.len > 9000) continue; // no end signal within reach (远东大道—航站楼 is ~8 km)
         stack.push({ steps: [...fr.steps, { link: nx.link, dir: ndir }], sws, len: fr.len + nl.len });
       }
     }
@@ -1140,25 +1251,31 @@ export function buildTopology(): Topology {
     if (l.track !== 'X') continue;
     for (const nid of [l.a, l.b]) if (nodes[nid].pos.length === 0) nodes[nid].pos = posFor(nodes[nid].chain, g.midY);
   }
-  // sidings
+  // sidings and middle tracks on their lanes; connector midpoints halfway to the main
+  const laneY = (lane: SidingLane | undefined): number => {
+    const gap = g.dnY - g.upY;
+    switch (lane) {
+      case 'midUP': return g.upY + gap * 0.3;
+      case 'midDN': return g.upY + gap * 0.7;
+      case 'outUP': return g.upY - gap * 0.3;
+      case 'outDN': return g.dnY + gap * 0.3;
+      default: return g.midY;
+    }
+  };
+  const placeLane = (lids: number[], y: number) => {
+    for (const lid of lids) for (const nid of [links[lid].a, links[lid].b]) if (nodes[nid].pos.length === 0) nodes[nid].pos = posFor(nodes[nid].chain, y);
+  };
   for (const sb of sidings) {
-    const y = nodes[sb.y.node!];
-    y.pos = posFor(sb.e, g.midY);
-    for (const lid of [y.toe!]) {
-      const l = links[lid];
-      for (const nid of [l.a, l.b]) if (nodes[nid].pos.length === 0) nodes[nid].pos = posFor(nodes[nid].chain, g.midY);
-    }
-    for (const n of nodes) if (n.endKind === 'buffer' && n.pos.length === 0 && Math.abs(n.chain - sb.dead) < 0.5) n.pos = posFor(n.chain, g.midY);
-    for (const lid of [y.normal!, y.reverse!]) {
-      const l = links[lid];
-      const mid = l.b;
-      if (nodes[mid].pos.length === 0) {
-        const other = links[nodes[mid].links.find((x) => x !== lid)!];
-        const main = other.a === mid ? other.b : other.a;
-        const mainY = links[nodes[main].links.find((x) => links[x].track === 'DN' || links[x].track === 'UP')!].track === 'UP' ? g.upY : g.dnY;
-        nodes[mid].pos = posFor(nodes[mid].chain, (mainY + g.midY) / 2);
-      }
-    }
+    const y = laneY(sb.def.lane);
+    placeLane([sb.stub!], y);
+    if (sb.y) placeLane([nodes[sb.y.node!].toe!], y);
+  }
+  for (const lb of loops) placeLane([...lb.ends, ...lb.middle], laneY(lb.def.platform ? 'midDN' : 'mid'));
+  for (const n of nodes) {
+    if (n.pos.length || n.links.length !== 2 || !n.links.every((lid) => links[lid].track === 'CON')) continue;
+    const ends = n.links.map((lid) => nodes[links[lid].a === n.id ? links[lid].b : links[lid].a]);
+    if (ends.some((m) => !m.pos.length)) continue;
+    n.pos = posFor(n.chain, (ends[0].pos[0].y + ends[1].pos[0].y) / 2 - g.rowTop[ends[0].pos[0].row]);
   }
   // depot junctions
   for (const db of depotBuild) {

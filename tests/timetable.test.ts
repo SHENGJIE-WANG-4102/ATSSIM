@@ -101,10 +101,11 @@ describe('timetable validator', () => {
     for (const id of block.trips) sim.plan.trips[id].cancelled=false;
     expect(validatePlan(sim.planCtx,sim.plan).some(issue => issue.code==='DEPOT_CONFLICT' && issue.blocks?.includes(block.id))).toBe(true);
   });
-  it('rejects an early feeder that traps an earlier departure in the single GLL rear turnback', () => {
+  it('rejects an early feeder that traps an earlier departure on the single GLL turnback platform', () => {
     const sim = new Sim({ dayType: 'weekday', dateLabel: 'order', startTime: 14400, seed: 1 });
     const occupancy = terminalOccupancy(sim.plan).get(22)!.sort((a,b) => a.from-b.from);
-    const index = occupancy.findIndex((item,i) => i > 0 && item.from < occupancy[i-1].to
+    // (one train turns there at a time: move a feeder ahead of the train before it)
+    const index = occupancy.findIndex((item,i) => i > 0
       && sim.plan.trips[sim.plan.blocks[item.block].trips[0]].kind === 'empty');
     expect(index).toBeGreaterThan(0);
     const first = occupancy[index-1], second = occupancy[index];

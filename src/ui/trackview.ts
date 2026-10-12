@@ -346,8 +346,17 @@ export class TrackView {
       const x0 = geom.chainX(st.chain - 95, row);
       const x1 = geom.chainX(st.chain + 95, row);
       const up = p.track === 'UP';
-      const y0 = up ? top + L.upY + 9 : top + L.midY + 5;
-      const y1 = up ? top + L.midY - 5 : top + L.dnY - 9;
+      let y0 = up ? top + L.upY + 9 : top + L.midY + 5;
+      let y1 = up ? top + L.midY - 5 : top + L.dnY - 9;
+      if (topo.platforms.some((q) => q.station === p.station && q.pool !== undefined)) {
+        // 广兰路: island between the UP main and the middle track (upper face UP,
+        // lower face middle track), side platform outside the DN main
+        const lane = top + L.upY + 0.7 * (L.dnY - L.upY);
+        const half = (top + L.upY + 9 + lane - 5) / 2;
+        if (p.pool !== undefined) { y0 = half; y1 = lane - 5; }
+        else if (up) { y0 = top + L.upY + 9; y1 = half; }
+        else { y0 = top + L.dnY + 9; y1 = top + L.dnY + 30; }
+      }
       const rect = new Graphics().rect(x0, y0, x1 - x0, y1 - y0).fill({ color: 0xffffff });
       rect.tint = C.platform;
       rect.eventMode = 'static';

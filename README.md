@@ -334,10 +334,15 @@ Generated from parametric templates (no real timetable is copied):
 
 Departure streams are laid out at a reference station per direction (淞虹路 eastbound,
 广兰路 westbound) so the core section has uniform headways. Trips are linked into train
-blocks by FIFO matching at each terminal (minimum turnback 240 s, terminal layover ≤ 25 min,
-terminal capacity respected). Missing trains are supplied by revenue insertion trips
-from the nearest depot placed into gaps of the stream (e.g. peak insertion from
-龙阳路车辆段 for small-route trains at 广兰路), surplus trains withdraw the same way.
+blocks by FIFO matching at each terminal (minimum turnback 240 s; 100 s on the 广兰路
+middle-track platform and 120 s for the 虹桥火车站 station-front turn, both of which change
+ends on the platform; terminal layover ≤ 25 min, terminal capacity respected). Missing
+trains are supplied by revenue insertion trips from the nearest depot placed into gaps of
+the stream (e.g. peak insertion from 龙阳路车辆段 for small-route trains at 广兰路), surplus
+trains withdraw the same way. 广兰路 holds one turning train at a time: a positioning
+move that cannot turn there without crowding the platform comes from 川沙停车场 instead,
+already facing west, and a small-route arrival whose platform the next arrival needs
+first runs on to 浦东1号2号航站楼 (延伸运行).
 Weekday peak uses 65 trains, within the 100-train fleet.
 
 ## Cab DMI
@@ -477,23 +482,34 @@ the table (1 m rounding). The source list is also kept in `src/data/line2.ts`.
 Everything below is plausible but **not** taken from a public source.
 
 **Track layout**
-* Positions of all switches, crossovers, turnback tracks, sidings and tail tracks:
-  scissors crossovers and 300 m tails at both termini; middle turnback/storage sidings at
-  国家会展中心, 淞虹路 (small-route turnback), 中山公园, 龙阳路, 广兰路 (small-route turnback)
-  and 川沙; single crossovers at 虹桥火车站, 中山公园, 人民广场, 世纪大道, 龙阳路, 广兰路, 唐镇,
-  川沙, 远东大道 (enables station-front turnbacks there).
+* Which stations have which track work follows the 配线图 PDF
+  (`reference/上海轨道交通全网配线V2025.26.2.pdf`, read station by station in
+  `docs/layout-pdf.md`): scissors and 450 m tails at both termini; a scissors with two
+  stub tracks between the mains at 国家会展中心 (west), 淞虹路 (west, small-route turnback)
+  and 上海科技馆 (east); one stub east of 龙阳路; the 广兰路 middle track along the island
+  platform (small-route trains reverse at that platform face); the 创新中路 middle track;
+  side storage sidings along the platform at 威宁路 (UP side) and 人民广场 (DN side);
+  scissors east of 中山公园; single crossovers at 威宁路, 人民广场 and 凌空路. The PDF is a
+  schematic without lengths, so all positions and lengths are approximations. 虹桥火车站's
+  two crossovers are not in the PDF (its legend draws only documented track work) and are
+  kept for the 虹桥 large-crowd template's station-front turnback.
+* 淞虹路's two stubs are in reality the 北翟路 lead tracks; the model keeps a separate
+  depot junction 1300 m west, so depot moves do not use the stubs.
 * Depot junction geometry: each depot has a grade-separated double connection (exit and
   entry turnouts on each main, the DN legs on a flyover) at 1300 m west of 淞虹路
-  (北翟路), 700 m east of 龙阳路 (龙阳路) and 900 m east of 远东大道 (川沙). Only the junction
-  station is sourced. Depot capacity (北翟路 40, 龙阳路 30, 川沙 30, sized for the 100-train
-  fleet), stabling tracks and the 4-minute exit preparation are approximations; depot-internal movements are not simulated.
+  (北翟路), 700 m east of 龙阳路 (龙阳路) and 420 m east of 远东大道 (川沙). Only the junction
+  station is sourced. Depot capacities are the PDF's 8A positions (北翟路 36, 龙阳路 24,
+  川沙 32 = 92); the 100-train fleet's spares beyond that are stabled over capacity.
+  Stabling tracks and the 4-minute exit preparation are approximations; depot-internal
+  movements are not simulated.
 * Axle-counter sections: one per platform, one per turnout, plain line split into ≤450 m
   sections.
 * Signal placement and naming (X/S + station number + sequence, odd for eastbound),
   switch numbering (P + station number), section names (G + station number), and the
   convention 下行 = towards 浦东1号2号航站楼, 上行 = towards 蟠祥路·国家会计学院.
 * Four ZC areas: 蟠祥路—娄山关路, 中山公园—浦东南路, 世纪大道—广兰路, 唐镇—浦东1号2号航站楼.
-* Platform length 190 m, train length 186 m, island platforms drawn for every station.
+* Platform length 190 m, train length 186 m, island platforms drawn for every station
+  (广兰路: island between the UP main and the middle track, side platform for DN).
 
 **Signalling behaviour**
 * CBTC: MA ends 20 m behind the preceding communicating train's tail, at sections occupied
@@ -525,7 +541,7 @@ Everything below is plausible but **not** taken from a public source.
   pre-peak 5'00", evening 7'00", first/last-train periods 7'00"/8'00", weekend 4'30".
   Peak periods 06:50–09:30 and 16:50–19:30.
 * First westbound train from 浦东1号2号航站楼 at 05:30; last westbound 广兰路 departure 23:20.
-* Demand-derived planned dwells of 20–30 s, minimum planned turnback 240 s, 40 s change of ends with
+* Demand-derived planned dwells of 20–30 s, minimum planned turnback 240 s (广兰路 100 s, 虹桥火车站 120 s), 40 s change of ends with
   a driver pre-positioned at the other cab.
 * Overnight stabling: two trains each in the tails of both termini; all others in depots.
 * Passenger model: time-of-day demand profiles, per-station demand weights, alighting

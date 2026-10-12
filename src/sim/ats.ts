@@ -14,7 +14,7 @@ import { takeVehicle, putVehicle } from './yard';
 import { callRmPreset, unsafeAhead } from './radio';
 import { applyEB, grantRM, setMode, distToNextSignal } from './onboard';
 import { openDoors, closeDoors } from './psd';
-import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation } from './timetable';
+import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation, departureBerthAfterReverse } from './timetable';
 import { STATIONS, LINE_INFO } from '../data/line2';
 import { boardAndAlight } from './passengers';
 import { dmiNote } from './dmi';
@@ -603,6 +603,13 @@ function arriveAtBerth(sim: Sim, tr: Train, task: Task) {
     tr.phaseSince = sim.t;
     tr.dwellUntil = sim.t + task.minTime;
     tr.lastStation = task.station;
+    // reversed at a platform track: the next departure here leaves from it
+    // (set now: the pull-out route is taken from tasks[1] while reversing)
+    const next = tr.tasks[1];
+    if (next?.k === 'stop' && next.station === task.station) {
+      const berth = departureBerthAfterReverse(topo, task.chosen, next.berth);
+      if (berth !== next.berth) cowTask(tr, next).berth = berth;
+    }
     return;
   }
   if (task.k === 'stable') {
@@ -1300,8 +1307,10 @@ export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
     // which may be unreachable once the old route has been entered.
     const afterClear = (station: number) => clearStation === undefined
       || (d === 'DN' ? station >= clearStation : station <= clearStation);
-    const tbSt = current !== undefined && afterClear(current) && turnbackAt(topo, current, d)?.kind === 'rear' ? current
-      : turnbackOptions(sim, tr).find(st => afterClear(st) && turnbackAt(topo, st, d)?.kind === 'rear');
+    // (a platform turnback track retargets the clear-out stop like a front turn)
+    const rearOk = (st: number) => { const tb = turnbackAt(topo, st, d); return tb?.kind === 'rear' && topo.berths[tb.berths[0]].kind !== 'platform'; };
+    const tbSt = current !== undefined && afterClear(current) && rearOk(current) ? current
+      : turnbackOptions(sim, tr).find(st => afterClear(st) && rearOk(st));
     if (tbSt === undefined) return { ok: false, msg: '前方无折返/回段条件' };
     const berth = topo.berths[platformBerth(topo, tbSt, d)];
     const alreadyCleared = current === tbSt && tr.load === 0 && tr.link === berth.link && tr.dir === berth.dir

@@ -191,10 +191,13 @@ export class Geometry {
       const main = n.links.map((l) => topo.links[l]).find(isMain);
       if (main) pos[n.id] = at(n.chain, main.track === 'UP' ? p.upY : p.dnY);
     }
-    // sidings
+    // sidings, on the lane the topology gave them (fraction of the UP→DN gap)
     for (const n of topo.nodes) {
       if (pos[n.id] || !inWin(n.chain)) continue;
-      if (n.links.some((l) => topo.links[l].track === 'SID')) pos[n.id] = at(n.chain, p.midY);
+      if (!n.links.some((l) => topo.links[l].track === 'SID')) continue;
+      const d = n.pos[0];
+      const f = d ? (d.y - topo.layout.rowTop[d.row] - topo.layout.upY) / (topo.layout.dnY - topo.layout.upY) : 0.5;
+      pos[n.id] = at(n.chain, p.upY + f * (p.dnY - p.upY));
     }
     // depot structures
     for (const d of topo.depots) {

@@ -99,7 +99,7 @@ describe('faults', () => {
     expect(sim.command({ c: 'switchFieldLock', sw: sw.id, on: true }).ok).toBe(true);
     const sig = waiting!.nextSignal;
     expect(sig).toBeGreaterThanOrEqual(0);
-    const route = sim.topo.signals[sig].routes.find((r) => sim.topo.routes[r].switches.some((x) => x.sw === sw.id && x.pos === 'N') && !sim.topo.routes[r].wrongDir)!;
+    const route = sim.topo.signals[sig].routes.find((r) => sim.topo.routes[r].switches.some((x) => x.sw === sw.id && x.pos === 'N') && !sim.topo.routes[r].wrongDir && !sim.topo.routes[r].diverging)!;
     expect(route).toBeDefined();
     if (sim.sig[sig].route >= 0) sim.command({ c: 'cancelRoute', signal: sig });
     runFor(sim, 31);

@@ -350,9 +350,12 @@ describe('movement and radio regressions', () => {
     for (const other of [...sim.trainList]) if (other !== tr) sim.removeTrain(other);
     for (const rid of [...sim.routes.keys()]) releaseRoute(sim, rid);
     for (const block of sim.plan.blocks) sim.blockDone.add(block.id);
-    const sig = sim.topo.signals.find(s => s.name === 'X2311')!;
-    const route = sim.topo.routes[sig.routes.find(id => sim.topo.routes[id].berths.length > 0)!];
-    const berth = sim.topo.berths[route.berths[0]];
+    // an eastbound signal whose route runs into a turnback stub (上海科技馆)
+    const kjg = sim.topo.stations.find(s => s.name === '上海科技馆')!;
+    const intoStub = (id: number) => sim.topo.routes[id].berths.some(b => kjg.turnbackBerths.includes(b));
+    const sig = sim.topo.signals.find(s => sim.topo.links[s.link].track === 'DN' && s.dir === 1 && s.routes.some(intoStub))!;
+    const route = sim.topo.routes[sig.routes.find(intoStub)!];
+    const berth = sim.topo.berths[route.berths.find(b => kjg.turnbackBerths.includes(b))!];
     const link = sim.topo.links.find(l => l.b === sig.node && l.track === 'DN')!;
     const previous = sim.topo.links.find(l => l.b === link.a && l.track === 'DN')!;
     tr.link = link.id; tr.off = link.len - 6.4; tr.dir = 1;
@@ -376,7 +379,7 @@ describe('movement and radio regressions', () => {
 
 describe('occupied-route rescue',()=>{
   it.each([
-    ['S2404→S2310',false],['S2404→S2310',true],
+    ['S2402→S2318',false],['S2402→S2318',true],
     ['S0102→尽头(侧向)',false],['S0102→尽头(侧向)',true],
   ] as const)('admits only the assigned rescuer and retains locks through coupling (%s, preset=%s)',(name,preset)=>{
     const sim=make();advance(sim,2);const [rescuer,failed]=sim.trainList;
@@ -481,17 +484,21 @@ describe('multiple-failure maintenance escalation', () => {
     expect(trySetRoute(sim,pullout.id,{manual:true,train:failed.id}).ok).toBe(true);advance(sim,5);
     // Real airport scissors footprint from the failing seed; the point
     // positions were established before this body occupied their sections.
-    failed.link=518;failed.off=4.17072387;failed.dir=1;
-    failed.hist=[513,514,515,516,517,518].map(link=>({link,dir:1 as const}));
-    rescuer.link=252;rescuer.off=203.6220205;rescuer.dir=1;
-    rescuer.hist=[251,252].map(link=>({link,dir:1 as const}));
+    // (links found by track and chainage: their ids move with the layout)
+    const at=(track:string,a:number,b:number)=>sim.topo.links.find(l=>l.track===track&&Math.abs(l.chainA-a)<.2&&Math.abs(l.chainB-b)<.2)!.id;
+    const up=[[61835,62045],[62045,62125],[62125,62140],[62140,62155],[62155,62195],[62195,62210]].map(([a,b])=>at('UP',a,b));
+    const dn=[at('DN',61419.6,61835),at('DN',61835,62045)];
+    failed.link=up[5];failed.off=4.17072387;failed.dir=1;
+    failed.hist=up.map(link=>({link,dir:1 as const}));
+    rescuer.link=dn[1];rescuer.off=203.6220205;rescuer.dir=1;
+    rescuer.hist=dn.map(link=>({link,dir:1 as const}));
     for(const tr of [failed,rescuer]){
       tr.v=0;tr.eb=false;tr.manual=false;tr.block=-1;tr.tripId=-1;tr.phase='run';tr.hold=false;
       tr.maDist=tr.maFar=0;tr.maSigs=[];tr.lastMa=Infinity;tr.lastDs=0;computeBody(sim,tr);
     }
     failed.tasks=[{k:'stop',berth:platformBerth(sim.topo,30,'UP'),station:30,trip:-1,arr:null,dep:null,doors:false,revenue:false}];
     failed.tbStage='arrive';failed.rescueReverse=true;failed.rescueBy=rescuer.id;
-    rescuer.tasks=[{k:'rescue',target:failed.id}];rescuer.rescuing=failed.id;rescuer.nextSignal=168;rescuer.inService=false;
+    rescuer.tasks=[{k:'rescue',target:failed.id}];rescuer.rescuing=failed.id;rescuer.nextSignal=sim.topo.signals.find(x=>x.name==='X3105')!.id;rescuer.inService=false;
     indexBodies(sim);computeOccupancy(sim);
     expect(sim.command({c:'fault',kind:'trainFail',target:failed.id,duration:0,recoverable:false}).ok).toBe(true);
     checkSafety(sim); // observe fault creation before the next procedure command
@@ -637,8 +644,10 @@ describe('paper-based turnback and depot procedures', () => {
     const sim = make(); const depot = sim.topo.depots.find(d => d.key === 'CSD')!;
     const goal = sim.topo.berths.find(b => b.station === 29 && b.kind === 'platform' && b.dir === 1)!;
     const distance = distanceToBerth(sim, depot.exitSignal, goal.id);
-    expect(distance).toBeGreaterThan(5000);
-    expect(distance).toBeLessThan(5300);
+    // the junction to the platform plus the transfer track and turnouts
+    const span = sim.topo.stations[29].chain - depot.junctionChain;
+    expect(distance).toBeGreaterThan(span);
+    expect(distance).toBeLessThan(span + 600);
     expect(distance).toBeGreaterThan(sim.routeTable.dist.get(goal.id)![depot.exitSignal] * 1.7);
   });
   it('does not apply reverse-interval TD protection to an ordinary terminal tail move', () => {

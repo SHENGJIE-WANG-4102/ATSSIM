@@ -271,12 +271,15 @@ export class CommandPanel {
     this.el.append(this.head('车站', st.name, true));
     this.el.append(this.kv([
       ['里程', `K${(st.chain / 1000).toFixed(3)}`], ['换乘', sd.transfers.length ? sd.transfers.join('、') : '无'],
-      ['折返', st.turnbackBerths.length ? '站后折返线' : st.frontTurnback.DN || st.frontTurnback.UP ? '站前渡线' : '无'], ['原名', sd.formerName ?? '—'],
+      ['折返', st.turnbackBerths.some((b) => topo.berths[b].kind === 'platform') ? '中间线站台折返'
+        : st.turnbackBerths.length ? '站后折返线' : st.frontTurnback.DN || st.frontTurnback.UP ? '站前渡线' : '无'], ['原名', sd.formerName ?? '—'],
     ]));
     this.el.append(h('div', { class: 'cmdgrid' },
       this.btn('打开车站图（联锁）', () => this.hooks.openStation(id), 'primary'),
       this.btn('下行站台', () => this.store.select({ kind: 'platform', id: st.platforms.DN })),
       this.btn('上行站台', () => this.store.select({ kind: 'platform', id: st.platforms.UP })),
+      ...topo.platforms.filter((p) => p.station === id && p.pool !== undefined)
+        .map((p) => this.btn('中间线站台', () => this.store.select({ kind: 'platform', id: p.id }))),
     ));
     this.el.append(this.liveKv(() => {
       const s = this.store.snap!;

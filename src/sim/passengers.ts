@@ -42,6 +42,7 @@ function scaleFor(sim: Sim): number {
   const windows = boardingWindows(sim);
   let total = 0;
   for (const p of sim.topo.platforms) {
+    if (p.pool !== undefined) continue;
     if ((p.track === 'DN' && p.station === STATIONS.length - 1) || (p.track === 'UP' && p.station === 0)) continue;
     for (let t = windows.first[p.id]; t < windows.last[p.id]; t += 60)
       total += boardingDemand(sim.plan.dayType, p.station, p.track as 'DN' | 'UP', t + 30) * Math.min(60, windows.last[p.id] - t);
@@ -56,6 +57,8 @@ export function passengersTick(sim: Sim, dt: number) {
   const { topo } = sim;
   const windows = boardingWindows(sim);
   for (const p of topo.platforms) {
+    // a face sharing another platform's queue (广兰路 middle track) has no demand of its own
+    if (p.pool !== undefined) continue;
     const ps = sim.plat[p.id];
     const st = STATIONS[p.station];
     // no boarding demand towards the line end
@@ -85,7 +88,7 @@ export function passengersTick(sim: Sim, dt: number) {
 export function boardAndAlight(sim: Sim, tr: Train, platform: number, task: StopTask): number {
   const { topo } = sim;
   const p = topo.platforms[platform];
-  const ps = sim.plat[platform];
+  const ps = sim.plat[p.pool ?? platform];
   const st = p.station;
   const dirDN = p.track === 'DN';
   // alighting share: this station's weight among this and the remaining stations
