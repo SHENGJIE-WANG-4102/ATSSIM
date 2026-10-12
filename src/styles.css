@@ -85,7 +85,7 @@ input[type=range] { accent-color: var(--line); height: var(--ctl); }
 .hdr > .scale-ctl { order: 3; }
 .hdr > .hdr-status { order: 4; }
 .metro-logo { width: 68px; height: 68px; flex: none; }
-.line-badge { width: 68px; height: 68px; border-radius: 50%; background: var(--line); color: #fff; display: flex; align-items: center; justify-content: center; font: 700 42px/1 Arial, sans-serif; box-shadow: 0 0 0 3px #0b121b, 0 0 0 5px #3d5a12; flex: none; }
+.line-badge { height: 68px; width: auto; flex: none; }
 .hdr-title { font-size: 32px; color: #fff; letter-spacing: 2px; font-weight: 600; }
 .hdr-sub { font-size: 20px; color: var(--text-dim); margin-top: 6px; }
 .clock { font: 600 60px/1 var(--font-mono); color: #fff; letter-spacing: 2px; }
