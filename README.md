@@ -188,6 +188,21 @@ stations ahead and the next train's load, with the notice ticker beneath (skip, 
 delays, weather). The header shows the day's ridership (今日客流, boardings so far)
 next to the other KPIs.
 
+### Fixed-time special trains (定点班车) and passing platforms
+
+Every day two fixed-time trains run after the last train from 虹桥火车站 (23:04, 23:30;
+虹桥2号航站楼 two minutes later) to 龙阳路. They board only at the two 虹桥 stations, set
+down only at 淞虹路, 威宁路, 中山公园, 静安寺, 人民广场 and 世纪大道 (the PIS shows
+"只下不上"), and pass the other stations. The train is one returning empty from
+蟠祥路 to 北翟路 that waits in the 虹桥火车站 platform; it goes into 龙阳路 depot
+afterwards.
+
+Any train passing a platform without stopping (a special train, an empty move, 跳停 or
+a closed station) runs through it at **no more than 45 km/h**, against the pressure wave
+on the platform screen doors. The holiday scenarios add their own special trains
+(虹桥火车站 → 龙阳路 extended to 00:05, 浦东1号2号航站楼 → 中山公园 boarding only at the
+airport) and close 南京东路 (both platforms skipped: entrances shut, no passengers).
+
 ### Weather and night possessions
 
 The elevated east section (广兰路以东—海天三路) and the at-grade airport section are
@@ -209,14 +224,22 @@ morning possessions must be released (销点) before the first trains can run.
 
 * **Scenarios** (each loads its own day and time and runs at 1×):
 
-| Scenario | Weekday start | Length |
-|---|---|---|
-| 龙阳路早高峰加车 | 06:52 | 45 min |
-| 淞虹路道岔故障 | 07:40 | 40 min |
-| 人民广场大客流 | 17:25 | 40 min |
-| CBTC→TBTC 降级切换 | 09:55 | 45 min |
-| 故障列车救援 | 09:05 | 45 min |
-| 东段雷暴大风 | 16:30 | 50 min |
+| Scenario | Day | Start | Length |
+|---|---|---|---|
+| 龙阳路早高峰加车 | weekday | 06:52 | 45 min |
+| 淞虹路道岔故障 | weekday | 07:40 | 40 min |
+| 人民广场大客流 | weekday | 17:25 | 40 min |
+| CBTC→TBTC 降级切换 | weekday | 09:55 | 45 min |
+| 故障列车救援 | weekday | 09:05 | 45 min |
+| 东段雷暴大风 | weekday | 16:30 | 50 min |
+| 首班车：施工延时销点 | weekday | 04:50 | 90 min |
+| 广兰路中间线道岔故障 | weekday | 17:20 | 45 min |
+| 虹桥枢纽夜间大客流 | weekday | 19:40 | 50 min |
+| 进博会散场 | weekday | 16:40 | 50 min |
+| 陆家嘴人员侵入轨行区 | weekday | 08:15 | 40 min |
+| 越江隧道列车故障 | weekday | 18:00 | 50 min |
+| 国庆返程高峰：定点加班车 | holiday | 22:30 | 100 min |
+| 国庆南京东路封站跳停 | holiday | 15:40 | 60 min |
 
   Each scenario has objectives and timed events.
 * **Random faults**: off, 初级, 中级 or 高级. A fault arrives about every 25, 14 or 8

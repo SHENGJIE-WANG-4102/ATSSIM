@@ -29,6 +29,8 @@ export interface PlanStop {
   dep: number;
   /** stops (doors) here; false = passes */
   stop: boolean;
+  /** set-down only: passengers may alight but not board (定点班车) */
+  noBoard?: boolean;
 }
 
 export type TripKind = 'big' | 'small' | 'late' | 'extra' | 'ins' | 'wd' | 'empty' | 'adj';
@@ -105,6 +107,8 @@ export interface StopTask {
   /** minimum dwell override */
   minDwell?: number;
   note?: string;
+  /** set-down only (定点班车): nobody boards here */
+  noBoard?: boolean;
 }
 export interface ReverseTask { k: 'reverse'; berths: number[]; chosen: number; station: number; minTime: number }
 export interface DepotTask { k: 'depot'; depot: number }
@@ -576,7 +580,7 @@ export interface TrainSnap {
 }
 
 export interface PisRow {
-  dwellRemaining?: number; dest: string; /** destination station index (-1 unknown) */ destSt: number; eta: number; status: 'eta' | 'arriving' | 'at' | 'departing'; trip: string; load: number }
+  dwellRemaining?: number; dest: string; /** destination station index (-1 unknown) */ destSt: number; /** set-down only here */ noBoard?: boolean; eta: number; status: 'eta' | 'arriving' | 'at' | 'departing'; trip: string; load: number }
 export interface PisData { station: number; DN: PisRow[]; UP: PisRow[]; notice: string }
 
 export interface RadioCall {

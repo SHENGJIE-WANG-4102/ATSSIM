@@ -67,6 +67,7 @@ function fillBox(b: Box, k: number, r: PisRow | undefined, t: number) {
   b.el.classList.toggle('arr', !!r && r.status !== 'eta');
   if (!r) { b.to.textContent = emptyText(t); b.toEn.textContent = ''; return; }
   if (r.dest === '本站终到') { b.to.textContent = '终到列车 请勿上车'; b.toEn.textContent = 'Terminating train, please do not board'; return; }
+  if (r.noBoard) { b.to.textContent = `本次列车只下不上（往${r.dest}）`; b.toEn.textContent = 'Alighting only, please do not board'; return; }
   b.to.innerHTML = '';
   b.to.append(h('span', {}, '开往'), h('span', {}, r.dest));
   b.toEn.textContent = r.destSt >= 0 ? `To  ${STATION_EN[STATIONS[r.destSt].id] ?? ''}` : '';

@@ -12,6 +12,7 @@ import type { HaltCode } from './halt';
 import { applyEB } from './onboard';
 import { psdSafe } from './psd';
 import type { EbCause } from './model';
+import { OPERATIONS } from '../data/line2';
 
 /** speed limits / platform stops further than this do not influence the braking curves */
 const LOOKAHEAD = 1400;
@@ -131,9 +132,17 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
   const gb = goal >= 0 ? goal : depotGoal;
   const berth = gb >= 0 ? topo.berths[gb] : null;
 
+  // any train — in service or empty — passes a platform it does not stop at
+  // at the platform pass limit (the pressure wave would break the PSD glass);
+  // not the platform it has just left or is bound for
+  const goalPlatform = berth?.kind === 'platform' ? berth.platform : -1;
+  const passing = (pl: number) => pl >= 0 && pl !== goalPlatform && topo.platforms[pl].station !== tr.lastStation;
+  const vPass = OPERATIONS.platformPassKmh / 3.6;
+
   // body limits & ESP on body
   for (const b of tr.body) {
     res.vBody = Math.min(res.vBody, linkLimit(sim, b.link));
+    if (passing(topo.links[b.link].platform)) res.vBody = Math.min(res.vBody, vPass);
     const p = topo.links[b.link].platform;
     if (p >= 0 && sim.plat[p].esp) { res.maDist = 0; res.maReason = '站台紧急关闭'; res.maCode = 'ESP'; }
   }
@@ -280,7 +289,7 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
       if (!psdSafe(ps) && atp) { obstacle(res, d - 3, '站台门未关闭锁紧', 'PSD_FAULT'); break; }
     }
     // speed limits
-    const lim = linkLimit(sim, nx.link);
+    const lim = passing(nl.platform) ? Math.min(vPass, linkLimit(sim, nx.link)) : linkLimit(sim, nx.link);
     if (d < LOOKAHEAD && (lim < res.vBody + 0.01 || lim < 25)) res.constraints.push(d, tr.mode === 'RM' ? Math.min(lim, PERF.vRM) : lim);
     // goal
     if (res.stopDist === Infinity && berth && berth.link === nx.link && berth.dir === nx.dir) {

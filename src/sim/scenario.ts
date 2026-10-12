@@ -4,9 +4,9 @@
  */
 import type { Sim } from './engine';
 import type { DayType, Metrics, ScenarioReport, Train, FaultKind } from './model';
-import { STATIONS, LINE_INFO } from '../data/line2';
+import { STATIONS, LINE_INFO, HQ_LATE_RUN, type FixedRun } from '../data/line2';
 import { injectFault } from './faults';
-import { setWeather } from './env';
+import { setWeather, addPossession } from './env';
 import { callPecu, callTrackPerson } from './radio';
 
 export interface ScenarioDef {
@@ -19,6 +19,8 @@ export interface ScenarioDef {
   start: number;
   duration: number;
   events: { at: number; label: string; run: (sim: Sim) => string | void }[];
+  /** the day's fixed-time special trains, in place of the regular ones */
+  fixedRuns?: FixedRun[];
 }
 
 const H = (h: number, m = 0) => h * 3600 + m * 60;
@@ -44,6 +46,29 @@ function trainIn(sim: Sim, from: number, to: number, east: boolean): Train | und
   });
   return cand.sort((a, b) => (east ? sim.trainChain(b) - sim.trainChain(a) : sim.trainChain(a) - sim.trainChain(b)))[0];
 }
+
+/** a switch by its name (e.g. P2305), else the first switch at the station */
+function switchNamed(sim: Sim, name: string, station: number): number {
+  return sim.topo.switches.find((s) => s.name === name)?.id ?? findSwitch(sim, station, () => true);
+}
+
+const chainOf = (sim: Sim, id: string) => sim.topo.stations[stationIdx(id)].chain;
+
+/** a fixed-time special train (加班车) running between stations */
+function extraTrain(sim: Sim, pred: (tr: Train) => boolean = () => true): Train | undefined {
+  return sim.trainList.find((tr) => tr.inService && !tr.failed && tr.phase !== 'dwell' && tr.tripId >= 0
+    && sim.plan.trips[tr.tripId]?.kind === 'extra' && pred(tr));
+}
+
+/** close a station (封站): trains pass both platforms, the entrances are shut */
+function closeStation(sim: Sim, id: string, on: boolean) {
+  const st = sim.topo.stations[stationIdx(id)];
+  for (const p of [st.platforms.DN, st.platforms.UP]) sim.command({ c: 'platformSkip', platform: p, on });
+}
+const stationClosed = (sim: Sim, id: string) => {
+  const st = sim.topo.stations[stationIdx(id)];
+  return sim.plat[st.platforms.DN].skip && sim.plat[st.platforms.UP].skip;
+};
 
 export const SCENARIOS: ScenarioDef[] = [
   {
@@ -162,6 +187,207 @@ export const SCENARIOS: ScenarioDef[] = [
       { at: 8 * 60, label: '暴雨', run: (sim) => { setWeather(sim, { rain: true, duration: 30 * 60 }); } },
       { at: 15 * 60, label: '阵风≥10级，高架段停运', run: (sim) => { setWeather(sim, { wind: 4, duration: 12 * 60 }); } },
       { at: 27 * 60, label: '风力减弱（黄色）', run: (sim) => { setWeather(sim, { wind: 2, duration: 15 * 60 }); } },
+    ],
+  },
+  {
+    id: 'dawn-poss',
+    name: '首班车：施工延时销点',
+    desc: '凌晨静安寺—南京西路区间施工未能按时销点，施工负责人报告预计延时至05:50。首班车即将上线，广兰路始发的上行首班车途中又发生故障。需在封锁区间两侧组织首班车折返或等待，销点后尽快恢复全线运营。',
+    objectives: [
+      '掌握施工延时情况，封锁区间两侧首班车提前折返（人民广场站西渡线 / 中山公园站东剪刀渡线），或在站等待',
+      '应答首班车司机故障电话，按程序处置（复位/救援）',
+      '应答销点请求后解封区间，组织列车回归运行图',
+    ],
+    dayType: 'weekday', start: H(4, 50), duration: 90 * 60,
+    events: [
+      {
+        at: 60, label: '静安寺—南京西路施工延时销点',
+        run: (sim) => {
+          const p = addPossession(sim, stationIdx('JAS'), H(5, 50));
+          sim.log('B', '施工', `${p.name} 施工负责人报告：作业未完，申请延时至 05:50 销点`);
+        },
+      },
+      {
+        at: 66 * 60, label: '上行首班车故障',
+        run: (sim) => {
+          const tr = trainIn(sim, chainOf(sim, 'KJG') - 600, chainOf(sim, 'LYL') + 300, false) ?? trainIn(sim, chainOf(sim, 'RMG'), chainOf(sim, 'GLL'), false);
+          if (!tr) return '未找到合适列车';
+          injectFault(sim, 'trainFail', tr.id, 300, undefined, true);
+        },
+      },
+    ],
+  },
+  {
+    id: 'gll-loop',
+    name: '广兰路中间线道岔故障',
+    desc: '晚高峰广兰路中间线西端道岔P2305失去表示，小交路列车无法进入中间线站台折返。需调整小交路折返站（上海科技馆尽头线），或延伸为大交路，并组织现场钩锁、引导进路恢复中间线折返。',
+    objectives: [
+      '确认P2305失表，通知维修；避免小交路列车在广兰路下行站台积压',
+      '后续小交路列车改在上海科技馆折返（选中列车 → 人工折返），或延伸至浦东1号2号航站楼',
+      '钩锁后办理引导进路恢复中间线折返；修复后单操恢复表示',
+    ],
+    dayType: 'weekday', start: H(17, 20), duration: 45 * 60,
+    events: [
+      { at: 90, label: '广兰路中间线道岔P2305失表', run: (sim) => { injectFault(sim, 'switch', switchNamed(sim, 'P2305', stationIdx('GLL')), 25 * 60); } },
+    ],
+  },
+  {
+    id: 'hq-night',
+    name: '虹桥枢纽夜间大客流',
+    desc: '晚间航班、高铁集中到达，虹桥火车站、虹桥2号航站楼进站客流激增，往市区方向站台严重拥挤；随后虹桥火车站下行站台门故障。需及时加开、限流并处置站台门故障。',
+    objectives: [
+      '套用“虹桥枢纽大客流加开”运行图模板（命令页 → 加开运行图模板）',
+      '应答车站客流电话，视情限流；扣车均衡后续间隔',
+      '虹桥火车站下行站台门故障：确认人工关闭后办理互锁解除发车，修复后恢复',
+    ],
+    dayType: 'weekday', start: H(19, 40), duration: 50 * 60,
+    events: [
+      { at: 60, label: '虹桥火车站大客流（×4）', run: (sim) => { injectFault(sim, 'surge', stationIdx('HQZ'), 40 * 60, 4); } },
+      { at: 5 * 60, label: '虹桥2号航站楼大客流（×3）', run: (sim) => { injectFault(sim, 'surge', stationIdx('HQ2'), 35 * 60, 3); } },
+      { at: 18 * 60, label: '虹桥火车站下行站台门故障', run: (sim) => { injectFault(sim, 'psd', sim.topo.stations[stationIdx('HQZ')].platforms.DN, 15 * 60); } },
+    ],
+  },
+  {
+    id: 'ciie-close',
+    name: '进博会散场',
+    desc: '进博会闭馆散场，国家会展中心进站客流达平时6倍；一列满载下行列车上乘客按下紧急报警，随后虹桥火车站下行出站信号机故障。需加开、均衡间隔并处置报警和信号故障。',
+    objectives: [
+      '套用“进博会保障加开”或人工加开列车，提升西段运力',
+      '处置列车乘客紧急报警（应答司机电话，就近站台处置）',
+      '虹桥火车站信号机故障：办理引导进路，列车RM越过，修复后恢复',
+    ],
+    dayType: 'weekday', start: H(16, 40), duration: 50 * 60,
+    events: [
+      { at: 60, label: '国家会展中心散场客流（×6）', run: (sim) => { injectFault(sim, 'surge', stationIdx('GJH'), 40 * 60, 6); } },
+      {
+        at: 10 * 60, label: '下行列车乘客紧急报警',
+        run: (sim) => {
+          const tr = trainIn(sim, chainOf(sim, 'GJH') + 200, chainOf(sim, 'SHR'), true);
+          if (!tr) return '未找到合适列车';
+          callPecu(sim, tr);
+        },
+      },
+      {
+        at: 22 * 60, label: '虹桥火车站下行出站信号机故障',
+        run: (sim) => {
+          const st = stationIdx('HQZ');
+          const sig = sim.topo.signals.find((x) => x.role === 'start' && x.station === st && sim.topo.links[x.link].track === 'DN');
+          if (!sig) return '未找到信号机';
+          injectFault(sim, 'signal', sig.id, 15 * 60);
+        },
+      },
+    ],
+  },
+  {
+    id: 'ljz-person',
+    name: '陆家嘴人员侵入轨行区',
+    desc: '早高峰陆家嘴站下行站台有乘客跳下轨行区。需立即紧急关闭站台、扣停接近列车；人员出清后恢复运营，随后一段计轴受扰需预复位并组织列车压道。',
+    objectives: [
+      '应答车站电话，立即紧急关闭陆家嘴下行站台，扣停接近列车',
+      '确认人员出清后取消紧急关闭，恢复运营并均衡间隔',
+      '计轴受扰：故障修复后计轴预复位，首列车RM压道出清',
+    ],
+    dayType: 'weekday', start: H(8, 15), duration: 40 * 60,
+    events: [
+      { at: 90, label: '陆家嘴下行站台人员侵入', run: (sim) => { callTrackPerson(sim, sim.topo.stations[stationIdx('LJZ')].platforms.DN); } },
+      {
+        at: 12 * 60, label: '陆家嘴—浦东南路计轴受扰',
+        run: (sim) => {
+          const a = chainOf(sim, 'LJZ'), b = chainOf(sim, 'PDN');
+          const sec = sim.topo.sections.find((x) => x.track === 'DN' && x.kind === 'plain' && x.chainFrom > a + 200 && x.chainTo < b - 200);
+          if (!sec) return '未找到区段';
+          injectFault(sim, 'axle', sec.id, 6 * 60);
+        },
+      },
+    ],
+  },
+  {
+    id: 'river-tunnel',
+    name: '越江隧道列车故障',
+    desc: '晚高峰一列上行载客列车在陆家嘴—南京东路越江隧道内牵引故障，无法自行恢复。需组织后车救援；救援期间东侧后续列车在上海科技馆折返，西侧在人民广场组织折返，维持两端运营。',
+    objectives: [
+      '应答司机电话，确认无法恢复后组织后车救援',
+      '东侧后续上行列车在上海科技馆折返，西侧列车在人民广场站后折返，避免隧道区间积压',
+      '救援完成后恢复全线运营，回归运行图',
+    ],
+    dayType: 'weekday', start: H(18, 0), duration: 50 * 60,
+    events: [
+      {
+        at: 90, label: '越江隧道上行列车故障',
+        run: (sim) => {
+          const tr = trainIn(sim, chainOf(sim, 'NJD') + 150, chainOf(sim, 'LJZ') - 150, false) ?? trainIn(sim, chainOf(sim, 'NJD') + 150, chainOf(sim, 'SJD'), false);
+          if (!tr) return '未找到合适列车';
+          injectFault(sim, 'trainFail', tr.id, 0, undefined, false);
+        },
+      },
+    ],
+  },
+  {
+    id: 'holiday-return',
+    name: '国庆返程高峰：定点加班车',
+    desc: '国庆最后返程日（节假日运行图），虹桥枢纽与浦东机场晚间到达客流集中。虹桥火车站往龙阳路定点加班车延长至次日00:05，浦东1号2号航站楼往中山公园临时加班至23:30。加班车只在指定车站停车（虹桥两站上下客，其余停靠站只下不上），其余车站以不超过45 km/h通过。期间虹桥2号航站楼下行站台门故障，加班车上又有乘客按下紧急报警。',
+    objectives: [
+      '保障加班车准点始发：虹桥火车站 23:04 / 23:30 / 23:45 / 00:05 往龙阳路；浦东1号2号航站楼 22:50 / 23:10 / 23:30 往中山公园',
+      '加班车停站与通过按计划执行（只下不上站不上客，通过站限速45 km/h）',
+      '虹桥2号航站楼下行站台门故障：确认人工关闭后办理互锁解除发车，修复后恢复',
+      '应答加班车乘客紧急报警；视情对虹桥火车站限流',
+    ],
+    dayType: 'weekend', start: H(22, 30), duration: 100 * 60,
+    fixedRuns: [
+      { ...HQ_LATE_RUN, departures: [H(23, 4), H(23, 30), H(23, 45), H(24, 5)] },
+      { from: 'PDA', to: 'ZSG', departures: [H(22, 50), H(23, 10), H(23, 30)], board: ['PDA'], alight: ['LYL', 'SJD', 'RMG'], depotFrom: 'CSD', depotTo: 'BZL' },
+    ],
+    events: [
+      { at: 60, label: '虹桥火车站返程大客流（×5）', run: (sim) => { injectFault(sim, 'surge', stationIdx('HQZ'), 70 * 60, 5); } },
+      { at: 2 * 60, label: '浦东机场到达大客流（×4）', run: (sim) => { injectFault(sim, 'surge', stationIdx('PDA'), 60 * 60, 4); } },
+      { at: 4 * 60, label: '虹桥2号航站楼大客流（×3）', run: (sim) => { injectFault(sim, 'surge', stationIdx('HQ2'), 60 * 60, 3); } },
+      { at: 50 * 60, label: '虹桥2号航站楼下行站台门故障', run: (sim) => { injectFault(sim, 'psd', sim.topo.stations[stationIdx('HQ2')].platforms.DN, 12 * 60); } },
+      {
+        at: 70 * 60, label: '加班车乘客紧急报警',
+        run: (sim) => {
+          const tr = extraTrain(sim);
+          if (!tr) return '未找到加班车';
+          callPecu(sim, tr);
+          return `${tr.tripNo} 车厢内乘客按下紧急报警（错过下车站）`;
+        },
+      },
+    ],
+  },
+  {
+    id: 'njd-closure',
+    name: '国庆南京东路封站跳停',
+    desc: '国庆假期，外滩客流管控，公安部门通告16:00起南京东路站临时封站：列车跳站通过、出入口关闭、不办理换乘。客流转向人民广场、陆家嘴，两站站台迅速拥挤；一列下行列车通过南京东路时有乘客要求下车，按下紧急报警。',
+    objectives: [
+      '16:00 前对南京东路上、下行站台设置跳停（封站），封站期间不得取消',
+      '列车以不超过45 km/h通过南京东路站台',
+      '人民广场、陆家嘴大客流：视情限流，扣车均衡间隔',
+      '应答列车乘客紧急报警，在前方站处置',
+    ],
+    dayType: 'weekend', start: H(15, 40), duration: 60 * 60,
+    events: [
+      {
+        at: 60, label: '公安通告：16:00起南京东路站封站',
+        run: (sim) => { sim.log('B', '客流', '公安通告：外滩地区客流管控，16:00起南京东路站临时封站，列车跳站通过（请设置上下行站台跳停）'); },
+      },
+      {
+        at: 21 * 60, label: '南京东路站封站',
+        run: (sim) => {
+          if (stationClosed(sim, 'NJD')) { sim.log('I', '客流', '南京东路站已封站，出入口关闭'); return; }
+          closeStation(sim, 'NJD', true);
+          sim.log('B', '客流', '南京东路站未按时设置跳停，车站已自行封站（出入口关闭）');
+          return '未按时设置跳停，系统代为封站';
+        },
+      },
+      { at: 21 * 60, label: '人民广场客流激增（×3）', run: (sim) => { injectFault(sim, 'surge', stationIdx('RMG'), 38 * 60, 3); } },
+      { at: 24 * 60, label: '陆家嘴客流激增（×3.5）', run: (sim) => { injectFault(sim, 'surge', stationIdx('LJZ'), 35 * 60, 3.5); } },
+      {
+        at: 33 * 60, label: '下行列车乘客要求在南京东路下车',
+        run: (sim) => {
+          const tr = trainIn(sim, chainOf(sim, 'RMG') + 200, chainOf(sim, 'LJZ') - 200, true) ?? trainIn(sim, chainOf(sim, 'JAS'), chainOf(sim, 'PDN'), true);
+          if (!tr) return '未找到合适列车';
+          callPecu(sim, tr);
+        },
+      },
     ],
   },
 ];

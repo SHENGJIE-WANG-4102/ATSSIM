@@ -466,10 +466,11 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
       return;
     }
     if (task.k === 'stop') {
-      // skip-stop handling (not for terminal / non-revenue)
+      // skip-stop handling (not for terminal / non-revenue); decided far
+      // enough out to come down to the platform pass limit
       const p = topo.berths[task.berth].platform;
       const isTripEnd = task.dep === null;
-      if (task.revenue && !isTripEnd && tr.v > 0.1 && (sim.plat[p].skip || tr.skipStations.has(task.station)) && tr.stopDist < 400) {
+      if (task.revenue && !isTripEnd && tr.v > 0.1 && (sim.plat[p].skip || tr.skipStations.has(task.station)) && tr.stopDist < 900) {
         tr.skipStations.delete(task.station);
         sim.log('I', '调度', `列车 ${trainLabel(tr)} 跳停 ${STATIONS[task.station].name}`);
         tr.tasks.shift();

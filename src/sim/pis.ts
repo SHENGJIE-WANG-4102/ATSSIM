@@ -33,7 +33,7 @@ export function computePis(sim: Sim, station: number): PisData {
       const dest = t.dep === null ? '本站终到' : trip ? STATIONS[trip.to].name : tr.destText;
       // a train starting here waits for its planned departure
       if (status === 'eta' && t.dep !== null && t.arr === null) eta = Math.max(eta, t.dep - 60);
-      out[track].push({ dest, destSt: t.dep === null ? station : trip ? trip.to : -1, dwellRemaining: i === 0 && tr.phase === 'dwell' && t.dep !== null ? Math.max(0, tr.dwellUntil - sim.t) : undefined, eta: Math.max(0, eta - sim.t), status, trip: tr.tripNo, load: Math.min(1.3, tr.load / LINE_INFO.capacity) });
+      out[track].push({ dest, ...(t.noBoard ? { noBoard: true } : {}), destSt: t.dep === null ? station : trip ? trip.to : -1, dwellRemaining: i === 0 && tr.phase === 'dwell' && t.dep !== null ? Math.max(0, tr.dwellUntil - sim.t) : undefined, eta: Math.max(0, eta - sim.t), status, trip: tr.tripNo, load: Math.min(1.3, tr.load / LINE_INFO.capacity) });
       break;
     }
   }
@@ -41,6 +41,8 @@ export function computePis(sim: Sim, station: number): PisData {
   // notices
   const notes: string[] = [];
   const s = topo.stations[station];
+  if (sim.plat[s.platforms.DN].skip && sim.plat[s.platforms.UP].skip) notes.push('本站临时封站，列车通过不停车，请乘客至邻近车站乘车');
+  else if (sim.plat[s.platforms.DN].skip || sim.plat[s.platforms.UP].skip) notes.push('本站部分方向列车跳站通过，请留意列车信息');
   if (sim.plat[s.platforms.DN].esp || sim.plat[s.platforms.UP].esp) notes.push('站台临时停止服务，请听从工作人员指挥');
   if (sim.plat[s.platforms.DN].surge > 1 || sim.plat[s.platforms.UP].surge > 1) notes.push('本站客流较大，请有序候车，注意安全');
   if (sim.plat[s.platforms.DN].limitUntil > sim.t) notes.push('本站实施客流控制，请耐心等候');

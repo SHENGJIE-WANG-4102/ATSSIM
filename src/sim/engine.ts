@@ -28,7 +28,7 @@ import { initYards, vehicleName } from './yard';
 import { radioTick, answerCall, type CallSpec } from './radio';
 import { dispatcherTick, newDispatcher, type DispatcherState } from './dispatcher';
 import { exposureOf, envTick, initPossessions, setWeather } from './env';
-import { newMetrics, scenarioTick, startScenario, endScenario, randomTick, setRandomFaults } from './scenario';
+import { newMetrics, scenarioTick, startScenario, endScenario, randomTick, setRandomFaults, SCENARIOS } from './scenario';
 import { computePis } from './pis';
 import { computeDmi, dmiTick } from './dmi';
 import { passengersTick } from './passengers';
@@ -179,7 +179,9 @@ export class Sim {
     this.autoRadio = config.autoRadio ?? true;
     this.autoDispatch = config.autoDispatch ?? false;
     this.metrics = newMetrics(config.startTime);
-    this.planCtx = { topo: this.topo, rt: this.rt, dayType: config.dayType };
+    // a scenario may run its own fixed-time special trains (加班车)
+    const fixedRuns = config.scenario ? SCENARIOS.find((x) => x.id === config.scenario)?.fixedRuns : undefined;
+    this.planCtx = { topo: this.topo, rt: this.rt, dayType: config.dayType, ...(fixedRuns ? { fixedRuns } : {}) };
     this.plan = generatePlan(this.planCtx);
     const { topo } = this;
     this.sw = topo.switches.map(() => ({ pos: 'N', target: 'N', moveUntil: 0, failed: false, fieldLock: false, singleLock: false, lockCount: 0, blocked: false }));

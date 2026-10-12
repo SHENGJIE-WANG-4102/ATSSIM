@@ -109,6 +109,17 @@ export function initPossessions(sim: Sim) {
   });
 }
 
+/**
+ * A possession of the interval east of station `west` that is (still) in
+ * force until `to` — used by scenarios for a possession that overruns.
+ */
+export function addPossession(sim: Sim, west: number, to: number): Possession {
+  const p: Possession = { id: sim.possessions.length, name: `${STATIONS[west].name}—${STATIONS[west + 1].name} 区间`, sections: intervalSections(sim, west), from: sim.t, to, state: 'active' };
+  sim.possessions.push(p);
+  for (const s of p.sections) { sim.sec[s].blocked = true; sim.sec[s].poss = p.id; }
+  return p;
+}
+
 function possessionClear(sim: Sim, p: Possession): boolean {
   const secs = new Set(p.sections);
   const { topo } = sim;

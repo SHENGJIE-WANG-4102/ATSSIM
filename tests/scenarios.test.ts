@@ -4,7 +4,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Sim } from '../src/sim/engine';
-import { makeSim, runFor, assertNoCollision, assertIntegrity, pickTrain, dirOf } from './helpers';
+import { makeSim, runFor, runUntil, assertNoCollision, assertIntegrity, pickTrain, dirOf } from './helpers';
+import { SCENARIOS } from '../src/sim/scenario';
 import { trainAheadOf } from '../src/sim/ats';
 
 const st = (sim: Sim, name: string) => sim.topo.stations.find((s) => s.name === name)!;
@@ -179,4 +180,22 @@ describe('faults', () => {
     expect(maxWait).toBeGreaterThan(800);
     expect(sim.events.some((e) => e.text.includes('人民广场 大客流'))).toBe(true);
   });
+});
+
+describe('scenario catalogue', () => {
+  // each training scenario finds the trains and equipment its events act on,
+  // and runs on past its last event with auto-answered calls without a
+  // safety violation
+  for (const id of ['dawn-poss', 'gll-loop', 'hq-night', 'ciie-close', 'ljz-person', 'river-tunnel', 'holiday-return', 'njd-closure']) {
+    it(`${id} fires all its events and runs on safely`, () => {
+      const def = SCENARIOS.find((s) => s.id === id)!;
+      const sim = makeSim(def.dayType, def.start, { seed: 3, scenario: id });
+      runUntil(sim, def.start + Math.min(def.duration, def.events.at(-1)!.at + 5 * 60), stepCheck);
+      expect(sim.scenario?.id).toBe(id);
+      expect(sim.scenarioFired).toBe(def.events.length);
+      const fired = sim.events.filter((e) => e.text.startsWith('场景事件：'));
+      expect(fired.length).toBe(def.events.length);
+      expect(fired.filter((e) => e.text.includes('未找到')).map((e) => e.text)).toEqual([]);
+    }, 400_000);
+  }
 });

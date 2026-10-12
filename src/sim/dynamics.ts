@@ -4,6 +4,7 @@
  * run-time pre-computation, so planned times are achievable in the sim.
  */
 import type { Topology } from './topology';
+import { OPERATIONS } from '../data/line2';
 
 export const PERF = {
   /** max traction acceleration at low speed (m/s²) */
@@ -67,14 +68,16 @@ export interface RunTimes {
   /** pass-through times between station centres (non-stopping runs) */
   passDn: number[];
   passUp: number[];
+  /** the same for a train in passenger service, which passes platforms at
+   *  OPERATIONS.platformPassKmh at most (跨站/跳停) */
 }
 
 interface LimitSeg { from: number; to: number; v: number }
 
-function trackProfile(topo: Topology, track: 'DN' | 'UP'): LimitSeg[] {
+function trackProfile(topo: Topology, track: 'DN' | 'UP', platformKmh = Infinity): LimitSeg[] {
   return topo.links
     .filter((l) => l.track === track)
-    .map((l) => ({ from: Math.min(l.chainA, l.chainB), to: Math.max(l.chainA, l.chainB), v: l.limit / 3.6 }))
+    .map((l) => ({ from: Math.min(l.chainA, l.chainB), to: Math.max(l.chainA, l.chainB), v: Math.min(l.limit, l.platform >= 0 ? platformKmh : Infinity) / 3.6 }))
     .sort((a, b) => a.from - b.from);
 }
 
@@ -134,26 +137,33 @@ function simulateRun(prof: LimitSeg[], sgn: 1 | -1, start: number, end: number, 
   return { t, markTimes };
 }
 
-export function computeRunTimes(topo: Topology, trainLen: number): RunTimes {
+export function computeRunTimes(topo: Topology, trainLen: number, stopPlatformKmh = Infinity): RunTimes {
   const ch = topo.stations.map((s) => s.chain);
   const n = ch.length;
   const half = trainLen / 2;
-  const profDn = trackProfile(topo, 'DN');
-  const profUp = trackProfile(topo, 'UP');
+  const profDn = trackProfile(topo, 'DN', stopPlatformKmh);
+  const profUp = trackProfile(topo, 'UP', stopPlatformKmh);
   const dn: number[] = [];
   const up: number[] = [];
   for (let i = 0; i + 1 < n; i++) {
     dn.push(simulateRun(profDn, 1, ch[i] + half, ch[i + 1] + half, trainLen, true).t);
     up.push(simulateRun(profUp, -1, ch[i + 1] - half, ch[i] - half, trainLen, true).t);
   }
-  const passD = simulateRun(profDn, 1, ch[0], ch[n - 1], trainLen, false, ch).markTimes;
-  const passU = simulateRun(profUp, -1, ch[n - 1], ch[0], trainLen, false, [...ch].reverse()).markTimes.reverse();
-  const passDn: number[] = [];
-  const passUp: number[] = [];
-  for (let i = 0; i + 1 < n; i++) {
-    passDn.push(Math.max(20, (passD[i + 1] || 0) - (passD[i] || 0)));
-    passUp.push(Math.max(20, (passU[i] || 0) - (passU[i + 1] || 0)));
-  }
+  const pass = (pDn: LimitSeg[], pUp: LimitSeg[]) => {
+    const passD = simulateRun(pDn, 1, ch[0], ch[n - 1], trainLen, false, ch).markTimes;
+    const passU = simulateRun(pUp, -1, ch[n - 1], ch[0], trainLen, false, [...ch].reverse()).markTimes.reverse();
+    const passDn: number[] = [];
+    const passUp: number[] = [];
+    for (let i = 0; i + 1 < n; i++) {
+      passDn.push(Math.max(20, (passD[i + 1] || 0) - (passD[i] || 0)));
+      passUp.push(Math.max(20, (passU[i] || 0) - (passU[i + 1] || 0)));
+    }
+    return [passDn, passUp];
+  };
+  // a train not stopping passes every platform at the platform pass limit
+  // (PSD glass vs. the pressure wave), loaded or empty
+  const k = OPERATIONS.platformPassKmh;
+  const [passDn, passUp] = pass(trackProfile(topo, 'DN', k), trackProfile(topo, 'UP', k));
   // Planning margin is at most 5% of the minimum ATO run (user calibration limit).
   const pad = (a: number[]) => a.map((t) => Math.floor(t * 1.05 * 10) / 10);
   return { dn: pad(dn), up: pad(up), passDn: pad(passDn), passUp: pad(passUp) };

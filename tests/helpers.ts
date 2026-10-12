@@ -4,18 +4,20 @@ import { deserialize } from 'node:v8';
 import { Sim } from '../src/sim/engine';
 import type { DayType, SimConfig, Train } from '../src/sim/model';
 import { capture, restore, type Checkpoint } from '../src/sim/state';
+import { SCENARIOS } from '../src/sim/scenario';
 
 // Scenarios share a seed and initial time. Reuse a verified warm-up snapshot
 // (made once per run by tests/globalSetup.ts, or here on first use); each test
 // still gets its own simulator and mutable state. The configuration only
 // takes effect from `until` (autoRadio, scenario), so it does not change the
-// warm-up.
+// warm-up — except a scenario's own fixed-time trains, which change the plan.
 const warmups = new Map<string, Checkpoint>();
 
 export function makeSim(dayType: DayType = 'weekday', until = 8 * 3600, config: Partial<SimConfig> = {}): Sim {
   const seed = config.seed ?? 7;
   const sim = new Sim({ dayType, dateLabel: 'test', startTime: until, seed, ...config });
-  const key = `${dayType}-${until}-${seed}`;
+  const own = config.scenario && SCENARIOS.find((x) => x.id === config.scenario)?.fixedRuns;
+  const key = `${dayType}-${until}-${seed}${own ? `-${config.scenario}` : ''}`;
   let cp = warmups.get(key);
   const file = process.env.ATSSIM_WARMUPS && join(process.env.ATSSIM_WARMUPS, `${key}.bin`);
   if (!cp && file && existsSync(file)) warmups.set(key, cp = deserialize(readFileSync(file)) as Checkpoint);

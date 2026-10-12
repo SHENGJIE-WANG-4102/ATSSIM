@@ -7,6 +7,8 @@ import { describe, expect, it } from 'vitest';
 import { Sim } from '../src/sim/engine';
 import { validatePlan, applyOverlay, OVERLAY_PRESETS, terminalOccupancy } from '../src/sim/timetable';
 import type { DayType } from '../src/sim/model';
+import { SCENARIOS } from '../src/sim/scenario';
+import { STATIONS } from '../src/data/line2';
 
 const fmtIssues = (xs: { code: string; text: string }[]) => xs.map((i) => `${i.code} ${i.text}`).join('\n');
 
@@ -114,5 +116,42 @@ describe('timetable validator', () => {
     for (const stop of feeder.stops) { stop.arr -= shift; stop.dep -= shift; }
     expect(validatePlan(sim.planCtx, sim.plan).some(issue => issue.code === 'TAIL_ORDER'
       && issue.blocks?.includes(second.block) && issue.blocks.includes(first.block))).toBe(true);
+  });
+});
+
+describe('fixed-time special trains (定点班车)', () => {
+  const idx = (id: string) => STATIONS.findIndex((s) => s.id === id);
+  for (const dayType of ['weekday', 'weekend'] as DayType[]) {
+    it(`${dayType}: 虹桥火车站 23:04 / 23:30 to 龙阳路, set-down only, passing the rest`, () => {
+      const sim = new Sim({ dayType, dateLabel: 'test', startTime: 4 * 3600, seed: 1 });
+      const runs = sim.plan.trips.filter((t) => t.kind === 'extra' && !t.cancelled);
+      expect(runs.map((t) => t.stops[0].dep).sort()).toEqual([23 * 3600 + 4 * 60, 23 * 3600 + 30 * 60]);
+      for (const t of runs) {
+        expect([t.from, t.to]).toEqual([idx('HQZ'), idx('LYL')]);
+        const stopping = t.stops.filter((s) => s.stop).map((s) => STATIONS[s.st].id);
+        expect(stopping).toEqual(['HQZ', 'HQ2', 'SHR', 'WNL', 'ZSG', 'JAS', 'RMG', 'SJD', 'LYL']);
+        expect(t.stops.filter((s) => s.noBoard).map((s) => STATIONS[s.st].id)).toEqual(['SHR', 'WNL', 'ZSG', 'JAS', 'RMG', 'SJD']);
+        // a train already on the line carries it, into 龙阳路 depot
+        const b = sim.plan.blocks[t.block];
+        expect(b.end).toMatchObject({ kind: 'depot', depot: sim.topo.depots.findIndex((d) => d.key === 'LYD') });
+      }
+    });
+  }
+  it('holiday-return scenario: its own runs both ways, plan feasible', () => {
+    const def = SCENARIOS.find((s) => s.id === 'holiday-return')!;
+    const sim = new Sim({ dayType: def.dayType, dateLabel: 'test', startTime: 4 * 3600, seed: 1, scenario: def.id });
+    expect(fmtIssues(validatePlan(sim.planCtx, sim.plan))).toBe('');
+    const runs = sim.plan.trips.filter((t) => t.kind === 'extra' && !t.cancelled);
+    expect(runs.filter((t) => t.dir === 'DN').length).toBe(4);
+    const air = runs.filter((t) => t.dir === 'UP');
+    expect(air.map((t) => t.stops[0].dep)).toEqual([22 * 3600 + 50 * 60, 23 * 3600 + 10 * 60, 23 * 3600 + 30 * 60]);
+    for (const t of air) {
+      expect([t.from, t.to]).toEqual([idx('PDA'), idx('ZSG')]);
+      // terminating at 中山公园, the train goes on empty into 北翟路
+      const b = sim.plan.blocks[t.block];
+      const next = sim.plan.trips[b.trips[b.trips.indexOf(t.id) + 1]];
+      expect(next.revenue).toBe(false);
+      expect(next.from).toBe(idx('ZSG'));
+    }
   });
 });

@@ -433,7 +433,41 @@ export const OPERATIONS = {
   minTurnback: { PXL: 240, PDA: 240, SHR: 240, GLL: 100, HQZ: 120 } as Record<string, number>,
   /** overnight stabling at terminal tails (approx) */
   terminalStabling: { PXL: 2, PDA: 2 } as Record<string, number>,
+  /** a train passing a platform without stopping (跨站/跳停) runs through it at no more than this (km/h) */
+  platformPassKmh: 45,
 };
+
+/**
+ * A fixed-time special train run (定点班车 / 加班车): from `from` to `to` at
+ * the listed departures, boarding only at `board`, setting down only at
+ * `alight` (and at `to`), passing the other stations at the platform pass
+ * limit. The train comes from `depotFrom`'s side and goes into `depotTo`.
+ */
+export interface FixedRun {
+  from: string; to: string;
+  /** departures from `from` (s since midnight of the service day) */
+  departures: number[];
+  /** stations where passengers may board (and alight) */
+  board: string[];
+  /** stations where passengers may only alight */
+  alight: string[];
+  depotFrom: string; depotTo: string;
+}
+
+/**
+ * Regular fixed-time trains after the last train (常态末班车后定点班车),
+ * published timetable: 虹桥火车站 23:04 / 23:30 → 龙阳路, boarding only at
+ * 虹桥火车站 and 虹桥2号航站楼 (two minutes later), set-down only at the listed
+ * stations (威宁路 since 2025-12-31), passing the others.
+ */
+export const HQ_LATE_RUN: FixedRun = {
+  from: 'HQZ', to: 'LYL',
+  departures: [23 * 3600 + 4 * 60, 23 * 3600 + 30 * 60],
+  board: ['HQZ', 'HQ2'],
+  alight: ['SHR', 'WNL', 'ZSG', 'JAS', 'RMG', 'SJD'],
+  depotFrom: 'BZL', depotTo: 'LYD',
+};
+export const FIXED_LATE_TRAINS: FixedRun[] = [HQ_LATE_RUN];
 
 // ---------------------------------------------------------------------------
 // Environment (APPROXIMATIONS)

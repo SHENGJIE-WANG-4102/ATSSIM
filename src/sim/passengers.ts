@@ -22,7 +22,8 @@ function boardingWindows(sim: Sim) {
     for (const trip of sim.plan.trips) if (trip.revenue && !trip.cancelled)
       for (let i = 0; i < trip.stops.length - 1; i++) {
         const stop = trip.stops[i];
-        if (!stop.stop) continue;
+        // (a set-down-only stop is no boarding opportunity)
+        if (!stop.stop || stop.noBoard) continue;
         const platform = sim.topo.stations[stop.st].platforms[trip.dir];
         first[platform] = Math.min(first[platform], stop.dep - 900);
         last[platform] = Math.max(last[platform], stop.dep);
@@ -64,6 +65,10 @@ export function passengersTick(sim: Sim, dt: number) {
     // no boarding demand towards the line end
     const towardsEnd = (p.track === 'DN' && p.station === STATIONS.length - 1) || (p.track === 'UP' && p.station === 0);
     if (towardsEnd) { ps.waiting = 0; continue; }
+    // a closed station (封站: both platforms skipped) has its entrances shut;
+    // those still on the platform are led out
+    const sp = topo.stations[p.station].platforms;
+    if (sim.plat[sp.DN].skip && sim.plat[sp.UP].skip) { ps.waiting *= Math.max(0, 1 - dt / 120); continue; }
     const lambda = scale * boardingDemand(sim.plan.dayType, p.station, p.track as 'DN' | 'UP', sim.t) * ps.surge;
     const inflow = lambda * dt * (0.85 + 0.3 * sim.rng());
     if (sim.t < windows.first[p.id]) { ps.waiting = 0; continue; }
@@ -92,14 +97,18 @@ export function boardAndAlight(sim: Sim, tr: Train, platform: number, task: Stop
   const st = p.station;
   const dirDN = p.track === 'DN';
   // alighting share: this station's weight among this and the remaining stations
+  // (a trip with a stopping pattern: among the stations it still stops at)
   let rem = 0;
-  for (let i = st; dirDN ? i < STATIONS.length : i >= 0; i += dirDN ? 1 : -1) rem += STATIONS[i].demand;
+  const trip = task.trip >= 0 ? sim.plan.trips[task.trip] : undefined;
+  if (trip?.revenue && trip.stops.some((x) => !x.stop)) {
+    for (const x of trip.stops) if (x.stop && (dirDN ? x.st >= st : x.st <= st)) rem += STATIONS[x.st].demand;
+  } else for (let i = st; dirDN ? i < STATIONS.length : i >= 0; i += dirDN ? 1 : -1) rem += STATIONS[i].demand;
   const isEnd = task.dep === null;
   const alightFrac = isEnd ? 1 : Math.min(1, (STATIONS[st].demand / Math.max(0.1, rem)));
   const alight = Math.round(tr.load * alightFrac);
   tr.load -= alight;
   let board = 0;
-  if (!isEnd && task.revenue) {
+  if (!isEnd && task.revenue && !task.noBoard) {
     const room = Math.max(0, LINE_INFO.crushCapacity - tr.load);
     board = Math.min(Math.floor(ps.waiting), room);
     ps.waiting -= board;
