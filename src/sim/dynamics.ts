@@ -137,7 +137,8 @@ function simulateRun(prof: LimitSeg[], sgn: 1 | -1, start: number, end: number, 
   return { t, markTimes };
 }
 
-export function computeRunTimes(topo: Topology, trainLen: number, stopPlatformKmh = Infinity): RunTimes {
+/** stopping runs enter and leave the platforms at no more than `stopPlatformKmh` */
+export function computeRunTimes(topo: Topology, trainLen: number, stopPlatformKmh = OPERATIONS.platformStopKmh): RunTimes {
   const ch = topo.stations.map((s) => s.chain);
   const n = ch.length;
   const half = trainLen / 2;
@@ -164,7 +165,7 @@ export function computeRunTimes(topo: Topology, trainLen: number, stopPlatformKm
   // (PSD glass vs. the pressure wave), loaded or empty
   const k = OPERATIONS.platformPassKmh;
   const [passDn, passUp] = pass(trackProfile(topo, 'DN', k), trackProfile(topo, 'UP', k));
-  // Planning margin is at most 5% of the minimum ATO run (user calibration limit).
-  const pad = (a: number[]) => a.map((t) => Math.floor(t * 1.05 * 10) / 10);
+  // planning margin over the minimum ATO run (OPERATIONS.runMargin)
+  const pad = (a: number[]) => a.map((t) => Math.floor(t * (1 + OPERATIONS.runMargin) * 10) / 10);
   return { dn: pad(dn), up: pad(up), passDn: pad(passDn), passUp: pad(passUp) };
 }

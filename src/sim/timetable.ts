@@ -27,15 +27,15 @@ export interface Template {
 
 export const TEMPLATES: Record<string, Template> = {
   weekdayAM: {
-    id: 'weekdayAM', name: '工作日早高峰', desc: '大小交路交替：大—大—小，淞虹路—广兰路 2\'30"，外段平均 3\'45"',
-    pattern: ['big', 'big', 'small'], headway: 150, dwellFactor: 1.15,
+    id: 'weekdayAM', name: '工作日早高峰', desc: '大小交路交替：大—大—小，淞虹路—广兰路 2\'00"，外段 3\'00"',
+    pattern: ['big', 'big', 'small'], headway: 120, dwellFactor: 1.15,
   },
   weekdayPM: {
-    id: 'weekdayPM', name: '工作日晚高峰', desc: '大小交路交替：大—大—小，淞虹路—广兰路 2\'30"，外段平均 3\'45"',
-    pattern: ['big', 'big', 'small'], headway: 150, dwellFactor: 1.1,
+    id: 'weekdayPM', name: '工作日晚高峰', desc: '大小交路交替：大—大—小，淞虹路—广兰路 3\'00"，外段 4\'30"',
+    pattern: ['big', 'big', 'small'], headway: 180, dwellFactor: 1.1,
   },
   weekdayOff: {
-    id: 'weekdayOff', name: '工作日平峰', desc: '单一大交路 5\'30"', pattern: ['big'], headway: 330, dwellFactor: 1.0,
+    id: 'weekdayOff', name: '工作日平峰', desc: '单一大交路 5\'00"', pattern: ['big'], headway: 300, dwellFactor: 1.0,
   },
   weekdayEvening: {
     id: 'weekdayEvening', name: '工作日夜间平峰', desc: '单一大交路 7\'00"', pattern: ['big'], headway: 420, dwellFactor: 0.95,
@@ -222,21 +222,28 @@ export function generatePlan(ctx: PlanContext): Plan {
   const factorAt = (t: number) => TEMPLATES[periodAt(periods, t).template].dwellFactor;
   // A peak is a whole-core promise, not an origin departure change. Allow
   // the complete core traversal plus one headway for its leading wave.
-  const coreLead = Math.ceil(Math.max(
-    ...periods.filter(p => p.template === 'weekdayAM' || p.template === 'weekdayPM').flatMap(p =>
-      (['DN', 'UP'] as const).map(dir => {
-        const from = dir === 'DN' ? SHR : GLL, to = dir === 'DN' ? GLL : SHR;
-        const stops = buildStops(ctx, dir, from, to, p.from, true, factorAt);
-        return stops.at(-1)!.arr - p.from + 150 + 30;
-      }))
-  ) / 150) * 150;
   const peaks = periods.filter(p => p.template === 'weekdayAM' || p.template === 'weekdayPM');
-  const streamAt = (t: number): Period => {
+  const peakHw = (p: Period) => TEMPLATES[p.template].headway;
+  const coreLead = new Map(peaks.map(p => {
+    const hw = peakHw(p);
+    const lead = Math.max(...(['DN', 'UP'] as const).map(dir => {
+      const from = dir === 'DN' ? SHR : GLL, to = dir === 'DN' ? GLL : SHR;
+      const stops = buildStops(ctx, dir, from, to, p.from, true, factorAt);
+      return stops.at(-1)!.arr - p.from + hw + 30;
+    }));
+    return [p, Math.ceil(lead / hw) * hw] as const;
+  }));
+  /** the steady peak stream from its leading wave, after a 20 min run-in from the headway before */
+  const streamAt = (t: number): Period & { steady?: boolean } => {
     for (const peak of peaks) {
-      const start = peak.from - coreLead, transition = start - 1200;
-      if (t >= start && t < peak.to) return { ...peak, from: start, headway: 150 };
-      if (t >= transition && t < start) return { ...peak, from: transition, to: start,
-        headway: 150 + 150 * (start - t) / 1200, label: `${peak.label}渐进预置` };
+      const hw = peakHw(peak);
+      const start = peak.from - coreLead.get(peak)!, transition = start - 1200;
+      if (t >= start && t < peak.to) return { ...peak, from: start, headway: hw, steady: true };
+      if (t >= transition && t < start) {
+        const before = periodAt(periods, transition);
+        const prev = Math.max(hw, before.headway ?? TEMPLATES[before.template].headway);
+        return { ...peak, from: transition, to: start, headway: hw + (prev - hw) * (start - t) / 1200, label: `${peak.label}渐进预置` };
+      }
     }
     return periodAt(periods, t);
   };
@@ -263,10 +270,10 @@ export function generatePlan(ctx: PlanContext): Plan {
     buildStops(ctx, dir, from, to, first, true, factorAt).find(x => x.st === ref)!.dep;
   const nextSlot = (t: number, dir: TrackDir) => {
     const p = streamAt(t);
-    const candidate = t + headwayAt(p.headway === 150 ? t : t + headwayAt(t) / 2);
+    const candidate = t + headwayAt(p.steady ? t : t + headwayAt(t) / 2);
     // Join the leading peak wave without a short insertion or a long gap.
-    const boundary = peaks.map(p => p.from - coreLead + (dir === 'UP' ? (p.template === 'weekdayPM' ? 0 : upPhase) : 0)).find(b => b > t && b <= candidate);
-    if (boundary !== undefined) return boundary - t >= 90 ? boundary : boundary + 150;
+    const join = peaks.map(p => ({ b: p.from - coreLead.get(p)! + (dir === 'UP' ? (p.template === 'weekdayPM' ? 0 : upPhase) : 0), hw: peakHw(p) })).find(x => x.b > t && x.b <= candidate);
+    if (join) return join.b - t >= 90 ? join.b : join.b + join.hw;
     return candidate;
   };
 
@@ -305,11 +312,11 @@ export function generatePlan(ctx: PlanContext): Plan {
     };
     const lastBigWestDep = OPERATIONS.lastBigWestboundArrival - fullUp(0.95);
     const firstThrough = firstReference('UP', E, W, GLL, OPERATIONS.firstEastTerminusDep);
-    let t = (peaks.length ? Math.min(firstThrough, peaks[0].from - coreLead - 1200) : firstThrough) + (ctx.dayType === 'weekday' ? upPhase : 0);
+    let t = (peaks.length ? Math.min(firstThrough, peaks[0].from - coreLead.get(peaks[0])! - 1200) : firstThrough) + (ctx.dayType === 'weekday' ? upPhase : 0);
     for (let guard = 0; guard < 2000; guard++) {
       const p = streamAt(t);
       const tpl = TEMPLATES[p.template];
-      if (p.label !== lastPeriod) { idx = p.template === 'weekdayPM' ? 1 : 0; lastPeriod = p.label; }
+      if (p.label !== lastPeriod) { idx = 0; lastPeriod = p.label; }
       let kind = tpl.pattern[idx % tpl.pattern.length] as 'big' | 'small' | 'late';
       if (kind === 'big' && atReference('UP', E, W, GLL, t)[0].dep < OPERATIONS.firstEastTerminusDep - .01) kind = 'small';
       if (kind === 'big') {
@@ -333,6 +340,9 @@ export function generatePlan(ctx: PlanContext): Plan {
   // terminal instead (延伸运行), where the tails have room.
   {
     const mt = minTurn(GLL);
+    // the departing train is out of the west throat and the next arrival's
+    // route into the middle track set within this time
+    const GLL_CLEAR = 60;
     const arrAt = (t: GenTrip) => t.stops[t.stops.length - 1].arr;
     const arrivals = trips.filter((t) => t.dir === 'DN' && t.to === GLL).sort((a, b) => arrAt(a) - arrAt(b));
     const deps = trips.filter((t) => t.dir === 'UP' && t.from === GLL).map((t) => t.stops[0].dep).sort((a, b) => a - b);
@@ -340,7 +350,7 @@ export function generatePlan(ctx: PlanContext): Plan {
       const A = arrivals[i];
       const d = deps.find((x) => x >= arrAt(A) + mt - 1e-6);
       // (no departure within a slot or two: the train is withdrawn to the depot as before)
-      if (d === undefined || d - arrAt(A) > mt + 450 || d + MIN_HEADWAY <= arrAt(arrivals[i + 1])) continue;
+      if (d === undefined || d - arrAt(A) > mt + 450 || d + GLL_CLEAR <= arrAt(arrivals[i + 1])) continue;
       A.to = E;
       A.stops = buildStops(ctx, 'DN', A.from, E, A.stops[0].dep, true, factorAt);
     }

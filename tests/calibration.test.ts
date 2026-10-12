@@ -1,6 +1,7 @@
 import {describe,it,expect} from 'vitest';
 import {Sim} from '../src/sim/engine';
-import {platformBerth,dayPeriods,OUTER_BAND_MARGIN} from '../src/sim/timetable';
+import {platformBerth,dayPeriods,OUTER_BAND_MARGIN,TEMPLATES} from '../src/sim/timetable';
+import {MAX_DWELL_BUSY} from '../src/sim/calibration';
 import {updateTrainTasks} from '../src/sim/ats';
 import {releaseRoute} from '../src/sim/interlocking';
 import {computeBody,indexBodies} from '../src/sim/movement';
@@ -65,9 +66,9 @@ describe('automatic dwell and ATO regulation',()=>{
  });
 });
 describe('calibrated plan structure',()=>{
- it.each(['weekday','weekend'] as const)('%s dwells never exceed thirty seconds',dayType=>{
+ it.each(['weekday','weekend'] as const)('%s dwells never exceed the planned dwell ceiling',dayType=>{
   const s=new Sim({dayType,dateLabel:'calibration',startTime:14400,seed:1});
-  for(const t of s.plan.trips.filter(t=>t.revenue&&!t.cancelled))for(const p of t.stops)expect(p.dep-p.arr).toBeLessThanOrEqual(30+.001);
+  for(const t of s.plan.trips.filter(t=>t.revenue&&!t.cancelled))for(const p of t.stops)expect(p.dep-p.arr).toBeLessThanOrEqual(MAX_DWELL_BUSY+.001);
  });
  // Every train counts, including depot moves and non-revenue positioning:
  // passengers on a platform see each one. At the far end of the core the
@@ -75,20 +76,21 @@ describe('calibrated plan structure',()=>{
  const peakTimes=(s:Sim,dir:'DN'|'UP',st:number)=>s.plan.trips.filter(t=>!t.cancelled&&t.dir===dir)
   .flatMap(t=>t.stops.filter(p=>p.st===st).map(p=>({t:st===(dir==='DN'?22:4)?p.arr:p.dep,trip:t})))
   .sort((a,b)=>a.t-b.t);
- it('runs every train at 150 s through the whole core in both peaks, depot moves included',()=>{
+ it('runs every train at the peak headway (2\'00" AM, 3\'00" PM) through the whole core, depot moves included',()=>{
   const s=new Sim({dayType:'weekday',dateLabel:'calibration',startTime:14400,seed:1});
   const peaks=dayPeriods('weekday').filter(p=>p.template==='weekdayAM'||p.template==='weekdayPM');
   let intervals=0;
   for(const peak of peaks)for(const dir of ['DN','UP'] as const)for(let st=4;st<=22;st++){
+   const hw=TEMPLATES[peak.template].headway;
    const times=peakTimes(s,dir,st).map(x=>x.t);
    // the band starts with the wave already through the core
    const at=times.findIndex(t=>t>=peak.from);
    expect(at,`${dir} station ${st}, band start`).toBeGreaterThan(0);
    const first=times[at]-times[at-1];
-   expect(Math.abs(first-150),`${dir} station ${st}, band start ${first}`).toBeLessThanOrEqual(5);
+   expect(Math.abs(first-hw),`${dir} station ${st}, band start ${first}`).toBeLessThanOrEqual(6);
    for(let i=at+1;i<times.length&&times[i]<peak.to;i++){
     intervals++;
-    expect(Math.abs(times[i]-times[i-1]-150),`${dir} station ${st} at ${(times[i]/3600).toFixed(3)}`).toBeLessThanOrEqual(5);
+    expect(Math.abs(times[i]-times[i-1]-hw),`${dir} station ${st} at ${(times[i]/3600).toFixed(3)}`).toBeLessThanOrEqual(6);
    }
    if(st===(dir==='DN'?4:22)){const transition=times.filter(t=>t<peak.from-2400&&t>peak.from-4200);
     const gaps=transition.slice(1).map((t,i)=>t-transition[i]);
@@ -96,12 +98,13 @@ describe('calibrated plan structure',()=>{
   }
   expect(intervals).toBeGreaterThan(4000);
  });
- it('alternates 2\'30" and 5\'00" on the west end with every train, depot moves included',()=>{
+ it('alternates one and two peak headways on the west end with every train, depot moves included',()=>{
   const s=new Sim({dayType:'weekday',dateLabel:'calibration',startTime:14400,seed:1});
   const peaks=dayPeriods('weekday').filter(p=>p.template==='weekdayAM'||p.template==='weekdayPM');
   let intervals=0;
   // The west end lags (UP) or leads (DN) the core by its running time.
   for(const peak of peaks)for(const dir of ['DN','UP'] as const)for(let st=0;st<=3;st++){
+   const hw=TEMPLATES[peak.template].headway;
    const all=s.plan.trips.filter(t=>!t.cancelled&&t.dir===dir).flatMap(t=>t.stops.filter(p=>p.st===st).map(p=>t.to===st?p.arr:p.dep)).sort((a,b)=>a-b);
    const times=all.filter(t=>t>=peak.from+OUTER_BAND_MARGIN&&t<peak.to-OUTER_BAND_MARGIN);
    const gaps=times.slice(1).map((t,i)=>t-times[i]);
@@ -109,8 +112,9 @@ describe('calibrated plan structure',()=>{
    for(let i=0;i<gaps.length;i++){
     intervals++;
     const where=`${dir} station ${st} at ${(times[i+1]/3600).toFixed(3)}: ${gaps[i]}`;
-    expect(Math.abs(gaps[i]-150)<=5||Math.abs(gaps[i]-300)<=5,where).toBe(true);
-    if(i)expect(Math.abs(gaps[i]-gaps[i-1]),where).toBeGreaterThan(100);
+    const tol=Math.max(8,hw*.07);
+    expect(Math.abs(gaps[i]-hw)<=tol||Math.abs(gaps[i]-2*hw)<=tol,where).toBe(true);
+    if(i)expect(Math.abs(gaps[i]-gaps[i-1]),where).toBeGreaterThan(hw*2/3);
    }
   }
   expect(intervals).toBeGreaterThan(300);

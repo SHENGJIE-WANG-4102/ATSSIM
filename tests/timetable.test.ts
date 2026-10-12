@@ -125,7 +125,7 @@ describe('fixed-time special trains (定点班车)', () => {
     it(`${dayType}: 虹桥火车站 23:04 / 23:30 to 龙阳路, set-down only, passing the rest`, () => {
       const sim = new Sim({ dayType, dateLabel: 'test', startTime: 4 * 3600, seed: 1 });
       const runs = sim.plan.trips.filter((t) => t.kind === 'extra' && !t.cancelled);
-      expect(runs.map((t) => t.stops[0].dep).sort()).toEqual([23 * 3600 + 4 * 60, 23 * 3600 + 30 * 60]);
+      expect(runs.map((t) => t.stops[0].dep).sort((a, b) => a - b)).toEqual([23 * 3600 + 4 * 60, 23 * 3600 + 30 * 60]);
       for (const t of runs) {
         expect([t.from, t.to]).toEqual([idx('HQZ'), idx('LYL')]);
         const stopping = t.stops.filter((s) => s.stop).map((s) => STATIONS[s.st].id);
@@ -144,7 +144,7 @@ describe('fixed-time special trains (定点班车)', () => {
     const runs = sim.plan.trips.filter((t) => t.kind === 'extra' && !t.cancelled);
     expect(runs.filter((t) => t.dir === 'DN').length).toBe(4);
     const air = runs.filter((t) => t.dir === 'UP');
-    expect(air.map((t) => t.stops[0].dep)).toEqual([22 * 3600 + 50 * 60, 23 * 3600 + 10 * 60, 23 * 3600 + 30 * 60]);
+    expect(air.map((t) => t.stops[0].dep).sort((a, b) => a - b)).toEqual([22 * 3600 + 50 * 60, 23 * 3600 + 10 * 60, 23 * 3600 + 30 * 60]);
     for (const t of air) {
       expect([t.from, t.to]).toEqual([idx('PDA'), idx('ZSG')]);
       // terminating at 中山公园, the train goes on empty into 北翟路

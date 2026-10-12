@@ -435,6 +435,10 @@ export const OPERATIONS = {
   terminalStabling: { PXL: 2, PDA: 2 } as Record<string, number>,
   /** a train passing a platform without stopping (跨站/跳停) runs through it at no more than this (km/h) */
   platformPassKmh: 45,
+  /** a train entering or leaving a platform it stops at runs at no more than this (km/h) */
+  platformStopKmh: 50,
+  /** planned run time margin over the minimum ATO run between stations */
+  runMargin: 0.05,
 };
 
 /**

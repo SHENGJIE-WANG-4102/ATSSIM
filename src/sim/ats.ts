@@ -138,6 +138,16 @@ function berthBusy(sim: Sim, berth: number, self: number): boolean {
     const segs = sim.linkBodies.get(lid);
     if (segs && segs.some((s) => s.train !== self)) return true;
   }
+  // a tail berth: a train anywhere else on that tail (e.g. stabled short of
+  // the berth) blocks it as well
+  if (b.kind === 'tail') {
+    const bl = sim.topo.links[b.link];
+    for (const l of sim.topo.links) {
+      if (l.track !== bl.track || sim.topo.sections[l.section].kind !== 'tail' || Math.abs(l.chainA - bl.chainA) > 800) continue;
+      const segs = sim.linkBodies.get(l.id);
+      if (segs && segs.some((s) => s.train !== self)) return true;
+    }
+  }
   return false;
 }
 
@@ -509,6 +519,10 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
       tr.dwellUntil = Math.max(tr.dwellUntil, sim.t + (DOOR_CYCLE - 3) + extra);
     }
     if (tr.doorsOpen || sim.t < tr.dwellUntil) return;
+    // turning back beyond the platform: wait here while every tail is taken —
+    // following a train into an occupied tail locks both in (CBTC would allow it)
+    const nx = tr.tasks[1];
+    if (nx?.k === 'reverse' && nx.berths.every((b) => berthBusy(sim, b, tr.id))) return;
     // depart
     tr.tasks.shift();
     ps.lastDep = sim.t;

@@ -5,6 +5,8 @@ export const RIDERSHIP_TARGET = { weekday: 1_090_000, weekend: 1_090_000 * 0.7 }
 export const DOOR_CYCLE = 8; // opening 3 s + warning/closing/lock confirmation 5 s (assumption)
 export const MIN_DWELL = 15; // absolute safe operating floor (assumption)
 export const MAX_EARLY_HOLD = 10;
+export const MAX_DWELL_BUSY = 50; // planned dwell ceiling, busy stations (user decision)
+export const MAX_DWELL = 35; // planned dwell ceiling, other stations
 export const DOORS_PER_SIDE = 40; // eight cars, five doors per car
 export const EXCHANGE_PER_DOOR = 2.2; // persons/s, calibrated aggregate exchange (assumption)
 const WEEKDAY: [number, number][] = [[4.5,0],[5.4,.08],[6.2,.4],[6.8,1.2],[7.5,3.4],[8.1,4],[8.8,2.7],[9.6,.8],[11,.65],[13,.7],[16,.8],[17.2,2.6],[18,3.7],[18.8,2.8],[19.8,.85],[21,.5],[22.5,.25],[23.5,.1],[24.5,0]];
@@ -38,7 +40,8 @@ export function boardingDemand(day: DayType, station: number, dir: TrackDir, t: 
 export function plannedDwell(day: DayType, station: number, dir: TrackDir, t: number): number {
  const busy=STATIONS[station].demand>=1.4;
  const exchange=rawDemand(day,station,dir,t);
- return Math.min(30,(busy?25:20)+Math.min(5,exchange*.8));
+ // peak dwells at busy stations up to 50 s: room for a late train to make up time
+ return busy?Math.min(MAX_DWELL_BUSY,25+exchange*2):Math.min(MAX_DWELL,20+exchange*2);
 }
 export function passengerMinimum(board: number, alight: number, crowded: boolean, surge=1): number {
  const rate=DOORS_PER_SIDE*EXCHANGE_PER_DOOR*(crowded?.75:1);

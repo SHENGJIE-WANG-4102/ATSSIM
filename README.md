@@ -354,8 +354,9 @@ Generated from parametric templates (no real timetable is copied):
 
 | Template | Parameters |
 |---|---|
-| 工作日早高峰 / 晚高峰 | pattern big–big–small, 2'30" through 淞虹路–广兰路 → outer sections alternate 2'30"/5'00" (avg 3'45"), dwell ×1.15/×1.1 |
-| 工作日平峰 | big route only, 5'30" (plus 5'00" pre-peak transition and 7'00" evening) |
+| 工作日早高峰 | pattern big–big–small, 2'00" through 淞虹路–广兰路 → outer sections alternate 2'00"/4'00" (avg 3'00"), dwell ×1.15; about 72 trains on the line |
+| 工作日晚高峰 | the same pattern at 3'00" → outer 3'00"/6'00" (avg 4'30"), dwell ×1.1; about 48 trains |
+| 工作日平峰 | big route only, 5'00" (also the pre-peak transition; 7'00" evening); about 36 trains |
 | 双休日/节假日 | big route only all day, 4'30" daytime |
 | 首末班及收车 | first train 05:25 from 蟠祥路·国家会计学院; last 蟠祥路→浦东1号2号航站楼 21:57, then 蟠祥路↔广兰路 until 22:42 (eastbound) / ~23:20 (westbound); last westbound from the airport timed to reach 蟠祥路 at ~00:05; trains then run empty to depots or stable in terminal tails |
 | 加开 | 进博会保障 (国家会展中心↔广兰路), 虹桥枢纽大客流 (虹桥火车站↔广兰路, station-front turnback at 虹桥火车站), or a single extra train from any depot |
@@ -562,14 +563,16 @@ Everything below is plausible but **not** taken from a public source.
   tails 40 km/h).
 * Train performance: 1.0 m/s² up to 40 km/h then constant power, 0.75 m/s² planning
   brake, 1.25 m/s² emergency brake. Planned run times are computed with the same model
-  with at most 5% margin over the fastest modeled ATO run.
+  with a 5% margin over the fastest modeled ATO run. Trains enter and leave the platforms
+  they stop at at no more than 50 km/h, and pass platforms they do not stop at at no more
+  than 45 km/h.
 
 **Operations**
-* Headways other than the 2'30" peak core / 3'45" outer reference values: off-peak 5'30",
-  pre-peak 5'00", evening 7'00", first/last-train periods 7'00"/8'00", weekend 4'30".
+* Peak core 2'00" (AM) / 3'00" (PM); off-peak and pre-peak 5'00", evening 7'00",
+  first/last-train periods 7'00"/8'00", weekend 4'30".
   Peak periods 06:50–09:30 and 16:50–19:30.
 * First westbound train from 浦东1号2号航站楼 at 05:30; last westbound 广兰路 departure 23:20.
-* Demand-derived planned dwells of 20–30 s, minimum planned turnback 240 s (广兰路 100 s, 虹桥火车站 120 s), 40 s change of ends with
+* Demand-derived planned dwells of 20–35 s (busy stations up to 50 s at the peaks), minimum planned turnback 240 s (广兰路 100 s, 虹桥火车站 120 s), 40 s change of ends with
   a driver pre-positioned at the other cab.
 * Overnight stabling: two trains each in the tails of both termini; all others in depots.
 * Passenger model: time-of-day demand profiles, per-station demand weights, alighting
@@ -678,11 +681,13 @@ concurrent writers. Stale locks recover automatically once their process exits.
 
 Weekday peak bands cover the whole 淞虹路–广兰路 core in both directions from
 06:50 to 09:30 and 16:50 to 19:30. Origins dispatch the leading wave earlier,
-with a gradual pre-peak transition. Core slots are 150 s; the 2:1 big/small
-pattern gives alternating 150/300 s big-route intervals on the outer sections.
+with a gradual pre-peak transition. Core slots are 120 s (AM) and 180 s (PM); the
+2:1 big/small pattern gives alternating one/two-slot big-route intervals on the outer
+sections.
 Positioning runs and depot returns have explicit paths and circulation capacity.
 
-Ordinary planned stops are 20–25 s and busy stops 25–30 s. ATS shortens late
+Ordinary planned stops are 20–35 s and busy stops 25–50 s, growing with the demand; the
+longer peak stops leave a late train room to make up time. ATS shortens late
 stops only to the actual passenger/door minimum (absolute 15 s assumption),
 adds at most 10 s for early arrival, and adjusts ATO performance on the next
 section within ATP limits. DMI and end-door countdowns include the complete door
