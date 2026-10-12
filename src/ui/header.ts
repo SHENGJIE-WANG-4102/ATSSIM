@@ -3,6 +3,7 @@ import { h, clear } from './dom';
 import type { Store } from './store';
 import { fmtTime } from './theme';
 import { UI_SCALES } from './layout';
+import metroLogo from './assets/metro-logo.png';
 
 export const SPEEDS = [1, 2, 5, 10, 30, 60, 120];
 export { dayTypeOf, dateLabel } from '../sim/calendar';
@@ -57,6 +58,7 @@ export class Header {
     this.muteBtn = h('button', { class: 'btn icon', title: '声音（M）', onclick: () => this.hooks.setMuted(!this.hooks.muted()) }, '🔊');
     this.el = h('div', { class: 'hdr' },
       h('div', { class: 'hdr-brand' },
+        h('img', { class: 'metro-logo', src: metroLogo, alt: '上海地铁' }),
         h('div', { class: 'line-badge' }, '2'),
         h('div', {}, h('div', { class: 'hdr-title' }, '2号线 ATS 中央监视'), h('div', { class: 'hdr-sub' }, 'OCC 行车调度 · CBTC 主用 / TBTC 后备')),
       ),
