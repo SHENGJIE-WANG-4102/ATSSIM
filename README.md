@@ -14,8 +14,8 @@ npm run dev          # http://localhost:5173  (opens at 07:40 on the next weekda
 npm run build        # type-check + production build into dist/
 npm run preview      # serve the production build
 npm test             # headless simulation tests (full days, faults, commands, features)
-npm run soak:quick   # parallel: both days, all templates, seeds 1–2, fault levels 0/3 (24 days)
-npm run soak         # parallel unattended: all 240 days; tests/out/soak/summary.json
+npm run soak:quick   # parallel: both days, all templates, fault-free + level 2 seeds 1–2 (18 days)
+npm run soak         # parallel unattended: all 126 days; tests/out/soak/summary.json
 npm run replay -- diagnostics.json  # lossless replay and full snapshot comparison
 ```
 
@@ -589,17 +589,21 @@ Faults, holds and planned layovers are distinguished in the stop reason and wait
 Diagnostics exports include the complete plan, input timeline and immutable alarm history.
 The planning preview validates the same candidate plan used at confirmation.
 
-Full certification requires 2 day types × 3 templates × 4 fault levels × 10 seeds.
+Full certification requires 2 day types × 3 templates × fault levels 0–2; level 0
+runs seed 1 only (no gate depends on the seed), levels 1–2 run 10 seeds.
 Fault-free cases require at least 98% of completed revenue trips within ±120 s and
 no arrival more than 300 s late; fault cases must recover within 3600 s after the
-last cleared fault once injection ends. A filtered run is never certified.
+last cleared fault once injection ends and deliver at least 95% (level 1) or 90%
+(level 2) of planned passenger trips. Level 3 (a train failure about every 45 min)
+remains an instructor setting but is not a soak gate: no real operating day has
+that fault rate (D23). A filtered run is never certified.
 
 **Status: certification pending.** Current results and remaining paper/model gaps
 are recorded in `docs/HANDOVER.md` and `docs/signalling-model.md`; unit-test or
 subset success does not establish that the complete stabilization pass is finished.
 
-`soak:quick` runs **24 complete service days**: weekday/weekend × base/ciie/hongqiao
-× fault-free/highest difficulty × seeds 1–2, using the same checks as the full run.
+`soak:quick` runs **18 complete service days**: weekday/weekend × base/ciie/hongqiao
+× fault-free (seed 1) and level 2 (seeds 1–2), using the same checks as the full run.
 Quick results go to `tests/out/soak-quick/summary.json` and never count as full certification.
 
 Both runners use parallel child processes (default 2–4 workers, according to CPU
@@ -646,8 +650,8 @@ Fault-free soak cases require at least 98% of final revenue arrivals within
 and weekday peak maximum section load at 90–130% of the rated 2480 passengers.
 Every failure saves a diagnostics bundle and failure manifest. Full soak runs
 continue unattended across failures; `SOAK_WORKERS=4 npm run soak` runs the full
-240 cases locally, with results under `tests/out/soak/`. The quick command runs
-exactly 24 cases and does not certify the full matrix.
+126 cases locally, with results under `tests/out/soak/`. The quick command runs
+exactly 18 cases and does not certify the full matrix.
 
 For automatic dispatch only, a failed train that traps an existing two-train
 rescue, or physically prevents its assigned rescuer from setting the required

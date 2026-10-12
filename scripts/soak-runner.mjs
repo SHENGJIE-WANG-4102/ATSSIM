@@ -5,6 +5,9 @@ export function selectCases(seeds, levels, filter) {
   const cases = []; const pattern = filter && new RegExp(filter);
   for (let seed = 1; seed <= seeds; seed++) for (const dayType of ['weekday', 'weekend'])
     for (const template of ['base', 'ciie', 'hongqiao']) for (const level of levels) {
+      // Without random faults the seed changes nothing that a gate checks:
+      // the fault-free cases run once.
+      if (level === 0 && seed > 1) continue;
       const c = { dayType, template, level, seed };
       if (!pattern || pattern.test(caseName(c))) cases.push(c);
     }

@@ -225,8 +225,8 @@ export function faultsTick(sim: Sim) {
             && sim.topo.berths[first.berth].dir!==tr.dir && ['arrive','depart','manual'].includes(tr.tbStage);
           tr.rescueBy=-1;
           if(reversedForRescue){reverseTrain(sim,tr);tr.rescueReverse=false;tr.tbStage='depart';}
-          if(rescuer){rescuer.rescuing=-1;sim.command({c:'withdraw',train:rescuer.id},'现场抢修后解除救援');}
-          const result = sim.command({c:'withdraw',train:tr.id},'现场抢修');
+          if(rescuer){rescuer.rescuing=-1;sim.command({c:'withdraw',train:rescuer.id,reason:`救援解除：故障列车${tr.svc}现场抢修完成`},'现场抢修后解除救援');}
+          const result = sim.command({c:'withdraw',train:tr.id,reason:'列车故障：现场抢修后回段检修'},'现场抢修');
           if (!result.ok) sim.log('A','列车',`抢修后回段需调度处理：${result.msg}`);
         }
       }

@@ -19,11 +19,13 @@ function modelHash() {
   hash.update(readFileSync('scripts/soak-case.ts'));
   return hash.digest('hex');
 }
-const cases = selectCases(seeds, quick ? [0, 3] : [0, 1, 2, 3], filter);
+// Level 3 (a train failure about every 45 min) stays an instructor setting but is
+// not a soak gate: no real operating day sees that fault rate (D23).
+const cases = selectCases(seeds, quick ? [0, 2] : [0, 1, 2], filter);
 // Check the added-service scheduling first, then fault recovery and the base
 // plans. Ordering changes no cases, seeds, fault levels or certification rules.
 if (quick) {
-  const priority = c => c.level === 0 && c.template !== 'base' ? 0 : c.level === 3 ? 1 : 2;
+  const priority = c => c.level === 0 && c.template !== 'base' ? 0 : c.level === 2 ? 1 : 2;
   cases.sort((a,b) => priority(a)-priority(b) || a.seed-b.seed || a.template.localeCompare(b.template) || a.dayType.localeCompare(b.dayType));
 }
 const summary = await runSoak({ cases,

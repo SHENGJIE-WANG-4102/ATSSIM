@@ -8,7 +8,7 @@ import type { StopTask, Train } from './model';
 import { STATIONS, LINE_INFO } from '../data/line2';
 import { callCrowd } from './radio';
 
-import { profile, rawDemand, passengerMinimum, RIDERSHIP_TARGET } from './calibration';
+import { profile, boardingDemand, passengerMinimum, RIDERSHIP_TARGET } from './calibration';
 
 // Assumption: directional boarding demand starts 15 minutes before the first
 // usable train. A closed service cannot accumulate hours of rush-hour demand
@@ -44,7 +44,7 @@ function scaleFor(sim: Sim): number {
   for (const p of sim.topo.platforms) {
     if ((p.track === 'DN' && p.station === STATIONS.length - 1) || (p.track === 'UP' && p.station === 0)) continue;
     for (let t = windows.first[p.id]; t < windows.last[p.id]; t += 60)
-      total += rawDemand(sim.plan.dayType, p.station, p.track as 'DN' | 'UP', t + 30) * Math.min(60, windows.last[p.id] - t);
+      total += boardingDemand(sim.plan.dayType, p.station, p.track as 'DN' | 'UP', t + 30) * Math.min(60, windows.last[p.id] - t);
   }
   sim.passengerScale = RIDERSHIP_TARGET[sim.plan.dayType] / Math.max(1, total);
   return sim.passengerScale;
@@ -61,7 +61,7 @@ export function passengersTick(sim: Sim, dt: number) {
     // no boarding demand towards the line end
     const towardsEnd = (p.track === 'DN' && p.station === STATIONS.length - 1) || (p.track === 'UP' && p.station === 0);
     if (towardsEnd) { ps.waiting = 0; continue; }
-    const lambda = scale * rawDemand(sim.plan.dayType, p.station, p.track as 'DN' | 'UP', sim.t) * ps.surge;
+    const lambda = scale * boardingDemand(sim.plan.dayType, p.station, p.track as 'DN' | 'UP', sim.t) * ps.surge;
     const inflow = lambda * dt * (0.85 + 0.3 * sim.rng());
     if (sim.t < windows.first[p.id]) { ps.waiting = 0; continue; }
     if (sim.t > windows.last[p.id]) continue;

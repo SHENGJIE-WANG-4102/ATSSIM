@@ -118,8 +118,7 @@ describe('manual driving', () => {
 
 describe('radio calls', () => {
   it('without an answer a comm-loss train waits under EB; authorising release with degrade lets it run in AM-T', () => {
-    const sim = new Sim({ dayType: 'weekday', dateLabel: 't', startTime: H, seed: 7, autoRadio: false });
-    runUntil(sim, H);
+    const sim = makeSim('weekday', H, { autoRadio: false });
     const tr = sim.trainList.find((t) => t.inService && t.phase === 'run' && t.v > 5 && sim.trainChain(t) > 9000 && sim.trainChain(t) < 30000)!;
     sim.command({ c: 'fault', kind: 'trainComm', target: tr.id, duration: 3000 });
     runFor(sim, 60, check);
@@ -142,8 +141,7 @@ describe('radio calls', () => {
   });
 
   it('an unanswered passenger alarm makes the driver stop in section', () => {
-    const sim = new Sim({ dayType: 'weekday', dateLabel: 't', startTime: H, seed: 7, autoRadio: false });
-    runUntil(sim, H);
+    const sim = makeSim('weekday', H, { autoRadio: false });
     const tr = sim.trainList.find((t) => t.inService && t.phase === 'run' && t.v > 5)!;
     sim.command({ c: 'fault', kind: 'pecu', target: tr.id, duration: 0 });
     runFor(sim, 50, check);
@@ -212,7 +210,7 @@ describe('yards, PIS', () => {
 describe('scenario & replay', () => {
   it('a scenario fires its events and produces a scored report', () => {
     const start = 9 * 3600 + 55 * 60;
-    const sim = new Sim({ dayType: 'weekday', dateLabel: 't', startTime: start, seed: 5, scenario: 'cbtc-tbtc', autoRadio: true });
+    const sim = makeSim('weekday', start, { seed: 5, scenario: 'cbtc-tbtc' });
     runUntil(sim, start + 200);
     expect(sim.scenario?.id).toBe('cbtc-tbtc');
     expect(sim.zoneState[1]).toBe('ZCFAIL');
@@ -229,8 +227,7 @@ describe('scenario & replay', () => {
 
   it('a scenario with manual radio starts on a clean line (warm-up is auto-answered)', () => {
     const start = 7 * 3600 + 40 * 60;
-    const sim = new Sim({ dayType: 'weekday', dateLabel: 't', startTime: start, seed: 13, scenario: 'shr-switch', autoRadio: false });
-    runUntil(sim, start);
+    const sim = makeSim('weekday', start, { seed: 13, scenario: 'shr-switch', autoRadio: false });
     expect(sim.autoRadio).toBe(false);
     expect(sim.calls.filter((c) => c.state === 'ringing').length).toBe(0);
     expect(sim.possessions.some((p) => p.state === 'active' || p.state === 'releasing')).toBe(false);

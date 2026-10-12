@@ -1,18 +1,29 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { deserialize } from 'node:v8';
 import { Sim } from '../src/sim/engine';
-import type { DayType, Train } from '../src/sim/model';
+import type { DayType, SimConfig, Train } from '../src/sim/model';
 import { capture, restore, type Checkpoint } from '../src/sim/state';
 
-// Scenarios share a seed and initial time. Reuse a verified warm-up snapshot;
-// each test still gets its own simulator and mutable state.
+// Scenarios share a seed and initial time. Reuse a verified warm-up snapshot
+// (made once per run by tests/globalSetup.ts, or here on first use); each test
+// still gets its own simulator and mutable state. The configuration only
+// takes effect from `until` (autoRadio, scenario), so it does not change the
+// warm-up.
 const warmups = new Map<string, Checkpoint>();
 
-export function makeSim(dayType: DayType = 'weekday', until = 8 * 3600): Sim {
-  const sim = new Sim({ dayType, dateLabel: 'test', startTime: until, seed: 7 });
-  const key = `${dayType}:${until}`;
-  const cp = warmups.get(key);
-  if (cp) restore(sim, cp);
-  else { runUntil(sim, until); warmups.set(key, capture(sim)); }
+export function makeSim(dayType: DayType = 'weekday', until = 8 * 3600, config: Partial<SimConfig> = {}): Sim {
+  const seed = config.seed ?? 7;
+  const sim = new Sim({ dayType, dateLabel: 'test', startTime: until, seed, ...config });
+  const key = `${dayType}-${until}-${seed}`;
+  let cp = warmups.get(key);
+  const file = process.env.ATSSIM_WARMUPS && join(process.env.ATSSIM_WARMUPS, `${key}.bin`);
+  if (!cp && file && existsSync(file)) warmups.set(key, cp = deserialize(readFileSync(file)) as Checkpoint);
+  if (cp) {
+    restore(sim, cp);
+    sim.autoRadio = config.autoRadio ?? true;
+    sim.autoDispatch = config.autoDispatch ?? false;
+  } else { runUntil(sim, until); warmups.set(key, capture(sim)); }
   return sim;
 }
 
@@ -28,7 +39,7 @@ export function runFor(sim: Sim, seconds: number, each?: (sim: Sim) => void) {
   runUntil(sim, sim.t + seconds, each);
 }
 
-/** throws if any two trains share track space (except a rescue pair coupling) */
+/** throws if any two trains share track space (a rescue pair may only touch while coupling) */
 export function assertNoCollision(sim: Sim) {
   for (const [link, segs] of sim.linkBodies) {
     for (let i = 0; i < segs.length; i++) {
@@ -38,8 +49,9 @@ export function assertNoCollision(sim: Sim) {
         if (a.train === b.train) continue;
         const ta = sim.trains.get(a.train)!;
         const tb = sim.trains.get(b.train)!;
-        if (ta.rescuing === tb.id || tb.rescuing === ta.id) continue;
         const overlap = Math.min(a.to, b.to) - Math.max(a.from, b.from);
+        const coupling = (ta.rescuing === tb.id && ta.phase === 'coupling') || (tb.rescuing === ta.id && tb.phase === 'coupling');
+        if (coupling && overlap <= 1) continue;
         if (overlap > 0.5) throw new Error(`collision on link ${link}: ${ta.vehicle} / ${tb.vehicle} at t=${sim.t.toFixed(0)}`);
       }
     }

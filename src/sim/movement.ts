@@ -219,7 +219,8 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
         if (atp) ok = ar.state === 'locked' && ar.cancelAt === 0 && !ar.guide && !consumed && !sg.failed && swOk;
         else {
           const rescuePass=tr.rmSig===sigId&&tr.rmAuth>d&&swOk&&rescueRouteReady(sim,tr,sigId);
-          ok = (ar.state === 'locked' || ar.guide) && ar.cancelAt === 0 && (!consumed||rescuePass)
+          // RM is on sight but not over points still moving or without detection
+          ok = (ar.state === 'locked' || ar.guide) && ar.cancelAt === 0 && (!consumed||rescuePass) && swOk
             && (sg.aspect !== 'R' && sg.aspect !== 'FAIL' || (tr.rmSig === sigId && tr.rmAuth > d));
           if(rescuePass)res.constraints.push(0,PERF.vCouple);
         }
@@ -547,6 +548,11 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   // the ATP curves end at the movement authority.
   const rm = tr.mode === 'RM';
   const regulated = !rm && !tr.manual && tr.inService && (tr.mode === 'DTO' || tr.mode === 'AM');
+  // Running delay against the arrival plan: the arrival this train makes
+  // from here at the current speed limit, compared with the planned arrival.
+  const nextStop = tr.tasks[0];
+  if (regulated && tr.phase === 'run' && nextStop?.k === 'stop' && nextStop.arr !== null && Number.isFinite(scan.stopDist))
+    tr.delay = sim.t + etaToStop(scan.stopDist, tr.v, Math.max(1, scan.vBody - PERF.atoMargin)) - nextStop.arr;
   const atoMargin = regulated && tr.delay > 2 ? PERF.atoFastMargin : PERF.atoMargin;
   const stopAt = Math.min(scan.stopDist, scan.maDist);
   let vT = scan.vBody - (rm ? 0.3 : atoMargin);
@@ -726,4 +732,16 @@ export function indexBodies(sim: Sim) {
       arr.push({ train: tr.id, from: b.from, to: b.to });
     }
   }
+}
+
+/** Unhindered time (s) to stop `dist` metres ahead from speed `v`, cruising
+ * at `cruise` with nominal traction and service braking. */
+export function etaToStop(dist: number, v: number, cruise: number): number {
+  const a = PERF.aMax * .8, b = PERF.bService * .8;
+  if (dist <= 0) return 0;
+  const vc = Math.max(cruise, v);
+  const da = (vc * vc - v * v) / (2 * a), db = vc * vc / (2 * b);
+  if (da + db <= dist) return (vc - v) / a + vc / b + (dist - da - db) / vc;
+  const vp = Math.sqrt(Math.max(v * v, (dist + v * v / (2 * a)) / (1 / (2 * a) + 1 / (2 * b))));
+  return (vp - v) / a + vp / b;
 }

@@ -9,11 +9,11 @@ export default defineConfig({
   },
   test: {
     include: ['tests/**/*.test.ts'],
-    testTimeout: 1_800_000,
-    hookTimeout: 60_000,
-    // the simulation tests are long synchronous loops; running files one at a
-    // time keeps the worker RPC responsive
-    fileParallelism: false,
+    testTimeout: 60_000,
+    // The simulation tests are long synchronous loops: each file runs in its
+    // own process, and the shared warm-ups are made once up front.
+    pool: 'forks',
+    globalSetup: ['tests/globalSetup.ts'],
     setupFiles: ['tests/setup.ts'],
   },
 } as any);

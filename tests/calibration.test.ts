@@ -1,6 +1,6 @@
 import {describe,it,expect} from 'vitest';
 import {Sim} from '../src/sim/engine';
-import {platformBerth,dayPeriods} from '../src/sim/timetable';
+import {platformBerth,dayPeriods,OUTER_BAND_MARGIN} from '../src/sim/timetable';
 import {updateTrainTasks} from '../src/sim/ats';
 import {releaseRoute} from '../src/sim/interlocking';
 import {computeBody,indexBodies} from '../src/sim/movement';
@@ -69,34 +69,50 @@ describe('calibrated plan structure',()=>{
   const s=new Sim({dayType,dateLabel:'calibration',startTime:14400,seed:1});
   for(const t of s.plan.trips.filter(t=>t.revenue&&!t.cancelled))for(const p of t.stops)expect(p.dep-p.arr).toBeLessThanOrEqual(30+.001);
  });
- it('has the peak wave throughout the core at both band edges, including 北新泾 UP',()=>{
+ // Every train counts, including depot moves and non-revenue positioning:
+ // passengers on a platform see each one. At the far end of the core the
+ // terminating small-route trains do not depart, so arrivals are compared.
+ const peakTimes=(s:Sim,dir:'DN'|'UP',st:number)=>s.plan.trips.filter(t=>!t.cancelled&&t.dir===dir)
+  .flatMap(t=>t.stops.filter(p=>p.st===st).map(p=>({t:st===(dir==='DN'?22:4)?p.arr:p.dep,trip:t})))
+  .sort((a,b)=>a.t-b.t);
+ it('runs every train at 150 s through the whole core in both peaks, depot moves included',()=>{
   const s=new Sim({dayType:'weekday',dateLabel:'calibration',startTime:14400,seed:1});
   const peaks=dayPeriods('weekday').filter(p=>p.template==='weekdayAM'||p.template==='weekdayPM');
+  let intervals=0;
   for(const peak of peaks)for(const dir of ['DN','UP'] as const)for(let st=4;st<=22;st++){
-   const ref=dir==='DN'?4:22, end=dir==='DN'?22:4;
-   const times=s.plan.trips.filter(t=>t.revenue&&!t.cancelled&&t.dir===dir&&['big','small'].includes(t.kind))
-    .flatMap(t=>t.stops.filter(p=>p.st===st).map(p=>st===end?p.arr:p.dep)).sort((a,b)=>a-b);
-   for(const edge of [peak.from,peak.to]){
-    const at=times.findIndex(t=>t>=edge);
-    expect(at,`${dir} station ${st}, ${edge}`).toBeGreaterThan(0);
-    expect(times[at]-times[at-1],`${dir} station ${st}, ${edge}`).toBeGreaterThan(145);
-    expect(times[at]-times[at-1],`${dir} station ${st}, ${edge}`).toBeLessThan(155);
+   const times=peakTimes(s,dir,st).map(x=>x.t);
+   // the band starts with the wave already through the core
+   const at=times.findIndex(t=>t>=peak.from);
+   expect(at,`${dir} station ${st}, band start`).toBeGreaterThan(0);
+   const first=times[at]-times[at-1];
+   expect(Math.abs(first-150),`${dir} station ${st}, band start ${first}`).toBeLessThanOrEqual(5);
+   for(let i=at+1;i<times.length&&times[i]<peak.to;i++){
+    intervals++;
+    expect(Math.abs(times[i]-times[i-1]-150),`${dir} station ${st} at ${(times[i]/3600).toFixed(3)}`).toBeLessThanOrEqual(5);
    }
-   if(st===ref){const transition=times.filter(t=>t<peak.from-2400&&t>peak.from-4200);
+   if(st===(dir==='DN'?4:22)){const transition=times.filter(t=>t<peak.from-2400&&t>peak.from-4200);
     const gaps=transition.slice(1).map((t,i)=>t-transition[i]);
     expect(gaps.length).toBeGreaterThan(3);expect(gaps.at(-1)!).toBeLessThan(gaps[0]);}
   }
+  expect(intervals).toBeGreaterThan(4000);
  });
- it('has uniform peak core slots and alternating outer big-route intervals',()=>{
+ it('alternates 2\'30" and 5\'00" on the west end with every train, depot moves included',()=>{
   const s=new Sim({dayType:'weekday',dateLabel:'calibration',startTime:14400,seed:1});
-  for(const dir of ['DN','UP'] as const){const ref=dir==='DN'?4:22;
-   const p=dayPeriods('weekday').find(p=>p.template==='weekdayAM')!;
-   const core=s.plan.trips.filter(t=>['big','small'].includes(t.kind)&&t.dir===dir).map(t=>({t,dep:t.stops.find(x=>x.st===ref)!.dep})).filter(x=>x.dep>=p.from+.01&&x.dep<p.to-.01).sort((a,b)=>a.dep-b.dep);
-   expect(core.length).toBeGreaterThan(40);
-   for(let i=1;i<core.length;i++)expect(core[i].dep-core[i-1].dep).toBeCloseTo(150,1);
-   const outer=core.filter(x=>x.t.kind==='big');const gaps=outer.slice(1).map((x,i)=>x.dep-outer[i].dep);
-   expect(gaps.every(g=>Math.abs(g-150)<.05||Math.abs(g-300)<.05)).toBe(true);
-   for(let i=1;i<gaps.length;i++)expect(gaps[i]).not.toBeCloseTo(gaps[i-1],1);
+  const peaks=dayPeriods('weekday').filter(p=>p.template==='weekdayAM'||p.template==='weekdayPM');
+  let intervals=0;
+  // The west end lags (UP) or leads (DN) the core by its running time.
+  for(const peak of peaks)for(const dir of ['DN','UP'] as const)for(let st=0;st<=3;st++){
+   const all=s.plan.trips.filter(t=>!t.cancelled&&t.dir===dir).flatMap(t=>t.stops.filter(p=>p.st===st).map(p=>t.to===st?p.arr:p.dep)).sort((a,b)=>a-b);
+   const times=all.filter(t=>t>=peak.from+OUTER_BAND_MARGIN&&t<peak.to-OUTER_BAND_MARGIN);
+   const gaps=times.slice(1).map((t,i)=>t-times[i]);
+   expect(gaps.length).toBeGreaterThan(20);
+   for(let i=0;i<gaps.length;i++){
+    intervals++;
+    const where=`${dir} station ${st} at ${(times[i+1]/3600).toFixed(3)}: ${gaps[i]}`;
+    expect(Math.abs(gaps[i]-150)<=5||Math.abs(gaps[i]-300)<=5,where).toBe(true);
+    if(i)expect(Math.abs(gaps[i]-gaps[i-1]),where).toBeGreaterThan(100);
+   }
   }
+  expect(intervals).toBeGreaterThan(300);
  });
 });

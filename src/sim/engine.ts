@@ -20,7 +20,8 @@ import {
 import { updateTrainMotion, indexBodies, refreshAuthority, withdrawAuthority } from './movement';
 import {
   buildRouteTable, type RouteTable, spawnDue, updateTrainTasks, runARS, driverRM, recordTrace,
-  cmdTrainHold, cmdSkip, cmdTurnback, cmdWithdraw, cmdRecoverService, cmdAuthRM, cmdRescue, trainLabel,
+  cmdTrainHold, cmdSkip, cmdTurnback, cmdWithdraw, cmdRecoverService, cmdExchangeDuty, cmdAuthRM, cmdRescue, trainLabel,
+  extendTrainTasks,
 } from './ats';
 import { stopError } from './movement';
 import { initYards, vehicleName } from './yard';
@@ -39,6 +40,7 @@ import { newIntegrity, checkSafety, checkLiveness, type IntegrityState } from '.
 import { LINE_INFO, STATIONS } from '../data/line2';
 import { validateCommand } from './commands';
 import { preparePlan } from './planning';
+import { cmdStandbyRelief, standbyTick } from './standby';
 import type { RecordedInput } from './diagnostics';
 
 export const FIXED_DT = 0.1;
@@ -373,6 +375,7 @@ export class Sim {
     faultsTick(this);
     envTick(this);
     dispatcherTick(this);
+    standbyTick(this);
     radioTick(this);
     dmiTick(this);
     scenarioTick(this);
@@ -507,8 +510,10 @@ export class Sim {
       case 'trainHold': return this.withTrain(cmd.train, (tr) => cmdTrainHold(this, tr, cmd.on));
       case 'trainSkip': return this.withTrain(cmd.train, (tr) => cmdSkip(this, tr, cmd.station, cmd.on));
       case 'recoverService': return this.withTrain(cmd.train, tr => cmdRecoverService(this, tr));
+      case 'exchangeDuty': return this.withTrain(cmd.train, tr => cmdExchangeDuty(this, tr, cmd.with));
+      case 'standby': return this.withTrain(cmd.train, tr => cmdStandbyRelief(this, tr));
       case 'turnback': return this.withTrain(cmd.train, (tr) => cmdTurnback(this, tr, cmd.station));
-      case 'withdraw': return this.withTrain(cmd.train, (tr) => cmdWithdraw(this, tr));
+      case 'withdraw': return this.withTrain(cmd.train, (tr) => cmdWithdraw(this, tr, cmd.reason));
       case 'authRM': return this.withTrain(cmd.train, (tr) => cmdAuthRM(this, tr, cmd.signal));
       case 'ebRelease': return this.withTrain(cmd.train, (tr) => authoriseEBRelease(this, tr, '调度'));
       case 'trainLevel': return this.withTrain(cmd.train, (tr) => cmdTrainLevel(this, tr, cmd.level));
@@ -525,6 +530,11 @@ export class Sim {
         this.plan = preview.plan;
         this.planDirty = true;
         this.planRev++;
+        for (const x of preview.extended ?? []) {
+          const id = this.plan.blocks[x.block].train;
+          const tr = id === undefined ? undefined : this.trains.get(id);
+          if (tr) extendTrainTasks(this, tr, x.last);
+        }
         if (preview.skipped) this.log('C', '运营', preview.msg);
         return { ok: true, msg: preview.msg };
       }
@@ -760,6 +770,8 @@ export function describeCommand(sim: Sim, cmd: Command): string {
     case 'trainSkip': return `跳停 ${tn(cmd.train)} ${STATIONS[cmd.station].name}`;
     case 'turnback': return `人工折返 ${tn(cmd.train)} @${STATIONS[cmd.station].name}`;
     case 'recoverService': return `故障恢复接续 ${tn(cmd.train)}`;
+    case 'exchangeDuty': return `车次调整 ${tn(cmd.train)} ↔ ${tn(cmd.with)}`;
+    case 'standby': return `备车接替 ${tn(cmd.train)}`;
     case 'withdraw': return `退出服务 ${tn(cmd.train)}`;
     case 'authRM': return `授权RM ${tn(cmd.train)}${cmd.signal !== undefined ? ` 越过 ${topo.signals[cmd.signal].name}` : ''}`;
     case 'ebRelease': return `授权缓解紧急制动 ${tn(cmd.train)}`;

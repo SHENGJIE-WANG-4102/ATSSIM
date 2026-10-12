@@ -91,16 +91,26 @@ export function applyEB(sim: Sim, tr: Train, reason: string, cause: EbCause) {
 /** the EB cause no longer holds (release can be authorised without further measures) */
 export function ebCauseCleared(_sim: Sim, tr: Train): boolean {
   switch (tr.ebCause) {
+    // a SPAD is never "cleared": only the SPAD procedure releases it
     case 'spad': return false;
     case 'comm': return tr.comm || tr.level === 'TBTC';
     default: return true;
   }
 }
 
+/** how a release is authorised: plain release, the SPAD procedure (route
+ * verified, RM to the next signal) or the comm-loss degrade to TBTC */
+export type EbProcedure = 'release' | 'spad' | 'degrade';
+
 /** dispatcher authorises the release (driver has reported the EB) */
-export function authoriseEBRelease(sim: Sim, tr: Train, by: string): { ok: boolean; msg: string } {
+export function authoriseEBRelease(sim: Sim, tr: Train, by: string, procedure: EbProcedure = 'release'): { ok: boolean; msg: string } {
   if (!tr.eb) return { ok: false, msg: '列车未处于紧急制动' };
   if (tr.v > 0.01) return { ok: false, msg: '列车未停稳，不能缓解紧急制动' };
+  if (tr.ebCause === 'spad' && procedure !== 'spad')
+    return { ok: false, msg: '冒进信号紧急制动须按冒进处置程序办理（无线电：核实进路后RM运行至前方信号机）' };
+  const viaDegrade = procedure === 'degrade' && tr.ebCause === 'comm';
+  if (tr.ebCause !== 'spad' && !viaDegrade && !ebCauseCleared(sim, tr))
+    return { ok: false, msg: `紧急制动原因未消除（${tr.ebReason}）` };
   tr.ebAuth = true;
   releaseEB(sim, tr, by);
   return { ok: true, msg: `列车 ${trainLabel(tr)} 紧急制动缓解` };
@@ -136,7 +146,7 @@ export function answerEbRelease(sim: Sim, tr: Train, option: string): { ok: bool
   if (!tr.eb) return { ok: true, msg: '紧急制动已缓解' };
   if (option === 'wait') return { ok: true, msg: '司机原地等待' };
   if (option === 'degrade') {
-    const r = authoriseEBRelease(sim, tr, '调度授权');
+    const r = authoriseEBRelease(sim, tr, '调度授权', 'degrade');
     if (r.ok && !tr.comm && tr.level === 'CBTC') requestMode(sim, tr, tr.manual ? 'CM' : 'AM', 'TBTC');
     return { ok: r.ok, msg: r.ok ? `缓解后${MODE_CHANGE_TIME}秒转TBTC后备ATO` : r.msg };
   }
@@ -145,7 +155,7 @@ export function answerEbRelease(sim: Sim, tr: Train, option: string): { ok: bool
     if (why) {
       return { ok: false, msg: `不能授权RM：${why}` };
     }
-    const r = authoriseEBRelease(sim, tr, '调度授权');
+    const r = authoriseEBRelease(sim, tr, '调度授权', 'spad');
     if (!r.ok) return r;
     const d = distToNextSignal(sim, tr);
     grantRM(sim, tr, Math.max(0, d - 6), -1, '冒进后调度授权RM运行至前方信号机');

@@ -13,7 +13,7 @@
     "soak": "node scripts/soak.mjs",
     "soak:quick": "node scripts/soak.mjs --quick",
     "replay": "vite-node scripts/replay.ts",
-    "simday": "vitest run tests/fullday.test.ts"
+    "simday": "SOAK_FILTER=-base-0- node scripts/soak.mjs --quick"
   },
   "dependencies": {
     "@fontsource/jetbrains-mono": "^5.3.0",
