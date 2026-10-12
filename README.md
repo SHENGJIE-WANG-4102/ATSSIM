@@ -150,7 +150,22 @@ ATP supervises all the time:
 * Each station stop is scored on stopping accuracy: ±0.3 m scores 100, ±0.5 m 90, ±0.75 m 75, ±1 m 60.
 * Overrunning by up to 15 m means backing up to the mark (> 5 m counts as a violation); further than that, the train skips the station.
 
-**恢复自动驾驶** returns the train to DTO under CBTC or AM under TBTC.
+**恢复自动驾驶** returns the train to DTO under CBTC (AM when the train or the line runs ATO, below) or AM under TBTC.
+
+### ATO with a driver (DTO compatibility mode)
+
+DTO is the normal mode. ATO with the driver in the cab (AM) is its degraded mode
+under CBTC — still moving block, not the TBTC backup's own mode:
+
+* **One train.** 降级ATO in the train panel, or the instructor fault 车载DTO功能故障.
+  The driver takes the cab at the next stop (CBTC DTO → CBTC AM). 恢复DTO works once a
+  dispatcher degrade is lifted or the fault is repaired; the change back happens at a stop.
+* **Whole line.** 系统 → 全线转ATO运营 / 全线恢复DTO, or choose ATO in the operating-day
+  dialog. Every train changes at its next stop. The timetable stays the same: its
+  terminal layovers absorb the change of ends.
+* **What AM costs.** At a turnback the driver changes ends: 45 s on top of the 40 s
+  unattended DTO reversal. Each departure waits 3 s for the driver's ATO start button.
+  Both values are assumptions.
 
 ### Radio and phone calls (调度电话·无线)
 
@@ -291,6 +306,7 @@ Alarm and call tones (Web Audio, no files). Toggle with the speaker button or **
 | Fault | Consequence in the simulation | Recovery |
 |---|---|---|
 | 列车车地通信中断 | ZC loses the train; its sections become non-communicating occupancy, followers stop at the section boundary; the train's MA expires → EB | Driver switches to TBTC/ATO after 30 s and runs under section-occupancy protection; upgrades to CBTC/DTO when communication and localization recover |
+| 车载DTO功能故障 | The train cannot run DTO; at its next stop the driver takes the cab and it runs CBTC AM (slower turnbacks and departures) | Repair, then DTO returns at a stop; or withdraw the train to the depot |
 | ZC 故障 (one area or whole line) | CBTC trains in the area lose MA and stop; trains outside cannot enter | 切换TBTC (★) → trains run under TBTC fixed block; after repair 恢复CBTC (★); restoring before repair is refused |
 | 计轴区段故障占用 | Section shows fault occupancy; CBTC trains stop before it | Reset is refused until maintenance is done; then 计轴预复位 (★); the first train sweeps it in RM and the section clears. Before that, 授权RM / 引导进路 can pass trains |
 | 道岔失表 | Routes over the switch cannot be set; trains stop at the protecting signal | 单操 attempts fail until repaired; 钩锁确认 (★) then 引导进路 (★) → RM ≤25 km/h; after repair 单操 restores detection, 取消钩锁 |
@@ -402,11 +418,11 @@ No vendor logo or bezel is drawn.
   * Digital speed in the hub circle, `km/h` beneath.
   * Permitted speed shown as a red arc on the rim from the permitted speed up to 120, plus a red triangle marker.
 * **Right column.**
-  * Large mode and level: `DTO CBTC` / `DTO TBTC` / `CM …` / `RM …`.
+  * Large mode and level: `DTO CBTC` / `AM CBTC` / `AM TBTC` / `CM …` / `RM …`.
   * Departure countdown bar and train-front icon.
   * Platform screen door leaves.
   * Door mode `AA` / `MM` with its white bar, and the train door bars.
-* **Row below the dial.** Wheel icon, highest available mode (`DTO-C`, `DTO-T`, `CM-C`, `CM-T`, `RM`),
+* **Row below the dial.** Wheel icon, highest available mode (`DTO-C`, `AM-C`, `AM-T`, `CM-C`, `CM-T`, `RM`),
   train / door status icon, stopping-window hexagon.
 * **Bottom.**
   * Date (YYYY/MM/DD) and time on the left.
@@ -432,7 +448,7 @@ No vendor logo or bezel is drawn.
 * **Target.** On a station approach the target is the stopping point at 0 km/h.
 * **Modes.**
   * Behaviour stays AM / CM / RM on CBTC / TBTC.
-  * Only the wording follows the photos: AM is shown as `DTO`, and the door mode is `AA` in AM, `MM` in CM / RM.
+  * The door mode is `AA` in DTO / AM and `MM` in CM / RM.
 * **States covered.**
   * AM traction / coasting / braking, station approach, stopped and aligned.
   * Doors open (yellow) / closed (green), departure countdown.
@@ -552,7 +568,8 @@ Everything below is plausible but **not** taken from a public source.
   trains.
 * Guide routes stay open 60 s; approach-locked route cancellation is delayed 30 s;
   switches throw in 5 s.
-* Driving modes: DTO normal; AM/ATO after a per-train communication loss (TBTC level); manual CM retains ATP; RM
+* Driving modes: DTO normal; AM (ATO with a driver) under CBTC as DTO's degraded mode, and under TBTC after a
+  communication loss or zone switch; manual CM retains ATP; RM
   (≤25 km/h, on sight) for guide signals, preset sweeps, dispatcher authorisation and
   rescue coupling. Train-level downgrade takes 30 s of driver action. No unattended
   operation.

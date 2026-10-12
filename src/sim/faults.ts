@@ -11,6 +11,7 @@ import { callRescue, callPecu, callTrackPerson } from './radio';
 import { psdRepaired } from './psd';
 import { allowed, FAULT } from './fsm';
 import { reverseTrain } from './movement';
+import { dtoAllowed as dtoAllowedFor } from './onboard';
 
 function stage(sim: Sim, fault: Fault, next: Fault['stage']) {
   if (!allowed(sim, FAULT, fault.stage, next).ok) return;
@@ -42,6 +43,7 @@ function recovered(sim: Sim, f: Fault): boolean {
     const zones = f.target < 0 ? sim.zoneState.map((_, z) => z) : [f.target];
     return zones.every(z => sim.zoneState[z] === 'CBTC' && sim.trainList.every(tr => sim.topo.links[tr.link].zone !== z || tr.forceLevel === 'TBTC' || tr.manual || tr.phase === 'stabled' || tr.level === 'CBTC' && !tr.eb));
   }
+  if (f.kind === 'trainDto') { const tr = sim.trains.get(f.target); return !tr || tr.mode !== 'AM' || tr.level !== 'CBTC' || !dtoAllowedFor(sim, tr); }
   if (f.kind === 'trainComm') { const tr = sim.trains.get(f.target); return !tr || tr.comm && !tr.eb && (tr.level === 'CBTC' || tr.forceLevel === 'TBTC' || tr.manual); }
   return true;
 }
@@ -56,6 +58,7 @@ export function updateFaultLifecycle(sim: Sim) {
 
 export const FAULT_LABELS: Record<FaultKind, string> = {
   trainComm: '列车车地通信中断',
+  trainDto: '车载DTO功能故障',
   zcFail: '区域控制器(ZC)故障',
   axle: '计轴区段故障占用',
   switch: '道岔失表',
@@ -91,6 +94,14 @@ export function injectFault(sim: Sim, kind: FaultKind, target: number, duration:
       tr.comm = false;
       f.text = `列车 ${trainLabel(tr)}（${tr.vehicle}）车地通信中断`;
       sim.log('A', '信号', `${f.text}，ZC失去列车位置，以区段占用防护`, { key: `comm-${tr.id}` });
+      break;
+    }
+    case 'trainDto': {
+      const tr = sim.trains.get(target);
+      if (!tr) return { ok: false, msg: '列车不存在' };
+      tr.dtoInhibit = FAULT_LABELS.trainDto;
+      f.text = `列车 ${trainLabel(tr)}（${tr.vehicle}）车载DTO功能故障`;
+      sim.log('B', '列车', `${f.text}：DTO不可用，司机在下一站停站时转ATO（AM）驾驶${tr.level === 'CBTC' ? '' : '（当前为TBTC后备）'}`, { key: `dto-${tr.id}`, train: tr.id });
       break;
     }
     case 'zcFail': {
@@ -242,6 +253,15 @@ export function faultsTick(sim: Sim) {
           sim.log('C', '信号', `列车 ${trainLabel(tr)} 车地通信恢复，将升级至CBTC`);
         }
         sim.clearAlarm(`comm-${f.target}`);
+        break;
+      }
+      case 'trainDto': {
+        const tr = sim.trains.get(f.target);
+        if (tr && tr.dtoInhibit === FAULT_LABELS.trainDto) {
+          tr.dtoInhibit = '';
+          sim.log('C', '列车', `列车 ${trainLabel(tr)} 车载DTO功能恢复，下一站停站时恢复DTO`, { train: tr.id });
+        }
+        sim.clearAlarm(`dto-${f.target}`);
         break;
       }
       case 'zcFail': {

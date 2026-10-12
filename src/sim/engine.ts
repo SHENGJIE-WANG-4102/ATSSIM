@@ -33,7 +33,7 @@ import { computePis } from './pis';
 import { computeDmi, dmiTick } from './dmi';
 import { passengersTick } from './passengers';
 import { injectFault, repairFault, requestTrainMaintenance, faultsTick, FAULT_LABELS, faultProcedure, updateFaultLifecycle } from './faults';
-import { updateOnboard, setManual, cmdTrainLevel, authoriseEBRelease, turnbackSignalPassed } from './onboard';
+import { updateOnboard, setManual, cmdTrainLevel, cmdTrainDto, cmdLineAto, authoriseEBRelease, turnbackSignalPassed } from './onboard';
 import { psdTick, psdOpen, setBypass } from './psd';
 import { updateHalts, HALT } from './halt';
 import { newIntegrity, checkSafety, checkLiveness, type IntegrityState } from './invariants';
@@ -129,6 +129,8 @@ export class Sim {
   autoRadio = true;
   /** automatic dispatcher (soak / probe runs): works the recovery procedures through dispatcher commands */
   autoDispatch = false;
+  /** the line runs ATO with drivers instead of DTO (DTO compatibility mode, D52) */
+  atoLine = false;
   dispatcher: DispatcherState = newDispatcher();
   /** integrity checker state (invariants.ts) */
   integrity: IntegrityState = newIntegrity();
@@ -181,6 +183,7 @@ export class Sim {
     this.metrics = newMetrics(config.startTime);
     // a scenario may run its own fixed-time special trains (加班车)
     const fixedRuns = config.scenario ? SCENARIOS.find((x) => x.id === config.scenario)?.fixedRuns : undefined;
+    this.atoLine = config.driveMode === 'ATO';
     this.planCtx = { topo: this.topo, rt: this.rt, dayType: config.dayType, ...(fixedRuns ? { fixedRuns } : {}) };
     this.plan = generatePlan(this.planCtx);
     const { topo } = this;
@@ -519,6 +522,8 @@ export class Sim {
       case 'authRM': return this.withTrain(cmd.train, (tr) => cmdAuthRM(this, tr, cmd.signal));
       case 'ebRelease': return this.withTrain(cmd.train, (tr) => authoriseEBRelease(this, tr, '调度'));
       case 'trainLevel': return this.withTrain(cmd.train, (tr) => cmdTrainLevel(this, tr, cmd.level));
+      case 'trainDto': return this.withTrain(cmd.train, (tr) => cmdTrainDto(this, tr, cmd.on));
+      case 'lineAto': return cmdLineAto(this, cmd.on);
       case 'rescue': {
         const f = this.trains.get(cmd.failed);
         const r = this.trains.get(cmd.rescuer);
@@ -681,7 +686,7 @@ export class Sim {
       for (const b of tr.body) body.push(b.link, b.from, b.to);
       const t0 = tr.tasks[0];
       return {
-        id: tr.id, vehicle: tr.vehicle, svc: tr.svc, trip: tr.tripNo, dest: tr.destText, link: tr.link, off: tr.off, dir: tr.dir,
+        id: tr.id, dto: tr.dtoInhibit, vehicle: tr.vehicle, svc: tr.svc, trip: tr.tripNo, dest: tr.destText, link: tr.link, off: tr.off, dir: tr.dir,
         body, v: tr.v, level: tr.level, comm: tr.comm, mode: tr.mode, eb: tr.eb, phase: tr.phase, delay: tr.delay,
         tbStage: tr.tbStage, depotStage: tr.depotStage,
         load: tr.load, hold: tr.hold, failed: tr.failed, doors: tr.doorsOpen, inService: tr.inService, chain: this.trainChain(tr),
@@ -706,7 +711,7 @@ export class Sim {
     const tripsPlanned = this.plan.trips.filter((t) => t.revenue && !t.cancelled).length;
     return {
       t: this.t, speed: this.speed, paused: this.paused, dayType: this.plan.dayType, dateLabel: this.config.dateLabel,
-      sections, sectionTsr, switches, signals, platforms, platformWaiting, zones: this.zoneState.slice(), trains,
+      sections, sectionTsr, switches, signals, platforms, platformWaiting, zones: this.zoneState.slice(), atoLine: this.atoLine, trains,
       depotCounts: this.depotStock.slice(), traces,
       stats: {
         online: this.trainList.length, inService: this.trainList.filter((t) => t.inService).length, late, maxDelay,
@@ -778,6 +783,8 @@ export function describeCommand(sim: Sim, cmd: Command): string {
     case 'authRM': return `授权RM ${tn(cmd.train)}${cmd.signal !== undefined ? ` 越过 ${topo.signals[cmd.signal].name}` : ''}`;
     case 'ebRelease': return `授权缓解紧急制动 ${tn(cmd.train)}`;
     case 'trainLevel': return `列车控制级别 ${tn(cmd.train)} → ${cmd.level === 'AUTO' ? '自动' : cmd.level}`;
+    case 'trainDto': return `${cmd.on ? '恢复DTO' : '降级ATO'} ${tn(cmd.train)}`;
+    case 'lineAto': return cmd.on ? '全线转ATO运营（DTO兼容模式）' : '全线恢复DTO运营';
     case 'rescue': return `组织救援 ${tn(cmd.rescuer)}→${tn(cmd.failed)}`;
     case 'addTrain': return `加开列车 ${topo.depots[cmd.depot].short}`;
     case 'overlay': return '加开运行图';

@@ -661,13 +661,15 @@ export class App {
     const st = h('select', {}, ...[['04:30', '首班车前 04:30'], ['06:30', '早高峰前 06:30'], ['07:40', '早高峰 07:40'], ['12:00', '平峰 12:00'], ['17:40', '晚高峰 17:40'], ['21:30', '末班前 21:30'], ['23:50', '收车 23:50']].map(([v, t]) => h('option', { value: v }, t))) as HTMLSelectElement;
     st.value = '07:40';
     const auto = h('input', { type: 'checkbox' }) as HTMLInputElement;
+    const drive = h('select', {}, h('option', { value: 'DTO' }, 'DTO（正常）'), h('option', { value: 'ATO' }, 'ATO（DTO兼容模式，司机驾驶）')) as HTMLSelectElement;
     const back = h('div', { class: 'modal-back' });
     const close = () => back.remove();
     const go = () => {
       const [y, m, dd] = dateIn.value.split('-').map(Number);
       const nd = new Date(y, (m || 1) - 1, dd || 1);
       if (Number.isNaN(nd.getTime())) { toast('日期格式应为 YYYY-MM-DD', false); return; }
-      const c: SimConfig = { dayType: dayTypeOf(nd, hol.checked), dateLabel: dateLabel(nd, hol.checked), date: isoDate(nd), startTime: parseTime(st.value), seed: 20251101 + nd.getDate(), autoRadio: auto.checked };
+      const c: SimConfig = { dayType: dayTypeOf(nd, hol.checked), dateLabel: dateLabel(nd, hol.checked), date: isoDate(nd), startTime: parseTime(st.value), seed: 20251101 + nd.getDate(), autoRadio: auto.checked,
+        ...(drive.value === 'ATO' ? { driveMode: 'ATO' as const } : {}) };
       close();
       this.lastScenario = '';
       this.veil.textContent = '生成运行图…';
@@ -680,7 +682,8 @@ export class App {
         h('div', { class: 'form' }, h('label', {}, '运营日期'), dateIn, h('label', {}, '节假日'), hol),
         h('div', { class: 'form', style: 'margin-top:14px' }, h('label', {}, '开始时刻'), st),
         h('div', { class: 'form', style: 'margin-top:14px' }, h('label', {}, '来电自动应答（观摩模式）'), auto),
-        h('div', { class: 'hint', style: 'margin-top:14px' }, '工作日采用早晚高峰大小交路运行图，双休日/节假日全天单一大交路。开始时刻之前的运营以最高速度推演。训练场景请在右侧“教员”页选择。'),
+        h('div', { class: 'form', style: 'margin-top:14px' }, h('label', {}, '运营驾驶模式'), drive),
+        h('div', { class: 'hint', style: 'margin-top:14px' }, '工作日采用早晚高峰大小交路运行图，双休日/节假日全天单一大交路。开始时刻之前的运营以最高速度推演。ATO运营（DTO兼容模式）沿用同一运行图，终点站折返时司机换端、发车需司机按钮。训练场景请在右侧“教员”页选择。'),
       ),
       h('div', { class: 'modal-f' }, h('button', { class: 'btn', onclick: close }, '取消'), h('button', { class: 'btn primary', onclick: go }, '开始')),
     ));

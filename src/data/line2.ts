@@ -439,6 +439,12 @@ export const OPERATIONS = {
   platformStopKmh: 50,
   /** planned run time margin over the minimum ATO run between stations */
   runMargin: 0.05,
+  /** ATO with a driver (DTO degraded / ATO operation): change of ends at a
+   *  turnback, on top of the unattended DTO reversal (s) 【假设】 */
+  atoEndChange: 45,
+  /** ATO with a driver: departure after the doors close waits for the driver's
+   *  ATO start button (s) 【假设】 */
+  atoStartDelay: 3,
 };
 
 /**

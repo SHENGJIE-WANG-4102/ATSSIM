@@ -18,6 +18,7 @@ const CAT_FILTERS = ['全部', '报警', '调度', '通话', '信号', '列车',
 
 const PROCEDURES: Record<FaultKind, string> = {
   trainComm: '后果：ZC 失去列车位置，该车按计轴区段占用防护；列车紧急制动。处置：司机停稳后报告 → 授权缓解并降级TBTC后备（AM）运行；通信恢复后在下一区段边界不停车升级CBTC（DTO）。',
+  trainDto: '后果：该车DTO功能不可用（如障碍物检测、车载DTO设备故障），仍在CBTC下运行，但须司机在驾驶室值守：下一站停站时转ATO（AM），折返时司机换端（多约45秒），发车需司机按ATO启动按钮。处置：调度确认司机已上岗；故障修复后停站时恢复DTO，或安排回段检修。',
   zcFail: '后果：区域内CBTC列车失去移动授权，原地转TBTC后备（AM）按固定闭塞运行。处置：“切换TBTC”（二次确认）使后续列车停站降级；ZC修复后“恢复CBTC”，列车不停车升级。',
   axle: '后果：区段故障占用，列车在区段前停车。处置：设备修复后“计轴预复位”（二次确认）→ 首列车来电申请RM压道 → 同意。',
   switch: '后果：道岔失表，经过该道岔的进路无法办理。处置：单操试排 → 通知维修 → 钩锁确认（二次确认）→ 引导进路 → 修复后单操恢复表示、取消钩锁。',
@@ -347,7 +348,7 @@ export class SidePanel {
       const sel = this.store.selection;
       const opt = (v: number, t: string, chosen = false) => { const o = h('option', { value: v }, t); if (chosen) (o as HTMLOptionElement).selected = true; return o; };
       const s = this.store.snap!;
-      if (k === 'trainComm' || k === 'trainFail' || k === 'pecu') {
+      if (k === 'trainComm' || k === 'trainDto' || k === 'trainFail' || k === 'pecu') {
         for (const t of [...s.trains].sort((a, b) => a.svc.localeCompare(b.svc))) if (t.inService || t.phase === 'run') target.append(opt(t.id, `${t.svc}-${t.trip}（${t.vehicle}）`, sel?.kind === 'train' && sel.id === t.id));
         if (k === 'trainFail') extra.append(h('label', {}, '可自行恢复'), rec);
       } else if (k === 'zcFail') {

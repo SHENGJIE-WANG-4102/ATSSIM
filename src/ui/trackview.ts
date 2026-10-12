@@ -1032,7 +1032,8 @@ export class TrackView {
       let p = 0;
       if (this.store.selection?.kind === 'train' && this.store.selection.id === t.id) p += 1000;
       if (t.failed || t.eb) p += 500;
-      if (!t.comm || t.level !== 'CBTC' || t.manual || t.mode !== 'DTO') p += 300;
+      // (AM under CBTC is the norm while the whole line runs ATO)
+      if (!t.comm || t.level !== 'CBTC' || t.manual || t.mode !== 'DTO' && !(t.mode === 'AM' && snap.atoLine)) p += 300;
       if (t.hold) p += 200;
       if (t.inService && t.delay > 120) p += 100 + Math.min(99, t.delay / 60);
       if (!t.inService) p -= 50;
@@ -1083,7 +1084,7 @@ export class TrackView {
     if (!tr.comm) chips += '×';
     else if (tr.level === 'TBTC') chips += 'T';
     if (tr.manual) chips += tr.mode === 'RM' ? '人RM' : '人CM';
-    else if (tr.mode !== 'DTO') chips += tr.mode;
+    else if (tr.mode !== 'DTO' && !(tr.mode === 'AM' && tr.level === 'CBTC' && this.store.snap?.atoLine)) chips += tr.mode;
     if (tr.hold) chips += '扣';
     if (tr.inService && tr.delay > 120) chips += `+${Math.floor(tr.delay / 60)}'`;
     const H = 40;

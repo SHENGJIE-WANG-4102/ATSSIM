@@ -44,9 +44,15 @@ export function cbtcAvailable(sim: Sim, tr: Train): boolean {
   return tr.comm && sim.zoneState[sim.topo.links[tr.link].zone] === 'CBTC' && tr.forceLevel !== 'TBTC';
 }
 
-/** best automatic mode for the train's current level */
-export function autoMode(level: Level): Mode {
-  return level === 'CBTC' ? 'DTO' : 'AM';
+/** DTO allowed for the train: the line runs DTO and its DTO equipment works */
+export function dtoAllowed(sim: Sim, tr: Train): boolean {
+  return !sim.atoLine && !tr.dtoInhibit;
+}
+
+/** best automatic mode for the train at a level: under CBTC DTO, or ATO with
+ * the driver in the cab when DTO is degraded; the TBTC backup runs ATO */
+export function autoMode(sim: Sim, tr: Train, level: Level): Mode {
+  return level === 'CBTC' && dtoAllowed(sim, tr) ? 'DTO' : 'AM';
 }
 
 /**
@@ -228,6 +234,29 @@ export function cmdTrainLevel(_sim: Sim, tr: Train, level: ForceLevel): { ok: bo
   return { ok: true, msg: `列车 ${trainLabel(tr)} 控制级别设为${txt}` };
 }
 
+/** dispatcher: degrade one train to ATO with the driver (on = false), or let it run DTO again */
+export function cmdTrainDto(sim: Sim, tr: Train, on: boolean): { ok: boolean; msg: string } {
+  if (!on) {
+    if (tr.dtoInhibit) return { ok: false, msg: `列车已不能DTO运行（${tr.dtoInhibit}）` };
+    tr.dtoInhibit = '调度命令降级ATO';
+    return { ok: true, msg: `列车 ${trainLabel(tr)} 降级ATO：司机在下一站停站时转AM驾驶` };
+  }
+  if (tr.dtoInhibit === '调度命令降级ATO') tr.dtoInhibit = '';
+  else if (tr.dtoInhibit) return { ok: false, msg: `${tr.dtoInhibit}未修复，不能恢复DTO` };
+  if (sim.atoLine) return { ok: false, msg: '全线ATO运营中，先恢复全线DTO' };
+  return { ok: true, msg: `列车 ${trainLabel(tr)} 下一站停站时恢复DTO` };
+}
+
+/** dispatcher: the whole line runs ATO with drivers (DTO compatibility mode) or DTO again */
+export function cmdLineAto(sim: Sim, on: boolean): { ok: boolean; msg: string } {
+  if (sim.atoLine === on) return { ok: false, msg: on ? '已是全线ATO运营' : '已是全线DTO运营' };
+  sim.atoLine = on;
+  sim.log('B', '调度', on
+    ? '全线转ATO运营（DTO兼容模式）：各列车停站时由司机转AM驾驶，终点站折返司机换端'
+    : '全线恢复DTO运营：各列车停站时恢复DTO', {});
+  return { ok: true, msg: on ? '全线转ATO运营：列车在下一站停站时转AM' : '全线恢复DTO：列车在下一站停站时恢复DTO' };
+}
+
 /** dispatcher hands a train to manual driving (CM / RM) or back to automatic (DTO / AM) */
 export function setManual(sim: Sim, tr: Train, mode: 'CM' | 'RM' | 'AUTO'): { ok: boolean; msg: string } {
   if (tr.failed) return { ok: false, msg: '列车故障中' };
@@ -238,7 +267,7 @@ export function setManual(sim: Sim, tr: Train, mode: 'CM' | 'RM' | 'AUTO'): { ok
     if (tr.v > 0.1 && tr.mode === 'RM') return { ok: false, msg: 'RM 转自动驾驶须停车后进行' };
     const level: Level = cbtcAvailable(sim, tr) ? 'CBTC' : tr.level === 'CBTC' && !tr.comm ? 'CBTC' : 'TBTC';
     if (level === 'CBTC' && !tr.comm) return { ok: false, msg: '车地通信中断，不能以CBTC自动驾驶' };
-    if (!setMode(sim, tr, autoMode(level), level, '恢复自动驾驶')) return { ok: false, msg: '当前条件下不能转换（见状态机条件）' };
+    if (!setMode(sim, tr, autoMode(sim, tr, level), level, '恢复自动驾驶')) return { ok: false, msg: '当前条件下不能转换（见状态机条件）' };
     tr.manual = false;
     tr.notch = 0;
     return { ok: true, msg: `列车 ${trainLabel(tr)} 恢复 ${modeLabel(tr.mode, tr.level)} 自动驾驶` };
@@ -291,7 +320,7 @@ export function updateOnboard(sim: Sim) {
     if (tr.mode === 'RM') {
       if (tr.rmAuth > 0 || tr.coupledLen > 0 || tr.tasks[0]?.k === 'rescue') continue;
       const level: Level = avail ? 'CBTC' : 'TBTC';
-      setMode(sim, tr, autoMode(level), level, '结束RM');
+      setMode(sim, tr, autoMode(sim, tr, level), level, '结束RM');
       continue;
     }
     // ---- degrade CBTC → TBTC
@@ -308,7 +337,15 @@ export function updateOnboard(sim: Sim) {
       // at the last station before the TBTC area, rather than in section
       const nextZone = tr.phase === 'dwell' ? nextStopZone(sim, tr) : 'CBTC';
       const forced = tr.forceLevel === 'TBTC' || zone !== 'CBTC' || nextZone !== 'CBTC';
-      if (!forced || !standing) continue;
+      if (!forced) {
+        // DTO degraded → the driver takes the cab at the next stop (ATO); back
+        // to DTO at a stop once it is allowed again (D52)
+        const stop = standing && (tr.phase === 'dwell' || tr.phase === 'reversing' || !tr.inService);
+        if (tr.mode === 'DTO' && !dtoAllowed(sim, tr) && stop) setMode(sim, tr, 'AM', 'CBTC', sim.atoLine ? '全线ATO运营，转ATO（司机驾驶）' : `降级ATO（${tr.dtoInhibit}）`);
+        else if (tr.mode === 'AM' && dtoAllowed(sim, tr) && stop) setMode(sim, tr, 'DTO', 'CBTC', '恢复DTO');
+        continue;
+      }
+      if (!standing) continue;
       if (tr.phase === 'dwell') setMode(sim, tr, 'AM', 'TBTC', tr.forceLevel === 'TBTC' ? '强制TBTC，停站降级' : '区域转TBTC，停站降级');
       else if (tr.phase === 'run' && (zone === 'ZCFAIL' || tr.maDist < 40)) {
         // no ZC movement authority: the driver changes over where the train stands
@@ -324,7 +361,7 @@ export function updateOnboard(sim: Sim) {
     if (tr.relocSec < 0) { tr.relocSec = sec; continue; }
     const atBeacon = tr.v < 0.1 && topo.berths.some(b => b.link === tr.link && Math.abs(b.offset - tr.off) < 1);
     if (sec !== tr.relocSec || tr.phase === 'dwell' || atBeacon) {
-      if (setMode(sim, tr, tr.mode === 'CM' ? 'CM' : 'DTO', 'CBTC', '升级CBTC')) tr.relocSec = -1;
+      if (setMode(sim, tr, tr.mode === 'CM' ? 'CM' : autoMode(sim, tr, 'CBTC'), 'CBTC', '升级CBTC')) tr.relocSec = -1;
     }
   }
 }

@@ -36,7 +36,7 @@ const CLONED = [
 
 const SCALARS = [
   'passengerScale', 'nextTrainId', 'nextFaultId', 'passengersServed', 'passengersCleared', 'passengersStranded', 'depTotal', 'depOnTime', 'tripsDone',
-  'nextCallId', 'autoRadio', 'autoDispatch', 'scenarioFired', 'randomLevel', 'nextRandomAt', 'nextBookmarkId', 'planRev',
+  'nextCallId', 'autoRadio', 'autoDispatch', 'atoLine', 'scenarioFired', 'randomLevel', 'nextRandomAt', 'nextBookmarkId', 'planRev',
 ] as const;
 
 function cloneTrain(tr: Train): Train {

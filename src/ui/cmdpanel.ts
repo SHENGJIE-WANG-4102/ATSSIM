@@ -334,7 +334,7 @@ export class CommandPanel {
     const drive = h('div', { class: 'cmdgrid' },
       this.btn(following ? '取消跟踪' : '跟踪列车', () => this.hooks.follow(following ? null : id), following ? 'on' : 'primary'),
       ...(t0.manual
-        ? [this.btn('恢复自动驾驶', { title: `列车 ${t0.svc}-${t0.trip} 恢复自动驾驶（CBTC级 DTO，TBTC级 AM）`, cmd: { c: 'manual', train: id, mode: 'AUTO' } }, 'primary')]
+        ? [this.btn('恢复自动驾驶', { title: `列车 ${t0.svc}-${t0.trip} 恢复自动驾驶（CBTC级 DTO 或降级ATO时 AM，TBTC级 AM）`, cmd: { c: 'manual', train: id, mode: 'AUTO' } }, 'primary')]
         : [
           this.btn('人工驾驶 CM', { title: `接管列车 ${t0.svc}-${t0.trip}：人工驾驶 CM（ATP 防护）`, cmd: { c: 'manual', train: id, mode: 'CM' }, detail: '由你操纵牵引/制动手柄驾驶列车（↑/W 牵引、↓/S 制动、X 惰行、E 紧急制动）。ATP 监督速度与移动授权，超速将触发紧急制动并计入安全违章。停站对标将评分。建议仿真速率 1×。' }, 'warn'),
           this.btn('人工驾驶 RM', { title: `接管列车 ${t0.svc}-${t0.trip}：限制人工驾驶 RM（≤25km/h）`, cmd: { c: 'manual', train: id, mode: 'RM' }, critical: true, detail: 'RM 模式无移动授权防护，司机目视行车，限速25km/h。越过红灯将记为冒进信号。须先停车。' }, 'danger'),
@@ -381,6 +381,9 @@ export class CommandPanel {
       this.btn(t0.hold ? '放行' : '扣车', { title: `${t0.hold ? '放行' : '扣车'} 列车 ${t0.svc}-${t0.trip}`, cmd: { c: 'trainHold', train: id, on: !t0.hold } }),
       this.btn('恢复接续', { title: `列车 ${t0.svc}-${t0.trip} 故障恢复接续`, cmd: { c: 'recoverService', train: id }, detail: '仅在已完成车次的终点停站办理。取消已错过的完整往返车次，按原图接续同一终点的近期始发；无近期接续则保留计划，须另行人工调整。已完成车次和历史晚点保留。' }),
       this.btn('退出服务', { title: `列车 ${t0.svc}-${t0.trip} 退出服务，清客回段`, cmd: { c: 'withdraw', train: id }, detail: '列车在前方站清客后回最近车辆段/停车场，剩余计划车次取消。' }),
+      t0.dto
+        ? this.btn('恢复DTO', { title: `列车 ${t0.svc}-${t0.trip} 恢复DTO`, cmd: { c: 'trainDto', train: id, on: true }, detail: `当前不能DTO：${t0.dto}。调度命令降级的可恢复；车载故障须先修复。列车在下一站停站时由AM转DTO。` })
+        : this.btn('降级ATO', { title: `列车 ${t0.svc}-${t0.trip} 降级为ATO（司机驾驶室值守）`, cmd: { c: 'trainDto', train: id, on: false }, detail: '仍为CBTC级移动闭塞，司机在下一站停站时转AM：发车需司机按ATO启动按钮，折返时司机换端（多约45秒）。用于DTO相关设备故障、车内异常需司机值守等。' }, 'warn'),
       this.btn('授权RM运行', { title: `授权列车 ${t0.svc}-${t0.trip} 以RM模式运行`, cmd: { c: 'authRM', train: id }, critical: true, detail: '司机以≤25km/h目视行车600m，可越过故障占用区段或关闭的信号（须确认进路正确、道岔位置正确）。' }),
     ));
     const skipSel = h('select', {}, ...ahead.slice(0, 8).map((s) => h('option', { value: s.index }, s.name))) as HTMLSelectElement;
@@ -419,6 +422,12 @@ export class CommandPanel {
       ));
     });
     this.el.append(h('div', { class: 'sect-title' }, 'CBTC / TBTC 系统切换'), zbox);
+    this.el.append(h('div', { class: 'sect-title' }, `运营驾驶模式：${snap.atoLine ? 'ATO（DTO兼容模式，司机驾驶）' : 'DTO'}`));
+    this.el.append(h('div', { class: 'cmdgrid' },
+      snap.atoLine
+        ? this.btn('全线恢复DTO', { title: '全线恢复 DTO 运营', cmd: { c: 'lineAto', on: false }, critical: true, detail: '各列车在下一站停站时由AM恢复DTO（车载DTO故障或单独降级的列车除外）。' })
+        : this.btn('全线转ATO运营', { title: '全线转 ATO 运营（DTO兼容模式）', cmd: { c: 'lineAto', on: true }, critical: true, detail: '仍为CBTC移动闭塞，各列车在下一站停站时由司机转AM驾驶；终点站折返司机换端约多45秒、发车需司机按钮。运行图不变，终点站折返余量吸收换端时间；高峰折返紧张时可能晚点。新运营日也可在“运营日设置”中直接选择ATO运营。' }, 'warn'),
+    ));
     this.el.append(h('div', { class: 'cmdgrid' },
       this.btn('全线切换TBTC', { title: '全线切换至 TBTC 后备系统', cmd: { c: 'zoneLevel', zones: topo.zones.map((z) => z.id), level: 'TBTC' }, critical: true }),
       this.btn('全线恢复CBTC', { title: '全线恢复 CBTC', cmd: { c: 'zoneLevel', zones: topo.zones.map((z) => z.id), level: 'CBTC' }, critical: true }),

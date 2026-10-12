@@ -6,7 +6,7 @@ import { FAULT_LABELS } from './faults';
 const COMMANDS = new Set([
   'setRoute', 'cancelRoute', 'guideRoute', 'autoPass', 'ars', 'switchMove', 'switchLock', 'switchFieldLock',
   'axleReset', 'sectionUnlock', 'setTsr', 'cancelTsr', 'platformHold', 'platformSkip', 'platformEsp', 'psdBypass',
-  'trainHold', 'trainSkip', 'turnback', 'withdraw', 'recoverService', 'exchangeDuty', 'standby', 'authRM', 'ebRelease', 'trainLevel', 'rescue', 'addTrain',
+  'trainHold', 'trainSkip', 'turnback', 'withdraw', 'recoverService', 'exchangeDuty', 'standby', 'authRM', 'ebRelease', 'trainLevel', 'trainDto', 'lineAto', 'rescue', 'addTrain',
   'overlay', 'zoneLevel', 'ack', 'fault', 'repair', 'trainMaintenance', 'sectionBlock', 'switchBlock', 'manual', 'radio', 'radioAuto',
   'env', 'randomFaults', 'scenarioEnd', 'bookmark',
 ]);
@@ -20,6 +20,7 @@ export function validateCommand(sim: Sim, cmd: Command): string | null {
     setTsr: ['sections', 'kmh'], cancelTsr: ['sections'], platformHold: ['platform', 'on'], platformSkip: ['platform', 'on'],
     platformEsp: ['platform', 'on'], psdBypass: ['platform', 'on'], trainHold: ['train', 'on'], trainSkip: ['train', 'station', 'on'],
     turnback: ['train', 'station'], withdraw: ['train'], recoverService: ['train'], exchangeDuty: ['train', 'with'], standby: ['train'], authRM: ['train'], ebRelease: ['train'], trainLevel: ['train', 'level'],
+    trainDto: ['train', 'on'], lineAto: ['on'],
     rescue: ['failed', 'rescuer'], addTrain: ['depot', 'dir', 'to', 'time'], overlay: ['id', 'from', 'to', 'headway'],
     zoneLevel: ['zones', 'level'], ack: ['ids'], fault: ['kind', 'target', 'duration'], repair: ['fault'], trainMaintenance: ['fault'],
     sectionBlock: ['sections', 'on'], switchBlock: ['sw', 'on'], manual: ['train', 'mode'], radio: ['call', 'option'],
@@ -65,7 +66,7 @@ export function validateCommand(sim: Sim, cmd: Command): string | null {
   if (cmd.c === 'overlay' && (cmd.to <= cmd.from || cmd.headway < 90 || cmd.to > 27.5 * 3600)) return '无效加开时段或间隔';
   if (cmd.c === 'fault') {
     if (!(cmd.kind in FAULT_LABELS)) return '无效故障类型';
-    if (['trainComm', 'trainFail', 'pecu'].includes(cmd.kind)) {
+    if (['trainComm', 'trainDto', 'trainFail', 'pecu'].includes(cmd.kind)) {
       if (!sim.trains.has(cmd.target)) return '列车不存在';
     } else {
       const n = cmd.kind === 'zcFail' ? sim.zoneState.length : cmd.kind === 'switch' ? sim.sw.length

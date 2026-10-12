@@ -486,9 +486,9 @@ export function buildReport(sim: Sim, title: string, from: number): ScenarioRepo
 
 const LEVELS = [
   null,
-  { label: '初级', mean: 25 * 60, kinds: [['trainFailR', 3], ['trainComm', 1], ['psd', 2], ['surge', 2], ['pecu', 2]] as [string, number][] },
-  { label: '中级', mean: 14 * 60, kinds: [['trainFailR', 3], ['trainComm', 1], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 2], ['axle', 2], ['signal', 2], ['wind', 1]] as [string, number][] },
-  { label: '高级', mean: 8 * 60, kinds: [['trainFailR', 2], ['trainFail', 2], ['trainComm', 1], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 3], ['axle', 2], ['signal', 2], ['zcFail', 1], ['wind', 1], ['rain', 1], ['trackPerson', 2]] as [string, number][] },
+  { label: '初级', mean: 25 * 60, kinds: [['trainFailR', 3], ['trainComm', 1], ['trainDto', 1], ['psd', 2], ['surge', 2], ['pecu', 2]] as [string, number][] },
+  { label: '中级', mean: 14 * 60, kinds: [['trainFailR', 3], ['trainComm', 1], ['trainDto', 1], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 2], ['axle', 2], ['signal', 2], ['wind', 1]] as [string, number][] },
+  { label: '高级', mean: 8 * 60, kinds: [['trainFailR', 2], ['trainFail', 2], ['trainComm', 1], ['trainDto', 1], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 3], ['axle', 2], ['signal', 2], ['zcFail', 1], ['wind', 1], ['rain', 1], ['trackPerson', 2]] as [string, number][] },
 ];
 
 export const RANDOM_LEVELS = ['关闭', '初级', '中级', '高级'];
@@ -540,6 +540,10 @@ function injectRandom(sim: Sim, kind: string): string {
       const tr = pick(sim, running.filter((t) => t.level === 'CBTC' && t.comm));
       return tr ? result(injectFault(sim, 'trainComm', tr.id, dur(420))) : '';
     }
+    case 'trainDto': {
+      const tr = pick(sim, running.filter((t) => t.mode === 'DTO'));
+      return tr ? result(injectFault(sim, 'trainDto', tr.id, dur(1800))) : '';
+    }
     case 'psd': {
       const p = pick(sim, topo.platforms.filter((pp) => pp.station > 0 && pp.station < topo.stations.length - 1).map((pp) => pp.id));
       return p !== undefined ? result(injectFault(sim, 'psd', p, dur(600))) : '';
@@ -585,7 +589,7 @@ function injectRandom(sim: Sim, kind: string): string {
 }
 
 export function isFaultKind(k: string): k is FaultKind {
-  return ['trainComm', 'zcFail', 'axle', 'switch', 'signal', 'psd', 'trainFail', 'surge', 'pecu', 'trackPerson'].includes(k);
+  return ['trainComm', 'trainDto', 'zcFail', 'axle', 'switch', 'signal', 'psd', 'trainFail', 'surge', 'pecu', 'trackPerson'].includes(k);
 }
 
 export { LINE_INFO };

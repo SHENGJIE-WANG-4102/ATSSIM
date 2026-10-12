@@ -161,6 +161,9 @@ export interface Train {
   ebCallAt: number;
   /** train-level CBTC/TBTC selection */
   forceLevel: ForceLevel;
+  /** why this train may not run DTO ('' = it may): under CBTC it runs ATO
+   *  with the driver in the cab (AM) instead (DTO degraded, D52) */
+  dtoInhibit: string;
   /** section where CBTC became available again; the upgrade waits for the next section boundary (relocalisation) */
   relocSec: number;
   /** last mode / level change */
@@ -416,6 +419,7 @@ export interface SimEvent {
 
 export type FaultKind =
   | 'trainComm'
+  | 'trainDto'
   | 'zcFail'
   | 'axle'
   | 'switch'
@@ -476,6 +480,10 @@ export type Command =
   | { c: 'authRM'; train: number; signal?: number }
   | { c: 'ebRelease'; train: number }
   | { c: 'trainLevel'; train: number; level: ForceLevel }
+  /** DTO allowed for the train (on) or degraded to ATO with the driver (off) */
+  | { c: 'trainDto'; train: number; on: boolean }
+  /** whole line: ATO with drivers (on) or back to DTO (off) */
+  | { c: 'lineAto'; on: boolean }
   | { c: 'rescue'; failed: number; rescuer: number }
   | { c: 'addTrain'; depot: number; dir: TrackDir; to: number; time: number }
   | { c: 'overlay'; id: string; from: number; to: number; headway: number }
@@ -511,6 +519,8 @@ export interface SimConfig {
   randomFaults?: number;
   /** no night engineering possessions (tests) */
   noPossessions?: boolean;
+  /** 'ATO': the line runs ATO with drivers (DTO compatibility mode, D52) */
+  driveMode?: 'DTO' | 'ATO';
 }
 
 export type ToWorker =
@@ -530,6 +540,8 @@ export type ToWorker =
 
 export interface TrainSnap {
   id: number;
+  /** why DTO is not allowed for the train ('' = it is) */
+  dto: string;
   vehicle: string;
   svc: string;
   trip: string;
@@ -679,6 +691,8 @@ export interface Snapshot {
   platforms: Uint8Array;
   platformWaiting: Uint16Array;
   zones: ZoneState[];
+  /** line-wide ATO operation (DTO compatibility mode) */
+  atoLine: boolean;
   trains: TrainSnap[];
   depotCounts: number[];
   traces: { train: number; pts: number[] }[];

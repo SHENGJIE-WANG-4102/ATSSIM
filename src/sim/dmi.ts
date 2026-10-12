@@ -7,7 +7,7 @@ import type { Sim } from './engine';
 import type { DmiData, DmiMsg, Level, Mode, Train } from './model';
 import { STATIONS, fleetEntry } from '../data/line2';
 import { stopError } from './movement';
-import { cbtcAvailable } from './onboard';
+import { cbtcAvailable, dtoAllowed } from './onboard';
 
 const LOG_MAX = 40;
 
@@ -15,7 +15,7 @@ const LOG_MAX = 40;
 export function availableMode(sim: Sim, tr: Train): { mode: Mode; level: Level } {
   // CBTC (DTO) needs the radio link and a ZC in control; the TBTC backup
   // (digital track circuits, continuous) runs in parallel and offers ATO (P2 §2.1.1)
-  if (cbtcAvailable(sim, tr)) return { mode: 'DTO', level: 'CBTC' };
+  if (cbtcAvailable(sim, tr)) return { mode: dtoAllowed(sim, tr) ? 'DTO' : 'AM', level: 'CBTC' };
   return { mode: 'AM', level: 'TBTC' };
 }
 
@@ -30,7 +30,7 @@ export function dmiNote(sim: Sim, tr: Train, m: string, k: DmiMsg['k'] = 'info')
 }
 
 const availMsg = (a: { mode: Mode; level: Level }) =>
-  a.mode === 'DTO' ? 'DTO/ATP模式可用' : a.mode === 'AM' ? 'TBTC ATO/ATP模式可用' : a.mode === 'CM' ? 'CM模式可用' : '仅RM模式可用';
+  a.mode === 'DTO' ? 'DTO/ATP模式可用' : a.mode === 'AM' ? `${a.level === 'CBTC' ? 'CBTC' : 'TBTC'} ATO/ATP模式可用` : a.mode === 'CM' ? 'CM模式可用' : '仅RM模式可用';
 
 /** once a second: turn state changes into DMI messages */
 export function dmiTick(sim: Sim) {

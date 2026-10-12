@@ -15,6 +15,7 @@ import { faultsTick } from '../src/sim/faults';
 import { updateHalts, rootCause } from '../src/sim/halt';
 import { platformBerth, tripTasks, addTurnback, blockTasks, turnbackAt, validatePlan } from '../src/sim/timetable';
 import { predictedLateness, RELIEF_DELAY } from '../src/sim/standby';
+import { OPERATIONS } from '../src/data/line2';
 
 const make = () => new Sim({ dayType: 'weekday', dateLabel: 'core', startTime: 14400, seed: 7, noPossessions: true });
 const advance = (sim: Sim, seconds: number) => { const end = sim.t + seconds; while (sim.t < end - 1e-6) sim.step(); };
@@ -1067,7 +1068,7 @@ describe('state-machine contracts', () => {
     const sim = make(); advance(sim, 2);
     const tr = sim.trainList[0];
     checkSafety(sim);
-    tr.mode = 'AM'; tr.level = 'CBTC';
+    tr.mode = 'DTO'; tr.level = 'TBTC'; // no such state (DTO needs CBTC)
     checkSafety(sim);
     expect(sim.integrity.violations.some(v => v.kind === 'FSM' && v.snapshot.trains[0].id === tr.id)).toBe(true);
     const alarms = [...sim.alarms.values()].filter(a => a.key?.startsWith('integrity-FSM-'));
@@ -1163,5 +1164,53 @@ describe('safety review fixes', () => {
     rescuer.maReason = '救援连挂'; rescuer.maTrain = failed.id;
     updateTrainTasks(sim, rescuer);
     expect(rescuer.mode).toBe('RM');
+  });
+});
+
+describe('ATO with a driver under CBTC (D52)', () => {
+  it('a DTO fault degrades the train to CBTC AM at its next stop and the repair restores DTO', () => {
+    const sim = make(); advance(sim, 7200);
+    const tr = sim.trainList.find(t => t.inService && t.phase === 'run' && t.mode === 'DTO' && t.level === 'CBTC')!;
+    expect(sim.command({ c: 'fault', kind: 'trainDto', target: tr.id, duration: 0 }).ok).toBe(true);
+    expect(sim.command({ c: 'trainDto', train: tr.id, on: true }).ok).toBe(false);
+    expect(tr.mode).toBe('DTO');
+    for (let i = 0; i < 6000 && tr.mode === 'DTO'; i++) sim.step();
+    expect([tr.mode, tr.level, tr.phase]).toEqual(['AM', 'CBTC', 'dwell']);
+    const fault = sim.faults.find(f => f.kind === 'trainDto')!;
+    expect(sim.command({ c: 'repair', fault: fault.id }).ok).toBe(true);
+    expect(tr.dtoInhibit).toBe('');
+    for (let i = 0; i < 6000 && tr.mode === 'AM'; i++) sim.step();
+    expect([tr.mode, tr.level]).toEqual(['DTO', 'CBTC']);
+    expect(sim.integrity.violations).toHaveLength(0);
+  });
+  it('line-wide ATO: trains change to AM at their stops, drivers change ends at turnbacks, and DTO comes back', () => {
+    const sim = make(); advance(sim, 9000);
+    expect(sim.command({ c: 'lineAto', on: true }).ok).toBe(true);
+    expect(sim.command({ c: 'lineAto', on: true }).ok).toBe(false);
+    let reversals = 0;
+    for (let i = 0; i < 9000; i++) {
+      sim.step();
+      for (const t of sim.trainList) if (t.phase === 'reversing' && t.phaseSince === sim.t) {
+        const task = t.tasks[0];
+        if (task?.k === 'reverse' && t.mode === 'AM') { reversals++; expect(t.dwellUntil - sim.t).toBeCloseTo(task.minTime + OPERATIONS.atoEndChange, 6); }
+      }
+    }
+    expect(reversals).toBeGreaterThan(0);
+    const cbtc = sim.trainList.filter(t => t.inService && t.level === 'CBTC' && !t.manual);
+    expect(cbtc.length).toBeGreaterThan(10);
+    expect(cbtc.every(t => t.mode === 'AM')).toBe(true);
+    expect(sim.command({ c: 'lineAto', on: false }).ok).toBe(true);
+    advance(sim, 600);
+    expect(sim.trainList.filter(t => t.inService && t.level === 'CBTC' && !t.manual).every(t => t.mode === 'DTO')).toBe(true);
+    expect(sim.integrity.violations).toHaveLength(0);
+  }, 240_000);
+  it('starts an operating day in ATO operation on the same plan', () => {
+    const dto = make();
+    const ato = new Sim({ dayType: 'weekday', dateLabel: 'core', startTime: 14400, seed: 7, noPossessions: true, driveMode: 'ATO' });
+    expect(ato.atoLine).toBe(true);
+    expect(ato.plan.trips.length).toBe(dto.plan.trips.length);
+    advance(ato, 3600);
+    expect(ato.trainList.filter(t => t.level === 'CBTC').every(t => t.mode === 'AM')).toBe(true);
+    expect(MODE.states).toContain('AM-C');
   });
 });

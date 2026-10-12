@@ -15,7 +15,7 @@ import { callRmPreset, unsafeAhead } from './radio';
 import { applyEB, grantRM, setMode, distToNextSignal } from './onboard';
 import { openDoors, closeDoors } from './psd';
 import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation, departureBerthAfterReverse } from './timetable';
-import { STATIONS, LINE_INFO } from '../data/line2';
+import { STATIONS, LINE_INFO, OPERATIONS } from '../data/line2';
 import { boardAndAlight } from './passengers';
 import { dmiNote } from './dmi';
 import { DOOR_CYCLE, MIN_DWELL, regulatedDwell } from './calibration';
@@ -316,8 +316,8 @@ export function newTrain(sim: Sim, block: Block | null, link: number, off: numbe
     id: sim.nextTrainId++, vehicle, svc: block?.svc ?? '---', tripNo: '----', tripId: -1, block: block?.id ?? -1,
     destText: '', destStation: -1,
     link, off, dir, hist, body: [], len: LINE_INFO.trainLength, v: 0, a: 0,
-    level: 'CBTC', comm: true, mode: 'DTO', eb: false, ebReason: '', ebSince: 0, ebCause: '', ebAuth: false, ebCallAt: 0,
-    forceLevel: 'AUTO', relocSec: -1, modeSince: sim.t, rmSig: -1, spadSig: -1, tbStage: 'none', tbExitSig: -1, tbCallAt: 0, depotStage: 'none', maSigs: [],
+    level: 'CBTC', comm: true, mode: sim.atoLine ? 'AM' : 'DTO', eb: false, ebReason: '', ebSince: 0, ebCause: '', ebAuth: false, ebCallAt: 0,
+    forceLevel: 'AUTO', dtoInhibit: '', relocSec: -1, modeSince: sim.t, rmSig: -1, spadSig: -1, tbStage: 'none', tbExitSig: -1, tbCallAt: 0, depotStage: 'none', maSigs: [],
     maDist: 0, maReason: '', maCode: 'NONE', maTrain: -1, maFar: 0, maFarReason: '', maFarCode: 'NONE', maFarTrain: -1,
     lastDs: 0, lastMa: Infinity, maCut: false, arsWait: null, halt: newHalt(), vTarget: 0, vPermit: 0, stopDist: Infinity, rmAuth: 0, rmReason: '',
     pendingModeAt: 0, pendingMode: null, pendingLevel: null,
@@ -605,6 +605,8 @@ function arriveAtBerth(sim: Sim, tr: Train, task: Task) {
       const planned = task.dep - task.arr;
       ready = sim.t + regulatedDwell(planned, dwell, sim.t - task.arr);
     } else if (task.dep !== null) ready = Math.max(ready, task.dep, sim.t + 20);
+    // with a driver the train leaves on the driver's ATO start button
+    if (tr.mode === 'AM' && !tr.manual) ready += OPERATIONS.atoStartDelay;
     tr.dwellUntil = ready;
     tr.depReadyAt = ready;
     if (task.dep === null && tr.tasks[1]?.k !== 'reverse' && tr.tasks.length > 1 && tr.tasks[1]?.k !== 'stop') {
@@ -616,7 +618,8 @@ function arriveAtBerth(sim: Sim, tr: Train, task: Task) {
     tr.tbStage = 'reverse';
     tr.phase = 'reversing';
     tr.phaseSince = sim.t;
-    tr.dwellUntil = sim.t + task.minTime;
+    // DTO reverses unattended; with a driver (ATO / TBTC backup) the driver changes ends
+    tr.dwellUntil = sim.t + task.minTime + (tr.mode === 'DTO' ? 0 : OPERATIONS.atoEndChange);
     tr.lastStation = task.station;
     // reversed at a platform track: the next departure here leaves from it
     // (set now: the pull-out route is taken from tasks[1] while reversing)

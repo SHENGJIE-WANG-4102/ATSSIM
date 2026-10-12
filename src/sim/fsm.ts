@@ -31,7 +31,7 @@ export interface Machine<S extends string> {
 
 // ---------------------------------------------------------------- guards
 
-type GuardName = 'standstill' | 'cbtcAvailable' | 'ebAuthorised' | 'stopped';
+type GuardName = 'standstill' | 'cbtcAvailable' | 'dtoAvailable' | 'ebAuthorised' | 'stopped';
 
 /** guard context: the train (mode / EB machines) */
 export const GUARDS: Record<GuardName, { label: string; check: (sim: Sim, tr: Train) => boolean }> = {
@@ -41,18 +41,22 @@ export const GUARDS: Record<GuardName, { label: string; check: (sim: Sim, tr: Tr
     label: '车地通信正常、所在区域为CBTC、未强制TBTC',
     check: (sim, tr) => tr.comm && sim.zoneState[sim.topo.links[tr.link].zone] === 'CBTC' && tr.forceLevel !== 'TBTC',
   },
+  dtoAvailable: {
+    label: 'CBTC可用、列车停稳、车载DTO功能正常且未降级ATO运营',
+    check: (sim, tr) => GUARDS.cbtcAvailable.check(sim, tr) && tr.v < 0.1 && !tr.dtoInhibit && !sim.atoLine,
+  },
   ebAuthorised: { label: '经司机报告、调度授权缓解', check: (_s, tr) => tr.ebAuth },
 };
 
 // ---------------------------------------------------------------- driving mode × level
 
-export type ModeState = 'DTO-C' | 'CM-C' | 'RM-C' | 'AM-T' | 'CM-T' | 'RM-T';
+export type ModeState = 'DTO-C' | 'AM-C' | 'CM-C' | 'RM-C' | 'AM-T' | 'CM-T' | 'RM-T';
 
 export const MODE: Machine<ModeState> = {
   name: 'mode',
   label: '驾驶模式/控制级别',
-  states: ['DTO-C', 'CM-C', 'RM-C', 'AM-T', 'CM-T', 'RM-T'],
-  initial: ['DTO-C', 'AM-T', 'CM-T', 'CM-C', 'RM-C', 'RM-T'],
+  states: ['DTO-C', 'AM-C', 'CM-C', 'RM-C', 'AM-T', 'CM-T', 'RM-T'],
+  initial: ['DTO-C', 'AM-C', 'AM-T', 'CM-T', 'CM-C', 'RM-C', 'RM-T'],
   table: [
     // within CBTC
     { from: 'DTO-C', to: 'CM-C', on: '司机转人工驾驶（ATP防护）' },
@@ -61,6 +65,19 @@ export const MODE: Machine<ModeState> = {
     { from: 'CM-C', to: 'RM-C', on: '引导/授权RM', guard: 'standstill' },
     { from: 'RM-C', to: 'DTO-C', on: 'RM结束，获得移动授权', guard: 'cbtcAvailable' },
     { from: 'RM-C', to: 'CM-C', on: 'RM结束（人工驾驶）', guard: 'cbtcAvailable' },
+    // ATO with the driver in the cab under CBTC (AM-C): the DTO degraded mode
+    // (ATO is not the TBTC backup's own mode, D52)
+    { from: 'DTO-C', to: 'AM-C', on: '降级ATO（司机驾驶室值守）', guard: 'standstill' },
+    { from: 'AM-C', to: 'DTO-C', on: '恢复DTO', guard: 'dtoAvailable' },
+    { from: 'AM-C', to: 'CM-C', on: '司机转人工驾驶（ATP防护）' },
+    { from: 'CM-C', to: 'AM-C', on: '恢复ATO', guard: 'cbtcAvailable' },
+    { from: 'AM-C', to: 'RM-C', on: '引导/授权RM', guard: 'standstill' },
+    { from: 'RM-C', to: 'AM-C', on: 'RM结束，获得移动授权', guard: 'cbtcAvailable' },
+    { from: 'AM-C', to: 'AM-T', on: '降级TBTC（ATO）', guard: 'standstill' },
+    { from: 'AM-C', to: 'CM-T', on: '降级TBTC（人工）', guard: 'standstill' },
+    { from: 'AM-T', to: 'AM-C', on: '升级CBTC（ATO）', guard: 'cbtcAvailable' },
+    { from: 'CM-T', to: 'AM-C', on: '升级CBTC并恢复ATO', guard: 'cbtcAvailable' },
+    { from: 'RM-T', to: 'AM-C', on: 'RM结束，获得CBTC移动授权', guard: 'cbtcAvailable' },
     // within TBTC
     { from: 'AM-T', to: 'CM-T', on: '司机转人工驾驶' },
     { from: 'CM-T', to: 'AM-T', on: '恢复ATO' },
