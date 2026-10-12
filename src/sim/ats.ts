@@ -5,7 +5,7 @@ import { PERF } from './dynamics';
  * regulation and dispatcher train commands.
  */
 import type { Sim } from './engine';
-import type { Block, StopTask, Task, Train, Trip, TrackDir } from './model';
+import { cancelTrip, type Block, type StopTask, type Task, type Train, type Trip, type TrackDir } from './model';
 import type { Dir, Topology } from './topology';
 import { nextLink } from './topology';
 import { cancelRoute, swPos, trySetRoute, releaseRoute, approachLocked, bindRouteApproach, committedTrain, relockRescueApproach } from './interlocking';
@@ -21,6 +21,7 @@ import { dmiNote } from './dmi';
 import { DOOR_CYCLE, MIN_DWELL, regulatedDwell } from './calibration';
 import { BYPASS_EXTRA, PSL_EXTRA } from './psd';
 import { newHalt, type ArsWait, type HaltCode } from './halt';
+import { standbyTakeover, predictedLateness } from './standby';
 
 // ---------------------------------------------------------------- route table
 
@@ -400,6 +401,28 @@ function spawnStabled(sim: Sim, b: Block) {
   tr.lastStation = st.index;
   b.train = tr.id;
   setTripFromTasks(sim, tr);
+}
+
+/** A running train keeps its tasks up to the end of trip `last` and then
+ * follows its circulation, which an added service extended (延长运用, D47). */
+export function extendTrainTasks(sim: Sim, tr: Train, last: number) {
+  const { topo, plan } = sim;
+  const cut = tr.tasks.findIndex(t => t.k === 'stop' && t.trip === last && t.dep === null);
+  const block = plan.blocks[tr.block];
+  const next = block.trips.slice(block.trips.indexOf(last) + 1).map(id => plan.trips[id]).find(t => !t.cancelled);
+  if (cut < 0 || !next) return;
+  const tasks = tr.tasks.slice(0, cut + 1);
+  const trip = plan.trips[last];
+  if (next.dir !== trip.dir) {
+    // keep a turnback the train already had planned (its berth may be reserved)
+    const own = tr.tasks[cut + 1];
+    if (own?.k === 'reverse') tasks.push(own);
+    else addTurnback(topo, trip, tasks);
+  }
+  tasks.push(...blockTasks(topo, plan, block, block.trips.indexOf(next.id)));
+  const keep = new Set(tasks.flatMap(t => t.k === 'stop' ? [t.berth] : []));
+  for (const [berth, train] of sim.berthRes) if (train === tr.id && !keep.has(berth)) sim.berthRes.delete(berth);
+  tr.tasks = tasks;
 }
 
 export function setTripFromTasks(sim: Sim, tr: Train) {
@@ -1158,7 +1181,7 @@ export function cmdTurnback(sim: Sim, tr: Train, station: number) {
       const stops = buildStops(sim.planCtx, back, station, nextTrip.to, depAt, true, 1);
       adj = { id: plan.trips.length, no: `6${nextTrip.no.slice(1)}`, dir: back, kind: 'adj', from: station, to: nextTrip.to, stops, revenue: true, block: block.id };
       plan.trips.push(adj);
-      nextTrip.cancelled = true;
+      cancelTrip(nextTrip, `人工折返：${STATIONS[station].name}折返，改开调整车次${adj.no}`);
       block.trips.splice(block.trips.indexOf(nextTrip.id), 0, adj.id);
       resumeIdx = block.trips.indexOf(nextTrip.id) + 1;
     }
@@ -1238,6 +1261,9 @@ export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
     tr.withdrawn = true;
     return { ok: true, msg: `列车 ${tr.svc}已在回段，保留现有入段路径` };
   }
+  // Entering a turnback siding: the only way out is the end change already
+  // routed; a new forward path from here would run into the buffer stop.
+  if (tr.tasks[0]?.k === 'reverse') return { ok: false, msg: '列车正在进入折返线，换端完成后再办理退出服务' };
   const d = dirOf(tr, topo);
   const ahead = stationsAhead(sim, tr);
   const next = ahead[0];
@@ -1287,15 +1313,14 @@ export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
   if (tr.block >= 0) {
     const b = plan.blocks[tr.block];
     const idx = b.trips.indexOf(tr.tripId);
-    for (const tid of b.trips.slice(idx + 1)) plan.trips[tid].cancelled = true;
+    const tail = liveTail(sim, b, idx);
+    for (const tid of b.trips.slice(idx + 1)) cancelTrip(plan.trips[tid], `列车${tr.svc}退出服务（${reason}）`);
     if (tr.tripId >= 0) {
       sim.truncatedTrips.set(tr.tripId, next ?? tr.lastStation);
-      if (!plan.trips[tr.tripId].completed) {
-        plan.trips[tr.tripId].cancelled = true;
-        plan.trips[tr.tripId].cancelReason = reason;
-      }
+      if (!plan.trips[tr.tripId].completed) cancelTrip(plan.trips[tr.tripId], `列车${tr.svc}退出服务（${reason}）`);
     }
     sim.planDirty = true;
+    standbyTakeover(sim, b.id, tail, `列车${tr.svc}退出服务`);
   }
   if (tr.phase === 'dwell' && tr.load > 0) { sim.passengersCleared += tr.load; sim.metrics.cleared += tr.load; tr.load = 0; }
   tr.tasks = tasks;
@@ -1306,29 +1331,50 @@ export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
   return { ok: true, msg: `列车 ${tr.svc}（${tr.vehicle}）退出服务（${reason}），清客后回${topo.depots[depot].name}` };
 }
 
-/** Cancel missed, unstarted circulations at a completed revenue endpoint. */
+/** Trips of a duty after index `idx` that are still to run: what losing the
+ * train cancels and a standby may take over. */
+function liveTail(sim: Sim, b: Block, idx: number): number[] {
+  return b.trips.slice(idx + 1).filter(id => !sim.plan.trips[id].cancelled && !sim.plan.trips[id].completed);
+}
+
+/** Lateness above which a train is taken out of its current service (D44 R1, s). */
+export const SEVERE_DELAY = 600;
+
+/**
+ * Recovery regulation (D44). Explicit rules, each decided on the state of
+ * this one train — never on time elapsed since an incident. A late train is
+ * first relieved by a standby (D45, `cmdStandbyRelief`); these rules are the
+ * fallback when no standby can take over:
+ *  R1 severe delay: at the terminal of a completed trip, its next departure
+ *     predicted more than SEVERE_DELAY late, the train runs empty to its next
+ *     reachable ORIGINAL departure; with none reachable it returns to depot
+ *     (and a standby may then take over its duty, R3).
+ *  R2 missed cycle (headway restoration): at the terminal of a completed trip
+ *     whose next departure was missed by more than 2 min, the missed whole
+ *     cycle is cancelled and the train takes its own near-term original slot.
+ */
 export function cmdRecoverService(sim: Sim, tr: Train) {
   if (tr.tasks[0]?.k === 'depot' || tr.depotStage === 'in')
     return { ok: false, msg: '已在回段，不能改接载客始发时隙' };
-  const clearance = sim.dispatcher.next.get('recovery-cleared-at') ?? Infinity;
-  const positioning = sim.t - clearance >= 2700 && tr.delay > 120;
-  if (!tr.failed && !tr.manual && tr.coupledLen === 0 && tr.inService && (tr.delay > 600 || positioning)
-    && ['run', 'dwell'].includes(tr.phase) && sim.randomLevel === 0 && sim.faults.length > 0
-    && sim.faults.every(f => f.stage === 'closed')) {
-    const target = reachableFutureOrigin(sim, tr);
-    if (positioning && target >= 0) return positionForOriginalSlot(sim, tr, target);
-    if (target < 0) {
-    const reason = '故障恢复：车底剩余始发时隙全部不可达，清客回段';
-    const result = cmdWithdraw(sim, tr, reason);
-    if (result.ok && tr.block >= 0) for (const id of sim.plan.blocks[tr.block].trips)
-      if (sim.plan.trips[id].cancelled && !sim.plan.trips[id].cancelReason) sim.plan.trips[id].cancelReason = reason;
-    return result;
-    }
-  }
+  if (tr.tasks[0]?.k === 'reverse') return { ok: false, msg: '列车正在进入折返线，换端完成后再办理' };
   const current = curStop(tr);
   if (tr.failed || tr.manual || tr.coupledLen > 0 || tr.phase !== 'dwell' || !current
     || current.dep !== null || current.trip < 0 || !sim.plan.trips[current.trip].completed || tr.block < 0)
     return { ok: false, msg: '须在已完成车次的终点停站办理恢复调度' };
+  // R2 first: it cancels only the missed cycle.
+  const skip = skipMissedCycle(sim, tr, current);
+  if (skip.ok) return skip;
+  const lateness = predictedLateness(sim, tr);
+  if (!tr.inService || lateness <= SEVERE_DELAY) return skip;
+  const late = `预计晚点${Math.round(lateness / 60)}分钟`;
+  const target = reachableFutureOrigin(sim, tr);
+  if (target < 0) return cmdWithdraw(sim, tr, `故障恢复：${late}，车底剩余始发时隙全部不可达，清客回段`);
+  return positionForOriginalSlot(sim, tr, target, late);
+}
+
+/** R2: at the terminal, cancel the missed whole cycle and take the train's
+ * own original slot from the same platform within 15 minutes. */
+function skipMissedCycle(sim: Sim, tr: Train, current: StopTask) {
   const first = tr.tasks.findIndex((t, i) => i > 0 && t.k === 'stop' && t.arr === null && t.dep !== null);
   const missed = tr.tasks[first];
   if (missed?.k !== 'stop' || missed.dep === null || missed.dep >= sim.t - 120)
@@ -1343,7 +1389,7 @@ export function cmdRecoverService(sim: Sim, tr: Train) {
   for (const task of tr.tasks.slice(1, target)) if (task.k === 'stop' && task.trip >= 0
     && !sim.plan.trips[task.trip].completed) cancelled.add(task.trip);
   if (!cancelled.size) return { ok: false, msg: '无可取消的未开行车次' };
-  for (const id of cancelled) { sim.plan.trips[id].cancelled = true; sim.plan.trips[id].cancelReason = reason; }
+  for (const id of cancelled) cancelTrip(sim.plan.trips[id], reason);
   for (const [berth, train] of sim.berthRes) if (train === tr.id && berth !== current.berth) sim.berthRes.delete(berth);
   tr.tasks = [current, { ...reverse, chosen: -1 }, ...tr.tasks.slice(target)];
   sim.planDirty = true;
@@ -1413,7 +1459,7 @@ function reachableFutureOrigin(sim: Sim, tr: Train): number {
 /** Clear passengers at the next normal stop, then position over the existing
  * physical path for a reachable ORIGINAL departure. This cancels unfinished
  * service explicitly; completed trips and all recorded lateness are retained. */
-function positionForOriginalSlot(sim: Sim, tr: Train, target: number) {
+function positionForOriginalSlot(sim: Sim, tr: Train, target: number, late: string) {
   const first = tr.tasks[0];
   if (first?.k !== 'stop' || target <= 0 || tr.block < 0)
     return {ok:false,msg:'接续定位须保留当前正常站台接近路径'};
@@ -1422,7 +1468,7 @@ function positionForOriginalSlot(sim: Sim, tr: Train, target: number) {
   for (const task of tr.tasks.slice(0,target)) if (task.k==='stop' && task.trip>=0
     && !sim.plan.trips[task.trip].completed) cancelled.add(task.trip);
   if (!cancelled.size) return {ok:false,msg:'无未完成服务需要取消'};
-  const reason = `故障恢复：清客空驶定位，接续原图${sim.plan.trips[origin.trip].no}`;
+  const reason = `故障恢复：${late}，清客空驶定位，接续原图${sim.plan.trips[origin.trip].no}`;
   const tasks: Task[] = [{...first,trip:-1,arr:null,dep:null,doors:false,revenue:false,minDwell:60,note:'恢复清客'}];
   for (let i=1;i<target;i++) {
     const task=tr.tasks[i];
@@ -1433,7 +1479,7 @@ function positionForOriginalSlot(sim: Sim, tr: Train, target: number) {
       tasks.push({...task,trip:-1,arr:null,dep:null,doors:false,revenue:false,minDwell:10,note:'空驶定位'});
   }
   tasks.push(...tr.tasks.slice(target));
-  for(const id of cancelled){sim.plan.trips[id].cancelled=true;sim.plan.trips[id].cancelReason=reason;}
+  for(const id of cancelled)cancelTrip(sim.plan.trips[id],reason);
   if(tr.phase==='dwell'){
     sim.passengersCleared+=tr.load;sim.metrics.cleared+=tr.load;tr.load=0;
     tr.dwellUntil=Math.max(tr.dwellUntil,sim.t+60);tr.depReadyAt=tr.dwellUntil;
@@ -1571,11 +1617,14 @@ export function cmdRescue(sim: Sim, failed: Train, rescuer: Train) {
   if (rescuer.block >= 0) {
     const b = sim.plan.blocks[rescuer.block];
     const idx = b.trips.indexOf(rescuer.tripId);
-    for (const tid of b.trips.slice(idx + 1)) sim.plan.trips[tid].cancelled = true;
+    const why = `救援：列车${rescuer.svc}担任故障列车${failed.svc}的救援车`;
+    const tail = liveTail(sim, b, idx);
+    for (const tid of b.trips.slice(idx + 1)) cancelTrip(sim.plan.trips[tid], why);
     if (rescuer.tripId >= 0) {
       sim.truncatedTrips.set(rescuer.tripId, nextSt ?? rescuer.lastStation);
-      if (!sim.plan.trips[rescuer.tripId].completed) sim.plan.trips[rescuer.tripId].cancelled = true;
+      if (!sim.plan.trips[rescuer.tripId].completed) cancelTrip(sim.plan.trips[rescuer.tripId], why);
     }
+    standbyTakeover(sim, b.id, tail, `列车${rescuer.svc}担任救援`);
   }
   rescuer.tasks = tasks;
   rescuer.inService = false;
@@ -1630,7 +1679,12 @@ function rescueStep(sim: Sim, tr: Train, target: number) {
   }
   // approach in RM when close
   const gapToFailed = tr.maReason === '救援连挂' ? tr.maDist : Infinity;
-  if (tr.mode !== 'RM' && tr.v < 0.05 && tr.maDist < 60 && (tr.maReason === '救援连挂' || tr.maReason.startsWith('前方') || tr.maReason === '前车' || tr.maReason === '非通信车占用')) {
+  // RM only when the missing authority is caused by the failed train itself:
+  // its body ends the MA, or the MA ends at a signal / block boundary and the
+  // failed train is the first train beyond it. Held by any other train, the
+  // rescuer waits like any follower.
+  const byTarget = tr.maTrain === f.id || (tr.maTrain < 0 && trainAheadOf(sim, tr, 400) === f.id);
+  if (tr.mode !== 'RM' && tr.v < 0.05 && tr.maDist < 60 && byTarget && !unsafeAhead(sim, tr, f.id)) {
     // the rescue order authorises passing the signal between the rescuer and the failed train
     const sig = tr.nextSignal >= 0 && tr.nextSignalDist <= tr.maDist + 15 ? tr.nextSignal : -1;
     grantRM(sim, tr, 400, sig, '救援连挂（≤3km/h 接近）');
@@ -1669,11 +1723,14 @@ function completeCoupling(sim: Sim, tr: Train) {
     sim.blockDone.add(fBlock);
     const b = sim.plan.blocks[fBlock];
     const idx = b.trips.indexOf(f.tripId);
-    for (const tid of b.trips.slice(idx + 1)) sim.plan.trips[tid].cancelled = true;
+    const why = `列车故障：列车${f.svc}不能恢复，由${tr.svc}连挂救援回段`;
+    const tail = liveTail(sim, b, idx);
+    for (const tid of b.trips.slice(idx + 1)) cancelTrip(sim.plan.trips[tid], why);
     if (f.tripId >= 0) {
       sim.truncatedTrips.set(f.tripId, f.lastStation);
-      if (!sim.plan.trips[f.tripId].completed) sim.plan.trips[f.tripId].cancelled = true;
+      if (!sim.plan.trips[f.tripId].completed) cancelTrip(sim.plan.trips[f.tripId], why);
     }
+    standbyTakeover(sim, b.id, tail, `故障列车${f.svc}连挂回段`);
   }
   const fault = sim.faults.find((x) => x.kind === 'trainFail' && x.target === f.id && !x.repaired);
   if (fault) { fault.repaired = true; }

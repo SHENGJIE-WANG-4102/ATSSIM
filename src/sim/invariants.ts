@@ -8,8 +8,9 @@
  * body overlap test, its own observation of every state machine).
  *
  * A violation is recorded with a diagnostic snapshot of the trains and
- * routes involved, raised as an A-level "仿真完整性" alarm (one per kind,
- * rate-limited per kind + train), and fails the tests (assertIntegrity).
+ * routes involved, raised as an A-level "仿真完整性" alarm for every
+ * instance (an identical repeat on the same train within 10 s is the same
+ * event), and fails the tests (assertIntegrity).
  */
 import type { Sim } from './engine';
 import type { Train } from './model';
@@ -55,8 +56,10 @@ export interface DiagSnapshot {
 
 export interface IntegrityState {
   violations: Violation[];
-  /** last record time per kind + subject (rate limit) */
+  /** last time each identical violation was seen (repeat suppression) */
   lastAt: Map<string, number>;
+  /** violation instances raised (alarm key sequence) */
+  seq: number;
   /** last observed state per machine:entity */
   fsm: Map<string, string>;
   /** speed at the previous step (EB deceleration check) */
@@ -67,17 +70,24 @@ export interface IntegrityState {
   counts: Record<string, number>;
   /** since when each train's wait chain has had no exempt cause (the liveness clock) */
   stuckSince: Map<number, number>;
+  /** since when each train has stood, outside its plan, for an exempt cause */
+  heldSince: Map<number, number>;
 }
 
 /** standing beyond the end of the planned stop longer than this is a liveness violation (s) */
 export const LIVENESS_LIMIT = 300;
 /** a wait-for cycle that persists this long is a deadlock (s) */
 export const DEADLOCK_LIMIT = 60;
-const RATE_LIMIT = 60;
+/** an exempt (fault, procedure, hold) standstill outside the plan raises an A alarm after this (s) */
+export const EXEMPT_LIMIT = 1800;
+/** an identical repeat of a violation (same kind, trains and detail) within this window is the same event (s) */
+const REPEAT_WINDOW = 10;
+/** couplers in contact during a rescue coupling (m) */
+const COUPLING_CONTACT = 1;
 const MAX_KEPT = 200;
 
 export function newIntegrity(): IntegrityState {
-  return { violations: [], lastAt: new Map(), fsm: new Map(), prevV: new Map(), cycles: new Map(), counts: {}, stuckSince: new Map() };
+  return { violations: [], lastAt: new Map(), fsm: new Map(), prevV: new Map(), cycles: new Map(), counts: {}, stuckSince: new Map(), heldSince: new Map(), seq: 0 };
 }
 
 /** after a restore the observed history no longer applies */
@@ -87,6 +97,8 @@ export function resetObservation(sim: Sim) {
   g.prevV.clear();
   g.cycles.clear();
   g.stuckSince.clear();
+  g.heldSince ??= new Map();
+  g.heldSince.clear();
 }
 
 function trainSnap(sim: Sim, tr: Train): Record<string, unknown> {
@@ -116,15 +128,21 @@ export function diagSnapshot(sim: Sim, trains: number[]): DiagSnapshot {
 
 export function violate(sim: Sim, kind: ViolationKind, trains: number[], detail: string, subject = trains.join(',')) {
   const g = sim.integrity;
-  const key = `${kind}:${subject}`;
+  // Every instance is recorded and alarmed. Only an identical repeat (same
+  // kind, trains, subject and detail) within a short window is suppressed:
+  // a persisting condition is re-checked every step and would otherwise
+  // raise one alarm per 0.1 s for the same event.
+  const key = `${kind}:${subject}:${trains.join(',')}:${detail.replace(/[\d.]+/g, '#')}`;
   const last = g.lastAt.get(key);
-  if (last !== undefined && sim.t - last < RATE_LIMIT) return;
   g.lastAt.set(key, sim.t);
+  if (g.lastAt.size > 4096) for (const [k, at] of g.lastAt) if (sim.t - at >= REPEAT_WINDOW) g.lastAt.delete(k);
+  if (last !== undefined && sim.t - last < REPEAT_WINDOW) return;
   g.counts[kind] = (g.counts[kind] ?? 0) + 1;
   const v: Violation = { t: sim.t, kind, trains, detail, snapshot: diagSnapshot(sim, trains) };
   g.violations.push(v);
   if (g.violations.length > MAX_KEPT) g.violations.splice(0, g.violations.length - MAX_KEPT);
-  sim.log('A', '完整性', `仿真完整性：${VIOLATION_LABEL[kind]} — ${detail}`, { key: `integrity-${kind}`, code: `INTEGRITY_${kind}`, train: trains[0], snapshot: v.snapshot });
+  g.seq++;
+  sim.log('A', '完整性', `仿真完整性：${VIOLATION_LABEL[kind]} — ${detail}`, { key: `integrity-${kind}-${g.seq}`, code: `INTEGRITY_${kind}`, train: trains[0], snapshot: v.snapshot });
 }
 
 // ---------------------------------------------------------------- safety (every step)
@@ -149,9 +167,11 @@ function checkOverlap(sim: Sim) {
         const ta = sim.trains.get(a.train);
         const tb = sim.trains.get(b.train);
         if (!ta || !tb) continue;
-        // a rescue pair closes up and couples
-        if (ta.rescuing === tb.id || tb.rescuing === ta.id || ta.rescueBy === tb.id || tb.rescueBy === ta.id) continue;
         const overlap = Math.min(a.to, b.to) - Math.max(a.from, b.from);
+        // The only exemption: the two rakes of a rescue pair touch while
+        // coupling (contact, not intrusion). Once coupled they are one train.
+        const coupling = (ta.rescuing === tb.id && ta.phase === 'coupling') || (tb.rescuing === ta.id && tb.phase === 'coupling');
+        if (coupling && overlap <= COUPLING_CONTACT) continue;
         if (overlap > 0.5) violate(sim, 'OVERLAP', [ta.id, tb.id], `${ta.vehicle} / ${tb.vehicle} 于区段 ${sim.topo.sections[sim.topo.links[link].section].name} 重叠 ${overlap.toFixed(1)} m`);
       }
     }
@@ -162,12 +182,14 @@ function checkMotion(sim: Sim, tr: Train) {
   const g = sim.integrity;
   const prev = g.prevV.get(tr.id);
   g.prevV.set(tr.id, tr.v);
-  if (tr.phase !== 'run' || tr.rescuing >= 0) return;
-  const rm = tr.mode === 'RM';
+  if (tr.phase !== 'run') return;
+  // An automatic RM move (rescue approach, RM past a failed signal) is bounded
+  // by the RM authority in its scan; only a manually driven RM train is on sight.
+  const onSight = tr.mode === 'RM' && tr.manual;
   // the train did not run past the authority it had at the start of the step
   // Withdrawal changes the braking target, not the last issued authority.
   // EB gives no exemption from this bound.
-  if (!rm && Number.isFinite(tr.lastMa) && tr.lastDs > tr.lastMa + 0.5) {
+  if (!onSight && Number.isFinite(tr.lastMa) && tr.lastDs > tr.lastMa + 0.5) {
     violate(sim, 'BEYOND_MA', [tr.id], `${tr.svc}-${tr.tripNo} 本步行驶 ${tr.lastDs.toFixed(2)} m，授权仅 ${tr.lastMa.toFixed(2)} m（${tr.maReason}）`);
   }
   if (tr.eb && prev !== undefined && tr.v > prev + 1e-6) {
@@ -312,6 +334,7 @@ function nextPlanned(tr: Train): number {
 
 export function checkLiveness(sim: Sim) {
   const g = sim.integrity;
+  g.heldSince ??= new Map();
   const live = new Set<string>();
   for (const tr of sim.trainList) {
     const h = tr.halt;
@@ -330,16 +353,35 @@ export function checkLiveness(sim: Sim) {
     }
     // the clock runs only while neither the train's own cause nor the root of its
     // wait chain is exempt (a train queueing behind a dwelling / held train is not stuck)
-    if (HALT[h.code].exempt || HALT[code].exempt || !h.unplannedSince) { g.stuckSince.delete(tr.id); continue; }
+    if (HALT[h.code].exempt || HALT[code].exempt || !h.unplannedSince) {
+      g.stuckSince.delete(tr.id);
+      // An exemption is not open-ended: a standstill outside the plan that a
+      // fault or procedure explains is still reported after EXEMPT_LIMIT.
+      if (h.unplannedSince && h.code !== 'STABLED') {
+        const held = Math.max(g.heldSince.get(tr.id) ?? sim.t, h.unplannedSince);
+        g.heldSince.set(tr.id, held);
+        if (sim.t - held >= EXEMPT_LIMIT && !sim.alarms.has(`held-${tr.id}`))
+          sim.log('A', '运营', `列车 ${tr.svc}-${tr.tripNo} 计划外停车已 ${Math.round((sim.t - held) / 60)} 分钟：${HALT[h.code].label}${via(root, tr)}，请核查处置进度`, { key: `held-${tr.id}` });
+      } else releaseHeld(sim, tr.id);
+      continue;
+    }
+    releaseHeld(sim, tr.id);
     const since = g.stuckSince.get(tr.id) ?? sim.t;
     g.stuckSince.set(tr.id, since);
     // "beyond plan": a train is not late while its next scheduled event (arrival /
     // departure) still lies ahead, e.g. queueing for a terminal turnback track
     const from = Math.max(since, h.unplannedSince, h.plannedUntil, nextPlanned(tr));
     if (sim.t - from < LIVENESS_LIMIT) continue;
-    const via = root.id !== tr.id ? `，根因列车 ${root.svc}-${root.tripNo}` : '';
-    violate(sim, 'LIVENESS', [tr.id, ...(root.id !== tr.id ? [root.id] : [])], `${tr.svc}-${tr.tripNo} ${HALT[h.code].label}${h.detail ? `（${h.detail}）` : ''} 已 ${Math.round((sim.t - from) / 60)} 分钟${via}：${HALT[code].label}`, `${tr.id}`);
+    violate(sim, 'LIVENESS', [tr.id, ...(root.id !== tr.id ? [root.id] : [])], `${tr.svc}-${tr.tripNo} ${HALT[h.code].label}${h.detail ? `（${h.detail}）` : ''} 已 ${Math.round((sim.t - from) / 60)} 分钟${via(root, tr)}：${HALT[code].label}`, `${tr.id}`);
   }
   for (const k of g.cycles.keys()) if (!live.has(k)) g.cycles.delete(k);
   for (const id of g.stuckSince.keys()) { const tr = sim.trains.get(id); if (!tr || tr.halt.code === 'NONE') g.stuckSince.delete(id); }
+  for (const id of g.heldSince.keys()) { const tr = sim.trains.get(id); if (!tr || tr.halt.code === 'NONE') releaseHeld(sim, id); }
+}
+
+const via = (root: Train, tr: Train) => root.id !== tr.id ? `，根因列车 ${root.svc}-${root.tripNo}` : '';
+
+function releaseHeld(sim: Sim, id: number) {
+  if (!sim.integrity.heldSince.delete(id)) return;
+  if (sim.alarms.has(`held-${id}`)) sim.clearAlarm(`held-${id}`);
 }

@@ -26,6 +26,13 @@ export function directionShare(day: DayType, station: number, dir: TrackDir, t: 
 export function rawDemand(day: DayType, station: number, dir: TrackDir, t: number): number {
  return STATIONS[station].demand*profile(day,t)*directionShare(day,station,dir,t);
 }
+/** Boarding demand of a platform. At a line end everyone boards towards the
+ * line, so the one departing direction carries the station's whole weight. */
+export function boardingDemand(day: DayType, station: number, dir: TrackDir, t: number): number {
+ const end=station===0?'DN':station===STATIONS.length-1?'UP':undefined;
+ if(end)return dir===end?STATIONS[station].demand*profile(day,t)*2:0;
+ return rawDemand(day,station,dir,t);
+}
 /** Interchanges include transfer boardings in the demand weight. Smooth time variation
  * avoids artificial time jumps when a train straddles a template boundary. */
 export function plannedDwell(day: DayType, station: number, dir: TrackDir, t: number): number {

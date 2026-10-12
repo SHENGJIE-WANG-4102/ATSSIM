@@ -51,6 +51,13 @@ export interface Trip {
   overlay?: string;
 }
 
+/** Cancel a trip with its specific reason. The first reason given is kept
+ * (a later, broader cancellation does not overwrite why it was dropped). */
+export function cancelTrip(trip: Trip, reason: string) {
+  if (!trip.cancelled || !trip.cancelReason) trip.cancelReason = trip.cancelReason ?? reason;
+  trip.cancelled = true;
+}
+
 export type BlockEnd =
   | { kind: 'depot'; depot: number }
   | { kind: 'stable'; station: number }
@@ -62,6 +69,9 @@ export interface Block {
   start: { kind: 'depot'; depot: number; time: number } | { kind: 'stable'; station: number };
   end: BlockEnd;
   trips: number[];
+  /** A standby took over its later trips (R1, D45): the trips it keeps end
+   * in a withdrawal, not at `end`, so no standby takes them over in turn. */
+  relieved?: boolean;
   /** train that is running this block (filled at runtime) */
   train?: number;
   /** Attached state for an integrity alarm. */
@@ -224,6 +234,8 @@ export interface Train {
   overspeedEvents: number;
   passedRed: number;
   withdrawn: boolean;
+  /** duty (表号) of the standby that took over this train's remaining trips (D45) */
+  relievedBy?: string;
   /** psd bypass extra dwell */
   extraDwell: number;
   // manual driving (人工驾驶接管)
@@ -450,8 +462,9 @@ export type Command =
   | { c: 'trainHold'; train: number; on: boolean }
   | { c: 'trainSkip'; train: number; station: number; on: boolean }
   | { c: 'turnback'; train: number; station: number }
-  | { c: 'withdraw'; train: number }
+  | { c: 'withdraw'; train: number; reason?: string }
   | { c: 'recoverService'; train: number }
+  | { c: 'standby'; train: number }
   | { c: 'authRM'; train: number; signal?: number }
   | { c: 'ebRelease'; train: number }
   | { c: 'trainLevel'; train: number; level: ForceLevel }

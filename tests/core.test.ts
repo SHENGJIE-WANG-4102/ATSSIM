@@ -2,18 +2,19 @@ import { describe, it, expect } from 'vitest';
 import { Sim } from '../src/sim/engine';
 import { capture, restore, fingerprint } from '../src/sim/state';
 import { exportDiagnostics, stringifyDiagnostics, parseDiagnostics, replayDiagnostics, compactCheckpoints } from '../src/sim/diagnostics';
-import { checkSafety } from '../src/sim/invariants';
+import { checkSafety, violate } from '../src/sim/invariants';
 import { MACHINES, MODE, EB, allowed } from '../src/sim/fsm';
-import type { Command, Task, Trip } from '../src/sim/model';
+import type { Command, Task, Train, Trip } from '../src/sim/model';
 import { openCall, answerCall, unsafeAhead, rescuerFor, callRescue, radioTick } from '../src/sim/radio';
 import { trySetRoute, cancelRoute, committedTrain, bindRouteApproach, updateInterlocking, releaseRoute, computeOccupancy } from '../src/sim/interlocking';
-import { setMode, grantRM, updateOnboard } from '../src/sim/onboard';
+import { setMode, grantRM, updateOnboard, applyEB, ebCauseCleared, answerEbRelease } from '../src/sim/onboard';
 import { computeBody, indexBodies, rescueRouteReady, scanAhead } from '../src/sim/movement';
 import { distanceToBerth, updateTrainTasks, rescueApproach, trainDesire, runARS, spawnDue, setTripFromTasks } from '../src/sim/ats';
 import { dispatcherTick } from '../src/sim/dispatcher';
-import { faultsTick, updateFaultLifecycle } from '../src/sim/faults';
+import { faultsTick } from '../src/sim/faults';
 import { updateHalts, rootCause } from '../src/sim/halt';
-import { platformBerth, tripTasks, addTurnback, blockTasks, turnbackAt } from '../src/sim/timetable';
+import { platformBerth, tripTasks, addTurnback, blockTasks, turnbackAt, validatePlan } from '../src/sim/timetable';
+import { predictedLateness, RELIEF_DELAY } from '../src/sim/standby';
 
 const make = () => new Sim({ dayType: 'weekday', dateLabel: 'core', startTime: 14400, seed: 7, noPossessions: true });
 const advance = (sim: Sim, seconds: number) => { const end = sim.t + seconds; while (sim.t < end - 1e-6) sim.step(); };
@@ -786,7 +787,7 @@ describe('withdrawal approach continuity', () => {
     expect(tr.tasks.find(t=>t.k==='reverse')).toMatchObject({station:1});
     expect(tr.tasks.at(-1)?.k).toBe('depot');
     expect(sim.plan.trips[tr.tripId].cancelled).toBe(true);
-    expect(sim.plan.trips[tr.tripId].cancelReason).toBe('调度命令');
+    expect(sim.plan.trips[tr.tripId].cancelReason).toBe(`列车${tr.svc}退出服务（调度命令）`);
   });
 });
 
@@ -846,42 +847,33 @@ describe('fault recovery service regulation', () => {
     // Rejected command adds an audit event but preserves tasks, history and trip state.
     expect(sim.metrics.tripDelays).toEqual([1000]);expect(tr.tasks[0].k==='stop'&&tr.tasks[0].trip).toBe(0);expect(before).toContain('R0');
   });
-  it('returns the vehicle from the current terminal when no near-term slot remains', () => {
+  it('repositions a severely late train for a later original slot when the missed cycle cannot be skipped', () => {
     const {sim,tr}=fixture();sim.plan.trips[3].stops[0].dep=sim.t+3600;
     tr.tasks=tr.tasks.map(t=>t.k==='stop'&&t.trip===3&&t.arr===null?{...t,dep:sim.t+3600}:t);
-    expect(sim.command({c:'recoverService',train:tr.id}).ok).toBe(false);
-    expect(sim.plan.trips.every(t=>!t.cancelled)).toBe(true);
+    expect(sim.command({c:'recoverService',train:tr.id}).ok).toBe(true);
+    expect(sim.plan.trips.map(t=>!!t.cancelled)).toEqual([false,true,true,false]);
+    expect(sim.plan.trips[1].cancelReason).toContain('定位');
+    expect(tr.tasks.filter(t=>t.k==='stop'&&t.revenue).every(t=>t.k==='stop'&&t.trip===3)).toBe(true);
+    expect(sim.metrics.tripDelays).toEqual([1000]);
+  });
+  it('returns the vehicle to a yard when withdrawn, keeping completed trips', () => {
+    const {sim,tr}=fixture();
     expect(sim.command({c:'withdraw',train:tr.id}).ok).toBe(true);
     expect(sim.plan.trips[0].cancelled).toBeUndefined();expect(sim.plan.trips.slice(1).every(t=>t.cancelled)).toBe(true);
+    expect(sim.plan.trips.slice(1).every(t=>t.cancelReason?.includes('退出服务'))).toBe(true);
     const vehicle=tr.vehicle;advance(sim,2500);
     expect(sim.trains.has(tr.id)).toBe(false);expect(sim.yards.some(y=>y.tracks.some(track=>track.includes(vehicle)))).toBe(true);
     expect(sim.metrics.tripDelays).toEqual([1000]);expect(sim.integrity.violations).toHaveLength(0);
   });
-  it.each([false, true])('withdraws only an exhausted block after clearance (future reachable=%s)', reachable => {
+  it.each([false, true])('R1 depends on the train, not on any incident or clearance timer (future reachable=%s)', reachable => {
     const {sim,tr}=fixture();
     for (const id of [1,2,3]) {
-      const dep = reachable && id === 3 ? sim.t + 3600 : sim.t - 300;
+      const dep = reachable && id === 3 ? sim.t + 3600 : sim.t - 900;
       sim.plan.trips[id].stops[0].dep = dep;
       tr.tasks = tr.tasks.map(t=>t.k==='stop'&&t.trip===id&&t.arr===null?{...t,dep}:t);
     }
-    expect(sim.command({c:'fault',kind:'signal',target:0,duration:1}).ok).toBe(true);
-    sim.t+=2;faultsTick(sim);updateFaultLifecycle(sim);
-    expect(sim.faults.every(f=>f.stage==='closed')).toBe(true);
-    const result=sim.command({c:'recoverService',train:tr.id});
-    expect(result.ok).toBe(!reachable);
-    expect(tr.inService).toBe(reachable);
-    expect(sim.plan.trips[0].cancelled).toBeUndefined();
-    expect(sim.plan.trips.slice(1).every(t=>!!t.cancelled)).toBe(!reachable);
-    expect(sim.metrics.tripDelays).toEqual([1000]);
-    if(!reachable)expect(sim.plan.trips[1].cancelReason).toContain('不可达');
-  });
-  it.each([false,true])('handles persistent lateness after clearance while retaining usable original slots (reachable=%s)', reachable => {
-    const {sim,tr}=fixture();tr.delay=130;
-    for(const id of [1,2,3]) tr.tasks=tr.tasks.map(t=>t.k==='stop'&&t.trip===id&&t.arr===null
-      ? {...t,dep:reachable&&id===3?sim.t+3600:sim.t-300}:t);
-    expect(sim.command({c:'fault',kind:'signal',target:0,duration:1}).ok).toBe(true);
-    sim.t+=2;faultsTick(sim);updateFaultLifecycle(sim);
-    sim.dispatcher.next.set('recovery-cleared-at',sim.t-2701);
+    // An open incident does not hold the rule back, and nothing records a clearance time.
+    expect(sim.command({c:'fault',kind:'signal',target:0,duration:3600}).ok).toBe(true);
     tr.load=200;const before=structuredClone(sim.plan.trips.map(t=>t.stops));
     expect(sim.command({c:'recoverService',train:tr.id}).ok).toBe(true);
     expect(tr.inService).toBe(false);expect(tr.load).toBe(0);
@@ -890,10 +882,83 @@ describe('fault recovery service regulation', () => {
     if(reachable){
       expect(sim.plan.trips[3].cancelled).toBeUndefined();
       expect(sim.plan.trips[1].cancelReason).toContain('定位');
-      expect(tr.tasks.filter(t=>t.k==='stop'&&t.revenue).every(t=>t.k==='stop'&&t.trip===3)).toBe(true);
       expect(tr.tasks.some(t=>t.k==='reverse')).toBe(true);
-    }else expect(tr.withdrawn).toBe(true);
+    }else{
+      expect(tr.withdrawn).toBe(true);
+      expect(sim.plan.trips.slice(1).every(t=>t.cancelReason?.includes('不可达'))).toBe(true);
+    }
+    expect([...sim.dispatcher.next.keys()].some(k=>k.includes('cleared'))).toBe(false);
     const cp=capture(sim);const replay=make();restore(replay,cp);expect(fingerprint(replay)).toBe(fingerprint(sim));
+  });
+  it('leaves a moderately late train in service', () => {
+    const {sim,tr}=fixture();tr.delay=130;
+    for(const id of [1,2,3]){const dep=sim.t+60+200*id;sim.plan.trips[id].stops[0].dep=dep;
+      tr.tasks=tr.tasks.map(t=>t.k==='stop'&&t.trip===id&&t.arr===null?{...t,dep}:t);}
+    tr.tasks[0]={...tr.tasks[0],arr:sim.t-130} as Task;
+    expect(sim.command({c:'recoverService',train:tr.id}).ok).toBe(false);
+    expect(sim.plan.trips.every(t=>!t.cancelled)).toBe(true);expect(tr.inService).toBe(true);
+  });
+});
+
+describe('standby trains (D45)', () => {
+  const live = () => {
+    const sim = new Sim({ dayType: 'weekday', dateLabel: 'standby', startTime: 7 * 3600, seed: 7, noPossessions: true, autoDispatch: true });
+    advance(sim, 600);
+    return sim;
+  };
+  const errors = (sim: Sim) => validatePlan(sim.planCtx, sim.plan).filter(i => i.severity === 'error' && i.t >= sim.t).map(i => i.text);
+  it('a standby takes over the trips a withdrawn train leaves, from the first one it can start on time', () => {
+    const sim = live();
+    const tr = sim.trainList.find(t => t.inService && t.block >= 0 && sim.plan.blocks[t.block].trips.indexOf(t.tripId) < sim.plan.blocks[t.block].trips.length - 3)!;
+    const b = sim.plan.blocks[tr.block];
+    const tail = b.trips.slice(b.trips.indexOf(tr.tripId) + 1).filter(id => !sim.plan.trips[id].cancelled);
+    const before = errors(sim); const nBlocks = sim.plan.blocks.length; const rev = sim.planRev;
+    expect(sim.command({ c: 'withdraw', train: tr.id, reason: '测试' }).ok).toBe(true);
+    expect(sim.plan.blocks.length).toBe(nBlocks + 1);
+    const sb = sim.plan.blocks[nBlocks];
+    expect(sb.start.kind).toBe('depot');
+    if (sb.start.kind === 'depot') expect(sb.start.time).toBeGreaterThanOrEqual(sim.t + 300);
+    const taken = sb.trips.filter(id => tail.includes(id));
+    expect(taken.filter(id => sim.plan.trips[id].revenue).length).toBeGreaterThan(0);
+    expect(tail.slice(tail.length - taken.length)).toEqual(taken);
+    expect(taken.every(id => !sim.plan.trips[id].cancelled && !sim.plan.trips[id].cancelReason)).toBe(true);
+    // trips before the takeover stay cancelled, each with its reason
+    expect(tail.slice(0, tail.length - taken.length).every(id => sim.plan.trips[id].cancelReason?.includes('退出服务'))).toBe(true);
+    expect(errors(sim).filter(e => !before.includes(e))).toEqual([]);
+    expect(sim.planRev).toBe(rev + 1);
+    expect(sim.events.some(e => e.text.startsWith('备车顶替'))).toBe(true);
+    // the standby leaves the yard and runs its first taken trip
+    advance(sim, (sb.start.kind === 'depot' ? sb.start.time : sim.t) - sim.t + 120);
+    expect(sb.train).toBeDefined();
+    expect(sim.integrity.violations).toHaveLength(0);
+  });
+  it('without the automatic dispatcher a withdrawal does not call a standby', () => {
+    const sim = live(); sim.autoDispatch = false;
+    const tr = sim.trainList.find(t => t.inService && t.block >= 0)!;
+    const nBlocks = sim.plan.blocks.length;
+    expect(sim.command({ c: 'withdraw', train: tr.id }).ok).toBe(true);
+    expect(sim.plan.blocks.length).toBe(nBlocks);
+  });
+  it('relieves a late train: the standby runs its next departure on time, the late train goes home after its current trip', () => {
+    const sim = live();
+    const tr = sim.trainList.find(t => t.inService && t.block >= 0 && t.tasks.some(x => x.k === 'stop' && x.trip === t.tripId && x.dep === null)
+      && sim.plan.blocks[t.block].trips.indexOf(t.tripId) < sim.plan.blocks[t.block].trips.length - 3)!;
+    tr.delay = 1200;
+    expect(predictedLateness(sim, tr)).toBeGreaterThan(RELIEF_DELAY);
+    const current = tr.tripId; const nBlocks = sim.plan.blocks.length;
+    const r = sim.command({ c: 'standby', train: tr.id });
+    expect(r.ok, r.msg).toBe(true);
+    expect(tr.relievedBy).toBe(sim.plan.blocks[nBlocks].svc);
+    // the late train keeps no stop of a trip it handed over
+    const taken = new Set(sim.plan.blocks[nBlocks].trips);
+    expect(tr.tasks.some(t => t.k === 'stop' && taken.has(t.trip))).toBe(false);
+    expect(tr.tasks.at(-1)).toMatchObject({ k: 'stop', dep: null });
+    expect(sim.plan.trips.filter(t => taken.has(t.id)).every(t => !t.cancelled)).toBe(true);
+    expect(sim.command({ c: 'standby', train: tr.id }).ok).toBe(false);
+    const end = tr.tasks.at(-1)!; advance(sim, (end.k === 'stop' && end.arr !== null ? end.arr : sim.t) - sim.t + 600);
+    expect(sim.plan.trips[current].cancelled).toBeUndefined();
+    expect(tr.withdrawn || !sim.trains.has(tr.id)).toBe(true);
+    expect(sim.integrity.violations).toHaveLength(0);
   });
 });
 
@@ -996,6 +1061,98 @@ describe('state-machine contracts', () => {
     tr.mode = 'AM'; tr.level = 'CBTC';
     checkSafety(sim);
     expect(sim.integrity.violations.some(v => v.kind === 'FSM' && v.snapshot.trains[0].id === tr.id)).toBe(true);
-    expect(sim.alarms.get('integrity-FSM')?.level).toBe('A');
+    const alarms = [...sim.alarms.values()].filter(a => a.key?.startsWith('integrity-FSM-'));
+    expect(alarms.length).toBe(sim.integrity.counts.FSM);
+    expect(alarms.every(a => a.level === 'A')).toBe(true);
+  });
+});
+
+describe('safety review fixes', () => {
+  function line(sim: Sim) {
+    for (const id of [...sim.routes.keys()]) releaseRoute(sim, id);
+    for (const block of sim.plan.blocks) sim.blockDone.add(block.id);
+    const links = sim.topo.links.filter(l => l.track === 'UP' && l.normalDir === -1).sort((a, b) => a.chainA - b.chainA);
+    return (tr: Train, chain: number) => {
+      const index = links.findIndex(l => l.chainA <= chain && l.chainB > chain), link = links[index];
+      tr.link = link.id; tr.off = (chain - link.chainA) * link.len / (link.chainB - link.chainA); tr.dir = -1;
+      tr.hist = links.slice(index, index + 5).reverse().map(l => ({ link: l.id, dir: -1 as const }));
+      tr.phase = 'run'; tr.v = 0; tr.eb = false; tr.manual = false; tr.block = -1; tr.tripId = -1; tr.hold = false;
+      tr.tbStage = 'none'; tr.depotStage = 'none'; tr.lastMa = Infinity; tr.lastDs = 0; tr.maDist = tr.maFar = 0; tr.maSigs = [];
+      computeBody(sim, tr);
+    };
+  }
+  it('refuses a desk EB release after a SPAD; only the SPAD procedure releases it', () => {
+    const sim = make(); advance(sim, 2); const tr = sim.trainList[0];
+    tr.v = 0; applyEB(sim, tr, 'test SPAD', 'spad');
+    expect(ebCauseCleared(sim, tr)).toBe(false);
+    const desk = sim.command({ c: 'ebRelease', train: tr.id });
+    expect(desk.ok).toBe(false);
+    expect(tr.eb).toBe(true); expect(tr.ebAuth).toBe(false);
+    expect(answerEbRelease(sim, tr, 'release').ok).toBe(false);
+    expect(tr.eb).toBe(true);
+  });
+  it('refuses a plain EB release while the comm-loss cause persists under CBTC', () => {
+    const sim = make(); advance(sim, 2); const tr = sim.trainList[0];
+    tr.v = 0; tr.comm = false; tr.level = 'CBTC'; applyEB(sim, tr, 'test comm', 'comm');
+    expect(sim.command({ c: 'ebRelease', train: tr.id }).ok).toBe(false);
+    expect(tr.eb).toBe(true);
+    tr.comm = true;
+    expect(sim.command({ c: 'ebRelease', train: tr.id }).ok).toBe(true);
+    expect(tr.eb).toBe(false);
+  });
+  it('raises one A-level alarm per violation instance and suppresses only identical repeats', () => {
+    const sim = make(); advance(sim, 2); const [a, b] = sim.trainList;
+    violate(sim, 'OVERSPEED', [a.id], 'x 1');
+    violate(sim, 'OVERSPEED', [a.id], 'x 2');
+    violate(sim, 'OVERSPEED', [b.id], 'y 1');
+    expect(sim.integrity.counts.OVERSPEED).toBe(2);
+    advance(sim, 11);
+    violate(sim, 'OVERSPEED', [a.id], 'x 3');
+    expect(sim.integrity.counts.OVERSPEED).toBe(3);
+    const alarms = [...sim.alarms.values()].filter(e => e.code === 'INTEGRITY_OVERSPEED');
+    expect(alarms).toHaveLength(3);
+    expect(alarms.every(e => e.level === 'A')).toBe(true);
+  });
+  it('checks a rescue pair for overlap except couplers in contact while coupling', () => {
+    const sim = make(); advance(sim, 2); const [rescuer, failed] = sim.trainList;
+    for (const other of [...sim.trainList]) if (other !== rescuer && other !== failed) sim.removeTrain(other);
+    const place = line(sim);
+    place(failed, 56000); place(rescuer, 56000 + failed.len - 3);
+    rescuer.rescuing = failed.id; failed.rescueBy = rescuer.id; indexBodies(sim);
+    checkSafety(sim);
+    expect(sim.integrity.violations.map(v => v.kind)).toContain('OVERLAP');
+    const sim2 = make(); advance(sim2, 2); const [r2, f2] = sim2.trainList;
+    for (const other of [...sim2.trainList]) if (other !== r2 && other !== f2) sim2.removeTrain(other);
+    const place2 = line(sim2);
+    place2(f2, 56000); place2(r2, 56000 + f2.len - 0.5);
+    r2.rescuing = f2.id; f2.rescueBy = r2.id; r2.phase = 'coupling'; indexBodies(sim2);
+    checkSafety(sim2);
+    expect(sim2.integrity.violations).toHaveLength(0);
+  });
+  it('checks an automatic rescue RM approach against its authority', () => {
+    const sim = make(); advance(sim, 2); const tr = sim.trainList[0];
+    tr.phase = 'run'; tr.mode = 'RM'; tr.manual = false; tr.rescuing = 99;
+    tr.lastMa = 2; tr.lastDs = 3;
+    checkSafety(sim);
+    expect(sim.integrity.violations.map(v => v.kind)).toContain('BEYOND_MA');
+  });
+  it('grants rescue RM only when the failed train itself withholds the authority', () => {
+    const sim = make(); advance(sim, 2); const [rescuer, blocker, failed] = sim.trainList;
+    for (const other of [...sim.trainList]) if (![rescuer, blocker, failed].includes(other)) sim.removeTrain(other);
+    const place = line(sim);
+    place(failed, 56000); place(blocker, 56250); place(rescuer, 56500);
+    for (const tr of [blocker, failed]) tr.tasks = [];
+    blocker.hold = true;
+    indexBodies(sim);
+    sim.command({ c: 'fault', kind: 'trainFail', target: failed.id, duration: 0, recoverable: false });
+    rescuer.tasks = [{ k: 'rescue', target: failed.id }]; rescuer.inService = false;
+    rescuer.rescuing = failed.id; failed.rescueBy = rescuer.id;
+    rescuer.maDist = 20; rescuer.maReason = '前车'; rescuer.maTrain = blocker.id; rescuer.nextSignal = -1; rescuer.nextSignalDist = Infinity;
+    updateTrainTasks(sim, rescuer);
+    expect(rescuer.mode).not.toBe('RM');
+    sim.removeTrain(blocker); indexBodies(sim);
+    rescuer.maReason = '救援连挂'; rescuer.maTrain = failed.id;
+    updateTrainTasks(sim, rescuer);
+    expect(rescuer.mode).toBe('RM');
   });
 });

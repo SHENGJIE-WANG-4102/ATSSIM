@@ -20,6 +20,9 @@
  *  - PSD that cannot close: interlock bypass (互锁解除) on the station's
  *    request; bypass cancelled after repair
  *  - train failure that cannot be cleared: rescue by the train behind
+ *  - recovery regulation (D44/D45): a standby takes over the departures of a
+ *    train that will start them more than RELIEF_DELAY late; with no standby,
+ *    the explicit terminal rules R1/R2 of cmdRecoverService
  *
  * Every RM authorisation first runs the same safety check the desk shows
  * (unsafeAhead) and is never given to a train held by another train.
@@ -28,7 +31,8 @@ import type { Sim } from './engine';
 import type { Command, Train } from './model';
 import { unsafeAhead, rescuerFor } from './radio';
 import { goalBerth } from './movement';
-import { routeLeadsTo, rescueBlockedByConsist } from './ats';
+import { routeLeadsTo, rescueBlockedByConsist, SEVERE_DELAY } from './ats';
+import { predictedLateness, RELIEF_DELAY } from './standby';
 
 /** reaction time before answering a call / starting a procedure (s) */
 const REACT = 10;
@@ -202,20 +206,23 @@ function psdProcedures(sim: Sim) {
 }
 
 
-/** Resume the original diagram by dropping missed, unstarted cycles. */
+/** Recovery regulation rules R1/R2 (D44, cmdRecoverService). R1 is applied
+ * only while no incident is in progress anywhere on the line: positioning a
+ * train that is still held by a fault would cancel trips without gaining time. */
 function recoveryRegulation(sim: Sim) {
-  const clear = sim.randomLevel === 0 && sim.faults.length > 0 && sim.faults.every(f=>f.stage==='closed');
-  if (!clear) sim.dispatcher.next.delete('recovery-cleared-at');
-  else if (!sim.dispatcher.next.has('recovery-cleared-at')) sim.dispatcher.next.set('recovery-cleared-at',sim.t);
-  const positioning = clear && sim.t - (sim.dispatcher.next.get('recovery-cleared-at') ?? sim.t) >= 2700;
   for (const tr of sim.trainList) {
+    if (tr.failed || tr.manual || !tr.inService || tr.coupledLen > 0 || tr.withdrawn) continue;
+    // R1: a standby takes over a departure this train will make too late.
+    const late = tr.relievedBy ? 0 : predictedLateness(sim, tr);
+    const relieved = !tr.relievedBy && late > RELIEF_DELAY && due(sim, `relief-${tr.id}`, 300) && cmd(sim, { c: 'standby', train: tr.id }).ok;
     const stop = tr.tasks[0];
-    if (tr.inService && (tr.delay > 600 || positioning && tr.delay > 120) && clear && due(sim, `exhausted-${tr.id}`, 60))
-      cmd(sim, { c: 'recoverService', train: tr.id });
-    if (tr.phase !== 'dwell' || tr.failed || tr.manual || !tr.inService || tr.coupledLen > 0
-      || stop?.k !== 'stop' || stop.dep !== null || stop.trip < 0 || !sim.plan.trips[stop.trip].completed) continue;
+    if (relieved || tr.relievedBy || tr.phase !== 'dwell' || stop?.k !== 'stop' || stop.dep !== null || stop.trip < 0
+      || !sim.plan.trips[stop.trip].completed) continue;
+    // Fallback at the terminal when no standby could: reposition or withdraw
+    // a severely late train (R1), or skip a missed cycle (R2).
     const next = tr.tasks.find((task, i) => i > 0 && task.k === 'stop' && task.arr === null && task.dep !== null);
-    if (next?.k === 'stop' && next.dep !== null && next.dep < sim.t - 120 && due(sim, `recover-${tr.id}`, 60))
+    const missed = next?.k === 'stop' && next.dep !== null && next.dep < sim.t - 120;
+    if ((late > SEVERE_DELAY || missed) && due(sim, `recover-${tr.id}`, 60))
       cmd(sim, { c: 'recoverService', train: tr.id });
   }
 }

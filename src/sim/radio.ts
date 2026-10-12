@@ -251,7 +251,7 @@ function hhmm(t: number) {
 }
 
 /** reasons why authorising RM would be unsafe right now */
-export function unsafeAhead(sim: Sim, tr: Train): string {
+export function unsafeAhead(sim: Sim, tr: Train, ignore = -1): string {
   const { topo } = sim;
   let link = tr.link;
   let dir = tr.dir;
@@ -260,7 +260,7 @@ export function unsafeAhead(sim: Sim, tr: Train): string {
   for (let i = 0; i < 120 && d < 4000; i++) {
     const l = topo.links[link];
     for (const body of sim.linkBodies.get(link) ?? []) {
-      if (body.train === tr.id) continue;
+      if (body.train === tr.id || body.train === ignore) continue;
       const ahead = i > 0 || (dir === 1 ? body.to > tr.off : body.from < tr.off);
       if (ahead) return '前方列车占用，须等待';
     }
