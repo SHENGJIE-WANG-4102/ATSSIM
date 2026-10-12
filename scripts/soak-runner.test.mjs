@@ -6,13 +6,13 @@ import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { selectCases, runSoak } from './soak-runner.mjs';
 
-test('quick covers both days, all templates, levels 0/3, two seeds with faults; full covers 186', () => {
-  const quick = selectCases(2, [0, 3]); assert.equal(quick.length, 18);
+test('quick covers both days, all templates, levels 0/2, two seeds with faults; full covers 126', () => {
+  const quick = selectCases(2, [0, 2]); assert.equal(quick.length, 18);
   assert.equal(new Set(quick.map(c => JSON.stringify(c))).size, 18);
   assert.deepEqual(quick.filter(c => c.level === 0).map(c => c.seed), [1, 1, 1, 1, 1, 1]);
-  assert.equal(quick.filter(c => c.level === 3).length, 12);
-  assert.equal(selectCases(10, [0, 1, 2, 3]).length, 186);
-  assert.throws(() => selectCases(2, [0, 3], '^nothing$'), /No soak cases/);
+  assert.equal(quick.filter(c => c.level === 2).length, 12);
+  assert.equal(selectCases(10, [0, 1, 2]).length, 126);
+  assert.throws(() => selectCases(2, [0, 2], '^nothing$'), /No soak cases/);
 });
 
 const worker = `
