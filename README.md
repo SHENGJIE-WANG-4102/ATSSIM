@@ -29,7 +29,7 @@ instructor/replay, and a glossary of every signalling term used on screen.
 ## Screen size and UI scale
 
 The whole UI is laid out on a logical 3840×2160 canvas and scaled uniformly to the
-window. On top of that, **界面缩放** (A− / A+ in the header, or Ctrl + / Ctrl −) applies a
+window. On top of that, **界面缩放** (header 设置 menu → 界面缩放, or Ctrl + / Ctrl −) applies a
 global scale of 75 %–200 %, which is remembered in the browser. At 100 % on a 4K wall the
 minimum sizes are: text ≥ 20 px, station names ≥ 40 px, train windows ≥ 30 px, panel body
 text ≥ 24 px and controls ≥ 56 px. The default scale depends on the window: 100 % on a 4K
@@ -180,8 +180,13 @@ before any start time is always auto-answered.
 
 Waiting passengers are shown per platform. With the 客流 layer on, train windows also
 show a load bar (blue → yellow → orange). Crowding raises alarms, lengthens dwells and
-fills trains. Selecting a station or platform shows a **PIS preview**: the next two
-trains with destination and countdown, plus notices (skip, hold, delays, weather).
+fills trains. Selecting a station or platform shows a **PIS preview** laid out like the
+Line 2 platform screens: on the right the first train's countdown (mm:ss) and destination,
+then the second and third trains in turn every 20 s, then the clock/date and the station
+name (Chinese and English) in turn every 3 s; on the left the station, direction, the
+stations ahead and the next train's load, with the notice ticker beneath (skip, hold,
+delays, weather). The header shows the day's ridership (今日客流, boardings so far)
+next to the other KPIs.
 
 ### Weather and night possessions
 

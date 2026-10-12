@@ -576,7 +576,7 @@ export interface TrainSnap {
 }
 
 export interface PisRow {
-  dwellRemaining?: number; dest: string; eta: number; status: 'eta' | 'arriving' | 'at' | 'departing'; trip: string; load: number }
+  dwellRemaining?: number; dest: string; /** destination station index (-1 unknown) */ destSt: number; eta: number; status: 'eta' | 'arriving' | 'at' | 'departing'; trip: string; load: number }
 export interface PisData { station: number; DN: PisRow[]; UP: PisRow[]; notice: string }
 
 export interface RadioCall {

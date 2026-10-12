@@ -260,9 +260,9 @@ export function buildReport(sim: Sim, title: string, from: number): ScenarioRepo
 
 const LEVELS = [
   null,
-  { label: '初级', mean: 25 * 60, kinds: [['trainFailR', 3], ['trainComm', 3], ['psd', 2], ['surge', 2], ['pecu', 2]] as [string, number][] },
-  { label: '中级', mean: 14 * 60, kinds: [['trainFailR', 3], ['trainComm', 3], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 2], ['axle', 2], ['signal', 2], ['wind', 1]] as [string, number][] },
-  { label: '高级', mean: 8 * 60, kinds: [['trainFailR', 2], ['trainFail', 2], ['trainComm', 3], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 3], ['axle', 2], ['signal', 2], ['zcFail', 1], ['wind', 1], ['rain', 1], ['trackPerson', 2]] as [string, number][] },
+  { label: '初级', mean: 25 * 60, kinds: [['trainFailR', 3], ['trainComm', 1], ['psd', 2], ['surge', 2], ['pecu', 2]] as [string, number][] },
+  { label: '中级', mean: 14 * 60, kinds: [['trainFailR', 3], ['trainComm', 1], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 2], ['axle', 2], ['signal', 2], ['wind', 1]] as [string, number][] },
+  { label: '高级', mean: 8 * 60, kinds: [['trainFailR', 2], ['trainFail', 2], ['trainComm', 1], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 3], ['axle', 2], ['signal', 2], ['zcFail', 1], ['wind', 1], ['rain', 1], ['trackPerson', 2]] as [string, number][] },
 ];
 
 export const RANDOM_LEVELS = ['关闭', '初级', '中级', '高级'];

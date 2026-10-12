@@ -160,6 +160,17 @@ export const STATIONS: StationData[] = [
   { id: 'PDA', name: '浦东1号2号航站楼', formerName: '浦东国际机场', interM: 2287, transfers: ['磁浮', '机场联络线'], dwell: 20, demand: 0.9 },
 ];
 
+/** English station names as on the platform screens (Shanghai Metro sign style, approximation) */
+export const STATION_EN: Record<string, string> = {
+  PXL: 'Panxiang Rd. · National Accounting Institute', GJH: 'National Exhibition and Convention Center', HQZ: 'Hongqiao Railway Station',
+  HQ2: 'Hongqiao Airport Terminal 2', SHR: 'Songhong Rd.', BXJ: 'Beixinjing', WNL: 'Weining Rd.', LSG: 'Loushanguan Rd.',
+  ZSG: 'Zhongshan Park', JSL: 'Jiangsu Rd.', JAS: "Jing'an Temple", NJX: 'West Nanjing Rd.', RMG: "People's Square",
+  NJD: 'East Nanjing Rd.', LJZ: 'Lujiazui', PDN: 'South Pudong Rd.', SJD: 'Century Avenue', KJG: 'Shanghai Science & Technology Museum',
+  SJG: 'Century Park', LYL: 'Longyang Rd.', ZJG: 'Zhangjiang Hi-Tech Park', JKL: 'Jinke Rd.', GLL: 'Guanglan Rd.', TZ: 'Tangzhen',
+  CXZ: 'Middle Chuangxin Rd.', HXD: 'East Huaxia Rd.', CS: 'Chuansha', LKL: 'Lingkong Rd.', YDD: 'Yuandong Avenue',
+  HTS: 'Haitian 3rd Rd.', PDA: 'Pudong Airport Terminal 1&2',
+};
+
 /** Station chainage (platform centre) in metres from 蟠祥路·国家会计学院. */
 export function stationChainages(): number[] {
   const out: number[] = [];

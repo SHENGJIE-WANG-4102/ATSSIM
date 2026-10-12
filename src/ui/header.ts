@@ -1,4 +1,9 @@
-/** Top status bar: clock, simulation speed, system level per ZC zone, KPIs, alarm counters, UI scale, sound, help. */
+/**
+ * Top status bar: clock, simulation speed, the system title with the
+ * Shanghai Metro and Line 2 logos, system level per ZC zone, KPIs (incl.
+ * the day's ridership), alarm counters, and a 设置 menu with second-level
+ * entries (UI scale, sound) plus 运营日 / 诊断导出 / 帮助.
+ */
 import { h, clear } from './dom';
 import type { Store } from './store';
 import { fmtTime } from './theme';
@@ -28,8 +33,9 @@ export class Header {
   private zones = h('div', { style: 'display:flex;gap:8px' });
   private kpis = h('div', { style: 'display:flex;gap:22px;align-items:center' });
   private alarmCnt = h('div', { class: 'alarm-counter' });
-  private scaleV = h('span', { class: 'v' });
-  private muteBtn: HTMLButtonElement;
+  private settingsBtn: HTMLButtonElement;
+  /** the 设置 drop-down; placed by the app in the overlay (the header clips its overflow) */
+  menu: HTMLElement;
   private store: Store;
   private hooks: HeaderHooks;
   speed = 1;
@@ -56,27 +62,20 @@ export class Header {
         this.store.send({ type: 'jump', to: target });
       },
     }, '快进至');
-    this.muteBtn = h('button', { class: 'btn icon', title: '声音（M）', onclick: () => this.hooks.setMuted(!this.hooks.muted()) }, '🔊');
+    this.settingsBtn = h('button', { class: 'btn settings-btn', title: '设置', onclick: (e: Event) => { e.stopPropagation(); this.toggleMenu(); } }, '设置 ▾');
+    this.menu = h('div', { class: 'hdr-menu', hidden: true });
     this.el = h('div', { class: 'hdr' },
+      h('div', { class: 'hdr-clock' }, this.clock, h('div', { class: 'clock-meta' }, this.date, this.period)),
+      h('div', { class: 'hdr-speed' }, h('span', { class: 'lbl' }, '速率'), this.pauseBtn, ...this.speedBtns, jumpInput, jumpBtn),
       h('div', { class: 'hdr-brand' },
         h('img', { class: 'metro-logo', src: metroLogo, alt: '上海地铁' }),
         h('img', { class: 'line-badge', src: lineBadge, alt: '2号线 Line 2' }),
-        h('div', {}, h('div', { class: 'hdr-title' }, 'ATS 中央监视'), h('div', { class: 'hdr-sub' }, 'OCC 行车调度 · CBTC 主用 / TBTC 后备')),
+        h('div', {}, h('div', { class: 'hdr-title' }, '上海地铁2号线列车自动监控系统'), h('div', { class: 'hdr-sub' }, 'ATS · OCC 行车调度 · CBTC 主用 / TBTC 后备')),
       ),
-      h('div', {}, this.clock, h('div', { class: 'clock-meta' }, this.date, this.period)),
-      h('div', {}, h('span', { class: 'lbl' }, '速率'), this.pauseBtn, ...this.speedBtns, jumpInput, jumpBtn,
-        h('button', { class: 'btn', title: '重新开始/选择日期', onclick: () => this.hooks.restart() }, '运营日…')),
-      h('div', { class: 'hdr-status' }, this.zones, this.kpis, this.alarmCnt),
-      h('div', { class: 'scale-ctl' },
-        h('span', { class: 'lbl' }, '界面'),
-        h('button', { class: 'btn icon', title: '缩小界面（Ctrl −）', onclick: () => this.stepScale(-1) }, 'A−'),
-        this.scaleV,
-        h('button', { class: 'btn icon', title: '放大界面（Ctrl +）', onclick: () => this.stepScale(1) }, 'A+'),
-        this.muteBtn,
-        h('button', { class: 'btn', title: '导出种子、运行图、命令及状态供回放', onclick: () => store.send({ type: 'diagnostics' }) }, '诊断导出'),
-        h('button', { class: 'btn icon', title: '帮助（F1）', onclick: () => this.hooks.help() }, '?'),
-      ),
+      h('div', { class: 'hdr-status' }, this.zones, this.kpis, this.alarmCnt, this.settingsBtn),
     );
+    this.menu.addEventListener('pointerdown', (e) => e.stopPropagation());
+    document.addEventListener('pointerdown', () => this.toggleMenu(false));
     store.on('snap', () => this.update());
     store.on('alarms', () => this.updateAlarms());
     this.refreshScale();
@@ -91,10 +90,40 @@ export class Header {
     this.refreshScale();
   }
 
+  /** rebuild the menu so its checked entries follow the current settings */
   refreshScale() {
-    this.scaleV.textContent = `${Math.round(this.hooks.scale() * 100)}%`;
-    this.muteBtn.textContent = this.hooks.muted() ? '🔇' : '🔊';
-    this.muteBtn.classList.toggle('on', !this.hooks.muted());
+    if (!this.menu.hidden) this.buildMenu();
+  }
+
+  toggleMenu(open = this.menu.hidden) {
+    this.menu.hidden = !open;
+    this.settingsBtn.classList.toggle('on', open);
+    if (open) this.buildMenu();
+  }
+
+  private buildMenu() {
+    const close = (f: () => void) => () => { this.toggleMenu(false); f(); };
+    const item = (label: string, act: () => void, opts: { on?: boolean; key?: string } = {}) =>
+      h('div', { class: `mi ${opts.on ? 'on' : ''}`, onclick: act }, h('span', { class: 'ck' }, opts.on ? '✓' : ''), h('span', {}, label), h('span', { class: 'key' }, opts.key ?? ''));
+    const sub = (label: string, value: string, ...items: HTMLElement[]) => {
+      const el = h('div', { class: 'mi has-sub' }, h('span', { class: 'ck' }), h('span', {}, label), h('span', { class: 'key' }, `${value} ▸`), h('div', { class: 'submenu' }, ...items));
+      el.addEventListener('click', (e) => { if (e.target === el || (e.target as HTMLElement).parentElement === el) el.classList.toggle('open'); });
+      return el;
+    };
+    const scale = this.hooks.scale(), muted = this.hooks.muted();
+    clear(this.menu);
+    this.menu.append(
+      sub('界面缩放', `${Math.round(scale * 100)}%`,
+        ...UI_SCALES.map((v) => item(`${Math.round(v * 100)}%`, () => { this.hooks.setScale(v); this.refreshScale(); }, { on: Math.abs(v - scale) < 1e-3 })),
+        h('div', { class: 'msep' }),
+        item('放大', () => this.stepScale(1), { key: 'Ctrl +' }), item('缩小', () => this.stepScale(-1), { key: 'Ctrl −' })),
+      sub('声音', muted ? '静音' : '开启',
+        item('开启', () => this.hooks.setMuted(false), { on: !muted, key: 'M' }), item('静音', () => this.hooks.setMuted(true), { on: muted, key: 'M' })),
+      h('div', { class: 'msep' }),
+      item('运营日 / 重新开始…', close(() => this.hooks.restart())),
+      item('诊断导出', close(() => this.store.send({ type: 'diagnostics' })), {}),
+      item('帮助', close(() => this.hooks.help()), { key: 'F1' }),
+    );
   }
 
   setSpeed(s: number) {
@@ -135,12 +164,16 @@ export class Header {
       });
     }
     const st = s.stats;
-    const key = `${st.online}|${st.inService}|${st.late}|${st.punctuality.toFixed(3)}|${st.tripsDone}|${st.tripsPlanned}`;
+    let riders = 0;
+    for (const row of s.ridership.boardings) for (const v of row) riders += v;
+    const wan = (riders / 1e4).toFixed(1);
+    const key = `${wan}|${st.online}|${st.inService}|${st.late}|${st.punctuality.toFixed(3)}|${st.tripsDone}|${st.tripsPlanned}`;
     if (key === this.lastKpi) return;
     this.lastKpi = key;
     clear(this.kpis);
     const kpi = (v: string, k: string, cls = '') => h('div', { class: `kpi ${cls}` }, h('div', { class: 'v' }, v), h('div', { class: 'k' }, k));
     this.kpis.append(
+      kpi(`${wan}万`, '今日客流'),
       kpi(`${st.inService}/${st.online}`, '载客/在线'),
       kpi(String(st.late), '晚点>2分', st.late > 0 ? 'late' : ''),
       kpi(`${(st.punctuality * 100).toFixed(1)}%`, '正点率', st.punctuality < 0.98 ? 'warn' : ''),

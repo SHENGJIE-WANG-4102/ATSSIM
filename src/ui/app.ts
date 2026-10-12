@@ -137,7 +137,7 @@ export class App {
     this.tooltip = new Tooltip(store);
     this.ovTool = this.buildOverviewTool();
     this.buildGraphCtl();
-    overlay.append(this.header.el, this.vtool, this.graphCtl, this.station.hint, this.side.el, this.tooltip.el, this.veil);
+    overlay.append(this.header.el, this.vtool, this.graphCtl, this.station.hint, this.side.el, this.tooltip.el, this.header.menu, this.veil);
     initConfirm(overlay);
 
     this.setMode('overview');
@@ -196,6 +196,7 @@ export class App {
       if (height) el.style.height = `${r.h}px`;
     };
     place(this.header.el, R.header, false);
+    this.header.menu.style.top = `${R.header.y + R.header.h}px`;
     place(this.side.el, R.side);
     place(this.vtool, R.toolbar, false);
     place(this.graphCtl, { x: R.graph.x, y: R.graph.y + 4, w: R.graph.w, h: 56 });

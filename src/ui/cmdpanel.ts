@@ -250,15 +250,19 @@ export class CommandPanel {
       this.btn(f & PLT.BYPASS ? '取消互锁解除' : '站台门互锁解除', { title: `站台门互锁${f & PLT.BYPASS ? '恢复' : '解除'} ${p.name}`, cmd: { c: 'psdBypass', platform: id, on: !(f & PLT.BYPASS) }, critical: !(f & PLT.BYPASS), detail: '确认站台门已人工关闭或已派人看守后执行，列车可凭人工确认发车。' }),
       this.btn('车站图', () => this.hooks.openStation(p.station), 'primary'),
     ));
-    this.pisSection(p.station);
+    this.pisSection(p.station, p.track);
   }
 
-  private pisSection(station: number) {
+  private pisSection(station: number, track?: TrackDir) {
     this.store.send({ type: 'pis', station });
-    const box = h('div');
+    const box = h('div', { class: 'pis-boards' });
     this.el.append(h('div', { class: 'sect-title' }, '站台乘客信息（PIS）预览'), box);
     const prev = this.live;
-    const draw = () => { prev?.(); renderPis(box, this.store.snap?.pis?.station === station ? this.store.snap.pis : null, this.store.snap?.t ?? 0); };
+    const draw = () => {
+      prev?.();
+      const s = this.store.snap;
+      renderPis(box, s?.pis?.station === station ? s.pis : null, s?.t ?? 0, s?.dateLabel ?? '', track);
+    };
     this.live = draw;
     renderPis(box, null, 0);
   }
