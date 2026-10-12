@@ -56,7 +56,7 @@ describe('dispatcher commands', () => {
     expect(sim.command({ c: 'cancelTsr', sections: secs }).ok).toBe(true);
   });
 
-  it('manual turnback, withdraw and add train', () => {
+  it('manual turnback and withdraw', () => {
     const sim = makeSim('weekday', H);
     const rm = st(sim, '人民广场');
     // Calibration changes the phase at 08:00. Wait for a real approaching
@@ -73,22 +73,29 @@ describe('dispatcher commands', () => {
 
     const w = pickTrain(sim, (t) => dirOf(sim, t) === 'UP' && t.id !== tr.id);
     expect(sim.command({ c: 'withdraw', train: w.id }).ok).toBe(true);
-    runFor(sim, 3600, stepCheck);
+    const end = sim.t + 3600;
+    while (sim.trains.has(w.id) && sim.t < end) runFor(sim, 10, stepCheck);
     expect(sim.trains.has(w.id)).toBe(false);
+  });
 
+  it('add train', () => {
+    // the shared 09:55 checkpoint: the peak bands are at capacity (no slot
+    // keeps the minimum headway), so the extra train runs in the first
+    // off-peak hour, on an undisturbed line and to time
+    const sim = makeSim('weekday', 9 * 3600 + 55 * 60, { seed: 5 });
     const lyd = sim.topo.depots.findIndex((d) => d.key === 'LYD');
-    // The peak bands are at capacity (no slot keeps the minimum headway);
-    // an extra train is planned for the first off-peak hour.
     const add = sim.command({c:'addTrain',depot:lyd,dir:'DN',to:st(sim,'广兰路').index,time:Math.max(sim.t+600,10*3600)});
     expect(add.ok,add.msg).toBe(true);
     const blk = sim.plan.blocks[sim.plan.blocks.length - 1];
-    // The manual turnback above leaves the line disturbed and no automatic
-    // dispatcher regulates it here, so the added train may run late; it must
-    // still run both of its trips.
-    const end = sim.plan.trips[blk.trips.at(-1)!].stops.at(-1)!.arr;
-    const done = () => blk.trips.every(id => sim.plan.trips[id].completed || !sim.plan.trips[id].revenue);
-    while (!done() && sim.t < end + 3600) runFor(sim, 60, stepCheck);
+    const trips = blk.trips.map(id => sim.plan.trips[id]).filter(t => t.revenue);
+    expect(trips.length).toBe(2);
+    const end = trips.at(-1)!.stops.at(-1)!.arr;
+    const done = () => trips.every(t => t.completed);
+    let worst = 0;
+    const track = (x: Sim) => { stepCheck(x); const t = blk.train === undefined ? undefined : x.trains.get(blk.train); if (t?.inService) worst = Math.max(worst, t.delay); };
+    while (!done() && sim.t < end + 3600) runFor(sim, 30, track);
     expect(done()).toBe(true);
+    expect(worst).toBeLessThanOrEqual(120);
   });
 
   it('the CIIE added service in its 09:30 weekday window is planned in full and runs', () => {
