@@ -2,7 +2,7 @@ import { Sim } from '../src/sim/engine';
 import { STATIONS } from '../src/data/line2';
 const until = Number(process.argv[2] ?? 10) * 3600;
 const from = Number(process.argv[3] ?? 6) * 3600;
-const sim = new Sim({ dayType: 'weekday', dateLabel: 'test', startTime: 5 * 3600, seed: 1 });
+const sim = new Sim({ dayType: 'weekday', dateLabel: 'test', startTime: 5 * 3600, seed: Number(process.env.SEED ?? 1) });
 const waits: Record<string, number> = {};
 const dwellExtra: Record<string, number> = {};
 let k = 0;

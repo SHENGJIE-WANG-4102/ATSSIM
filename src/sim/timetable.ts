@@ -890,6 +890,17 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
       startOf.set(ins.id, { kind: 'depot', depot, time: 0 });
     }
   }
+  // Positioning moves are fitted one departure at a time and can reach an end
+  // terminal out of order. Every train there leaves by the one departure
+  // platform, in the order it arrived (a train standing on it for a later
+  // departure blocks the earlier one), so pair turns first in, first out.
+  for (const T of [0, topo.stations.length - 1]) {
+    const turns = trips.filter((a) => a.overlay === overlay && !a.cancelled && a.to === T && a.next !== undefined && trips[a.next].from === T && trips[a.next].dir !== a.dir);
+    if (turns.length < 2) continue;
+    const deps = turns.map((a) => trips[a.next!]).sort((x, y) => x.stops[0].dep - y.stops[0].dep);
+    turns.sort((x, y) => x.stops[x.stops.length - 1].arr - y.stops[y.stops.length - 1].arr)
+      .forEach((a, i) => { a.next = deps[i].id; deps[i].prev = a.id; });
+  }
   // ---- sinks
   // overnight stabling at terminal tails goes to the LAST arrivals, so that
   // earlier trains can still use the tails to turn back towards the depot

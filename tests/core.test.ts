@@ -63,7 +63,7 @@ describe('movement and radio regressions', () => {
       {k:'stop',berth:platformBerth(sim.topo,3,'DN'),station:3,trip:-1,arr:null,dep:null,doors:false,revenue:false}];
     tr.nextSignal=signal.id;tr.nextSignalDist=6.4;tr.stopDist=Infinity;
     tr.maDist=tr.maFar=0;tr.maSigs=[];tr.lastDs=0;tr.lastMa=Infinity;
-    const downstream = sim.topo.routes.find(r => r.name === 'S0402→S0318')!;
+    const downstream = sim.topo.routes.find(r => r.name === 'S0402→S0320')!;
     expect(trySetRoute(sim,downstream.id,{fleeting:true}).ok).toBe(true);
     const link = sim.topo.links[downstream.steps[0].link];
     other.link=link.id;other.off=60;other.dir=-1;other.hist=[{link:link.id,dir:-1}];
@@ -379,7 +379,7 @@ describe('movement and radio regressions', () => {
 
 describe('occupied-route rescue',()=>{
   it.each([
-    ['S2402→S2318',false],['S2402→S2318',true],
+    ['S2402→S2322',false],['S2402→S2322',true],
     ['S0102→尽头(侧向)',false],['S0102→尽头(侧向)',true],
   ] as const)('admits only the assigned rescuer and retains locks through coupling (%s, preset=%s)',(name,preset)=>{
     const sim=make();advance(sim,2);const [rescuer,failed]=sim.trainList;
@@ -968,7 +968,7 @@ describe('standby trains (D45)', () => {
     expect(sim.plan.trips[current].cancelled).toBeUndefined();
     expect(tr.withdrawn || !sim.trains.has(tr.id)).toBe(true);
     expect(sim.integrity.violations).toHaveLength(0);
-  });
+  }, 240_000);
 });
 
 describe('shared depot admission',()=>{

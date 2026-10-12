@@ -1,7 +1,7 @@
 import { Sim } from '../src/sim/engine';
 import { STATIONS } from '../src/data/line2';
 const until = Number(process.argv[2] ?? 10) * 3600;
-const sim = new Sim({ dayType: 'weekday', dateLabel: 'test', startTime: 5 * 3600, seed: 1 });
+const sim = new Sim({ dayType: 'weekday', dateLabel: 'test', startTime: 5 * 3600, seed: Number(process.env.SEED ?? 1) });
 while (sim.t < until) sim.step();
 const fmt = (s: number) => `${String(Math.floor(s / 3600) % 24).padStart(2, '0')}:${String(Math.floor(s / 60) % 60).padStart(2, '0')}`;
 // for each trip, find the first station where delay jumps

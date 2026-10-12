@@ -951,6 +951,8 @@ export function buildTopology(): Topology {
   const eastLimit = (t: 'DN' | 'UP') => tailInfo.find((x) => x.side === 'east')?.signalCh[t] ?? Infinity;
   const hasSignalNear = (t: 'DN' | 'UP', ch: number, dir: Dir, within: number) =>
     signals.some((s) => links[s.link].track === t && s.dir === dir && Math.abs(s.chain - ch) <= within);
+  const signalInFront = (t: 'DN' | 'UP', ch: number, dir: Dir, within: number) =>
+    signals.some((s) => links[s.link].track === t && s.dir === dir && (dir === 1 ? s.chain <= ch + 1 && s.chain >= ch - within : s.chain >= ch - 1 && s.chain <= ch + within));
   for (const f of features) {
     for (const t of ['DN', 'UP'] as const) {
       const ext = featureExtent(f, t);
@@ -959,8 +961,11 @@ export function buildTopology(): Topology {
       // west edge facing east, east edge facing west
       const westRole: SignalRole = normal === 1 ? 'home' : 'rev';
       const eastRole: SignalRole = normal === -1 ? 'home' : 'rev';
-      if (!hasSignalNear(t, ext.from, 1, 130)) sigAt(t, ext.from, 1, westRole);
-      if (!hasSignalNear(t, ext.to, -1, 130)) sigAt(t, ext.to, -1, eastRole);
+      // only a signal in front of the switches protects them: one just past a
+      // facing switch leaves the diverging leg unprotected, and routes into it
+      // then start at the previous station (广兰路 west end)
+      if (!signalInFront(t, ext.from, 1, 130)) sigAt(t, ext.from, 1, westRole);
+      if (!signalInFront(t, ext.to, -1, 130)) sigAt(t, ext.to, -1, eastRole);
     }
   }
   // exit / protection signals on the far side of each feature (routes end
