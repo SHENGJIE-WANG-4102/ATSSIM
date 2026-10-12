@@ -33,7 +33,7 @@ export function computePis(sim: Sim, station: number): PisData {
       const dest = t.dep === null ? '本站终到' : trip ? STATIONS[trip.to].name : tr.destText;
       // a train starting here waits for its planned departure
       if (status === 'eta' && t.dep !== null && t.arr === null) eta = Math.max(eta, t.dep - 60);
-      out[track].push({ dest, eta: Math.max(0, eta - sim.t), status, trip: tr.tripNo, load: Math.min(1.3, tr.load / LINE_INFO.capacity) });
+      out[track].push({ dest, dwellRemaining: i === 0 && tr.phase === 'dwell' && t.dep !== null ? Math.max(0, tr.dwellUntil - sim.t) : undefined, eta: Math.max(0, eta - sim.t), status, trip: tr.tripNo, load: Math.min(1.3, tr.load / LINE_INFO.capacity) });
       break;
     }
   }

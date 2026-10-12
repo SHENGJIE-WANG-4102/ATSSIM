@@ -26,6 +26,8 @@ export const PERF = {
   vCouple: 3 / 3.6,
   /** ATO margin below permitted speed (m/s) */
   atoMargin: 3 / 3.6,
+  /** Highest ATO performance margin, also used for minimum planning runs. */
+  atoFastMargin: .25,
   /** ATP overspeed tolerance before EB (m/s) */
   atpTolerance: 5 / 3.6,
   /** running resistance when coasting */
@@ -106,9 +108,9 @@ function simulateRun(prof: LimitSeg[], sgn: 1 | -1, start: number, end: number, 
     for (let k = 0; k <= trainLen; k += 25) vLim = Math.min(vLim, limitAt(prof, x - sgn * k));
     vLim = Math.min(vLim, limitAt(prof, x - sgn * trainLen));
     // look ahead up to 600 m for lower limits
-    let vT = vLim - PERF.atoMargin;
+    let vT = vLim - PERF.atoFastMargin;
     for (let d = 10; d <= 600; d += 10) {
-      const lim = limitAt(prof, x + sgn * d) - PERF.atoMargin;
+      const lim = limitAt(prof, x + sgn * d) - PERF.atoFastMargin;
       vT = Math.min(vT, brakingSpeed(d - 5, lim, PERF.bPlan));
     }
     const remaining = totalDist - travelled;
@@ -152,7 +154,7 @@ export function computeRunTimes(topo: Topology, trainLen: number): RunTimes {
     passDn.push(Math.max(20, (passD[i + 1] || 0) - (passD[i] || 0)));
     passUp.push(Math.max(20, (passU[i] || 0) - (passU[i + 1] || 0)));
   }
-  // planning margin (运行图冗余) ≈ 8 % + 3 s
-  const pad = (a: number[]) => a.map((t) => Math.round(t * 1.08 + 3));
+  // Planning margin is at most 5% of the minimum ATO run (user calibration limit).
+  const pad = (a: number[]) => a.map((t) => Math.floor(t * 1.05 * 10) / 10);
   return { dn: pad(dn), up: pad(up), passDn: pad(passDn), passUp: pad(passUp) };
 }

@@ -31,11 +31,11 @@ export interface Checkpoint {
 const CLONED = [
   'sw', 'sec', 'sig', 'plat', 'zoneState', 'routes', 'routeUnlockedSw', 'berthRes', 'depotStock', 'depotShortLogged', 'blockDone',
   'faults', 'alarms', 'noRouteLogged', 'truncatedTrips', 'yards', 'stabledPool', 'calls', 'pendingCalls', 'env', 'possessions',
-  'metrics', 'scenario', 'dispatcher', 'integrity', 'bookmarks', 'incidents',
+  'ridership', 'metrics', 'scenario', 'dispatcher', 'integrity', 'bookmarks', 'incidents',
 ] as const;
 
 const SCALARS = [
-  'nextTrainId', 'nextFaultId', 'passengersServed', 'passengersCleared', 'passengersStranded', 'depTotal', 'depOnTime', 'tripsDone',
+  'passengerScale', 'nextTrainId', 'nextFaultId', 'passengersServed', 'passengersCleared', 'passengersStranded', 'depTotal', 'depOnTime', 'tripsDone',
   'nextCallId', 'autoRadio', 'autoDispatch', 'scenarioFired', 'randomLevel', 'nextRandomAt', 'nextBookmarkId', 'planRev',
 ] as const;
 

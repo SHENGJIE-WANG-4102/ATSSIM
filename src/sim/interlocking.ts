@@ -2,8 +2,8 @@
  * Computer interlocking (计算机联锁): switches, routes, signals, axle counters.
  */
 import type { Sim } from './engine';
-import type { ActiveRoute } from './model';
-import { withdrawAuthority } from './movement';
+import type { ActiveRoute, Train } from './model';
+import { withdrawAuthority, rescueRouteReady } from './movement';
 import { PERF } from './dynamics';
 import { nextLink } from './topology';
 
@@ -19,6 +19,18 @@ export function swPos(sim: Sim, sw: number): 'N' | 'R' | null {
 }
 
 export interface CmdResult { ok: boolean; msg: string }
+
+/** Reclaim the released approach behind a failed route owner before an
+ * assigned rescue enters it. Points retain their existing lock/position. */
+export function relockRescueApproach(sim: Sim, train: Train, signal: number): CmdResult {
+  if(!rescueRouteReady(sim,train,signal))return {ok:false,msg:'救援既有进路条件不成立'};
+  const rid=sim.sig[signal].route,ar=sim.routes.get(rid)!,route=sim.topo.routes[rid];
+  for(let i=0;i<route.sections.length;i++)if(ar.released[i]){
+    sim.sec[route.sections[i]].lockRoute=rid;
+    ar.released[i]=false;ar.occSeen[i]=false;
+  }
+  return {ok:true,msg:'救援接近区段重新锁闭，保持既有道岔位置'};
+}
 
 /** Bind the nearest approach, including routes which were already set/fleeting. */
 export function bindRouteApproach(sim: Sim, rid: number, train: number) {
@@ -380,7 +392,8 @@ export function updateInterlocking(sim: Sim) {
     for (let i = 0; i < r.sections.length; i++) if (ownSecs.has(r.sections[i])) ar.occSeen[i] = true;
     // owner came to rest with its head in the last section: the route is complete
     const lastSec = r.sections[r.sections.length - 1];
-    if (owner.v < 0.05 && topo.links[owner.link].section === lastSec && owner.phase !== 'run') {
+    if (owner.v < 0.05 && topo.links[owner.link].section === lastSec && owner.phase !== 'run'
+      && !(owner.failed && owner.rescueBy >= 0)) {
       releaseRoute(sim, ar.route);
       continue;
     }

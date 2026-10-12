@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Sim } from '../src/sim/engine';
-import { validatePlan, applyOverlay, OVERLAY_PRESETS } from '../src/sim/timetable';
+import { validatePlan, applyOverlay, OVERLAY_PRESETS, terminalOccupancy } from '../src/sim/timetable';
 import type { DayType } from '../src/sim/model';
 
 const fmtIssues = (xs: { code: string; text: string }[]) => xs.map((i) => `${i.code} ${i.text}`).join('\n');
@@ -24,9 +24,25 @@ describe('timetable validator', () => {
         applyOverlay(sim.planCtx, sim.plan, p);
         const issues = validatePlan(sim.planCtx, sim.plan).filter((i) => i.severity === 'error');
         expect(fmtIssues(issues)).toBe('');
+        expect(sim.plan.trips.some(t => !t.cancelled && t.overlay && t.from===p.a && t.to===p.b)).toBe(true);
+        expect(sim.plan.trips.some(t => !t.cancelled && t.overlay && t.from===p.b && t.to===p.a)).toBe(true);
       });
     }
   }
+  it('fits complete overlay circulations after fault cancellations open larger gaps', () => {
+    const sim = new Sim({ dayType: 'weekday', dateLabel: 'recovery', startTime: 14400, seed: 1 });
+    for (const block of sim.plan.blocks) if (block.id % 3 === 0)
+      for (const id of block.trips) sim.plan.trips[id].cancelled = true;
+    const original = sim.plan.trips.map(trip => ({ cancelled: trip.cancelled, stops: structuredClone(trip.stops) }));
+    const firstAdded = sim.plan.trips.length;
+    const result = applyOverlay(sim.planCtx, sim.plan, OVERLAY_PRESETS[0]);
+    expect(result.trips).toBeGreaterThan(0);
+    expect(fmtIssues(validatePlan(sim.planCtx, sim.plan))).toBe('');
+    expect(sim.plan.trips.slice(0, firstAdded).map(trip => ({ cancelled: trip.cancelled, stops: trip.stops }))).toEqual(original);
+    const omitted = sim.plan.trips.slice(firstAdded).filter(trip => trip.cancelReason?.startsWith('加开能力不足'));
+    expect(omitted.length).toBeGreaterThan(0);
+    for (const trip of omitted) expect(sim.plan.blocks[trip.block].trips.every(id => sim.plan.trips[id].cancelled)).toBe(true);
+  });
   it('flags a turnback shorter than the minimum', () => {
     const sim = new Sim({ dayType: 'weekday', dateLabel: 'test', startTime: 4 * 3600, seed: 1 });
     const plan = sim.plan;
@@ -35,5 +51,51 @@ describe('timetable validator', () => {
     const shift = d.stops[0].dep - a.stops[a.stops.length - 1].arr - 30;
     for (const s of d.stops) { s.arr -= shift; s.dep -= shift; }
     expect(validatePlan(sim.planCtx, plan).some((i) => i.code === 'TURN_SHORT')).toBe(true);
+  });
+  it('rejects a front turn that occupies the normal departure platform during a through train', () => {
+    const sim = new Sim({dayType:'weekday',dateLabel:'front slot',startTime:14400,seed:1});
+    applyOverlay(sim.planCtx,sim.plan,OVERLAY_PRESETS[1]);
+    const occupied = terminalOccupancy(sim.plan).get(2)![0];
+    const trip = sim.plan.trips.find(t => !t.overlay && !t.cancelled && t.dir==='DN' && t.stops.some(s => s.st===2))!;
+    const stop = trip.stops.find(s => s.st===2)!;
+    const shift = occupied.from+30-stop.dep;
+    for (const s of trip.stops) {s.arr+=shift;s.dep+=shift;}
+    expect(validatePlan(sim.planCtx,sim.plan).some(issue => issue.code==='FRONT_CONFLICT' && issue.blocks?.includes(occupied.block))).toBe(true);
+  });
+  it('rejects an added circulation that uses an intermediate terminal as long-term storage', () => {
+    const sim = new Sim({dayType:'weekday',dateLabel:'layover',startTime:14400,seed:1});
+    applyOverlay(sim.planCtx,sim.plan,OVERLAY_PRESETS[0]);
+    const occupied = terminalOccupancy(sim.plan).get(1)!.find(o => sim.plan.trips[sim.plan.blocks[o.block].trips[0]].overlay)!;
+    const block = sim.plan.blocks[occupied.block];
+    const index = block.trips.findIndex((id,i) => sim.plan.trips[id].to===1 && sim.plan.trips[block.trips[i+1]]?.from===1);
+    const arrival = sim.plan.trips[block.trips[index]], departure = sim.plan.trips[block.trips[index+1]];
+    const shift = arrival.stops.at(-1)!.arr+1200-departure.stops[0].dep;
+    for (const stop of departure.stops) {stop.arr+=shift;stop.dep+=shift;}
+    expect(validatePlan(sim.planCtx,sim.plan).some(issue => issue.code==='LAYOVER_LONG' && issue.blocks?.includes(block.id))).toBe(true);
+  });
+  it('protects planned depot exits from an added return on the shared conversion track', () => {
+    const sim = new Sim({dayType:'weekday',dateLabel:'depot slot',startTime:14400,seed:1});
+    const original = structuredClone(sim.plan.trips);
+    applyOverlay(sim.planCtx,sim.plan,OVERLAY_PRESETS[0]);
+    expect(sim.plan.trips.slice(0,original.length)).toEqual(original);
+    const omitted = sim.plan.trips.find(trip => trip.cancelReason?.includes('转换轨时隙冲突'))!;
+    expect(omitted).toBeDefined();
+    const block = sim.plan.blocks[omitted.block];
+    expect(block.trips.every(id => sim.plan.trips[id].cancelled)).toBe(true);
+    for (const id of block.trips) sim.plan.trips[id].cancelled=false;
+    expect(validatePlan(sim.planCtx,sim.plan).some(issue => issue.code==='DEPOT_CONFLICT' && issue.blocks?.includes(block.id))).toBe(true);
+  });
+  it('rejects an early feeder that traps an earlier departure in the single GLL rear turnback', () => {
+    const sim = new Sim({ dayType: 'weekday', dateLabel: 'order', startTime: 14400, seed: 1 });
+    const occupancy = terminalOccupancy(sim.plan).get(22)!.sort((a,b) => a.from-b.from);
+    const index = occupancy.findIndex((item,i) => i > 0 && item.from < occupancy[i-1].to
+      && sim.plan.trips[sim.plan.blocks[item.block].trips[0]].kind === 'empty');
+    expect(index).toBeGreaterThan(0);
+    const first = occupancy[index-1], second = occupancy[index];
+    const feeder = sim.plan.trips[sim.plan.blocks[second.block].trips[0]];
+    const shift = second.from-first.from+10;
+    for (const stop of feeder.stops) { stop.arr -= shift; stop.dep -= shift; }
+    expect(validatePlan(sim.planCtx, sim.plan).some(issue => issue.code === 'TAIL_ORDER'
+      && issue.blocks?.includes(second.block) && issue.blocks.includes(first.block))).toBe(true);
   });
 });

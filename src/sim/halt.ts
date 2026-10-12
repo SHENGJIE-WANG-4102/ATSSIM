@@ -111,8 +111,8 @@ export function classify(sim: Sim, tr: Train): { code: HaltCode; train: number; 
     if (ps?.esp) return r('ESP', -1, sim.topo.platforms[p].name);
     if (tr.hold || ps?.hold) return r('HOLD');
     if (ps && ps.psd === 'closeFail') return r('PSD_FAULT', -1, sim.topo.platforms[p].name);
-    const planned = Math.max(tr.depReadyAt, st?.dep ?? 0);
-    if (sim.t < tr.dwellUntil) return r(st && st.dep !== null && sim.t < st.dep - 30 ? 'LAYOVER' : 'DWELL', -1, '', planned);
+    const planned = tr.dwellUntil;
+    if (sim.t < tr.dwellUntil) return r(st && st.arr === null && st.dep !== null && sim.t < st.dep - 30 ? 'LAYOVER' : 'DWELL', -1, '', planned);
     return r('DWELL', -1, '', planned);
   }
   if (tr.phase === 'reversing') return r('TURNBACK', -1, '', tr.dwellUntil);

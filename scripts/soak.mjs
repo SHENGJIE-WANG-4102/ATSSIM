@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, writeSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { availableParallelism } from 'node:os';
 import { selectCases, runSoak } from './soak-runner.mjs';
@@ -19,10 +19,18 @@ function modelHash() {
   hash.update(readFileSync('scripts/soak-case.ts'));
   return hash.digest('hex');
 }
-const summary = await runSoak({ cases: selectCases(seeds, quick ? [0, 3] : [0, 1, 2, 3], filter),
+const cases = selectCases(seeds, quick ? [0, 3] : [0, 1, 2, 3], filter);
+// Check the added-service scheduling first, then fault recovery and the base
+// plans. Ordering changes no cases, seeds, fault levels or certification rules.
+if (quick) {
+  const priority = c => c.level === 0 && c.template !== 'base' ? 0 : c.level === 3 ? 1 : 2;
+  cases.sort((a,b) => priority(a)-priority(b) || a.seed-b.seed || a.template.localeCompare(b.template) || a.dayType.localeCompare(b.dayType));
+}
+const summary = await runSoak({ cases,
   output, model: modelHash(), hashCurrent: modelHash, workers,
+  log: line => writeSync(1, line + '\n'),
   timeoutMs: positive('SOAK_TIMEOUT_MS', 60 * 60 * 1000), resume: process.env.SOAK_RESUME === '1',
   failFast: process.env.SOAK_FAIL_FAST === '1', progress: process.env.SOAK_PROGRESS !== '0',
   certify: !quick && seeds >= 10 && !filter });
-console.log(`Soak${quick ? ' quick' : ''}: ${summary.completed}/${summary.requested} cases; ${summary.certified ? 'full matrix passed' : summary.failed ? 'FAILED' : 'subset passed (not full certification)'}`);
+writeSync(1, `Soak${quick ? ' quick' : ''}: ${summary.completed}/${summary.requested} cases; ${summary.certified ? 'full matrix passed' : summary.failed ? 'FAILED' : 'subset passed (not full certification)'}\n`);
 if (summary.failed || !summary.complete) process.exitCode = 1;

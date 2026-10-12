@@ -6,8 +6,8 @@ import { FAULT_LABELS } from './faults';
 const COMMANDS = new Set([
   'setRoute', 'cancelRoute', 'guideRoute', 'autoPass', 'ars', 'switchMove', 'switchLock', 'switchFieldLock',
   'axleReset', 'sectionUnlock', 'setTsr', 'cancelTsr', 'platformHold', 'platformSkip', 'platformEsp', 'psdBypass',
-  'trainHold', 'trainSkip', 'turnback', 'withdraw', 'authRM', 'ebRelease', 'trainLevel', 'rescue', 'addTrain',
-  'overlay', 'zoneLevel', 'ack', 'fault', 'repair', 'sectionBlock', 'switchBlock', 'manual', 'radio', 'radioAuto',
+  'trainHold', 'trainSkip', 'turnback', 'withdraw', 'recoverService', 'authRM', 'ebRelease', 'trainLevel', 'rescue', 'addTrain',
+  'overlay', 'zoneLevel', 'ack', 'fault', 'repair', 'trainMaintenance', 'sectionBlock', 'switchBlock', 'manual', 'radio', 'radioAuto',
   'env', 'randomFaults', 'scenarioEnd', 'bookmark',
 ]);
 
@@ -19,16 +19,16 @@ export function validateCommand(sim: Sim, cmd: Command): string | null {
     switchMove: ['sw', 'pos'], switchLock: ['sw', 'on'], switchFieldLock: ['sw', 'on'], axleReset: ['section'], sectionUnlock: ['section'],
     setTsr: ['sections', 'kmh'], cancelTsr: ['sections'], platformHold: ['platform', 'on'], platformSkip: ['platform', 'on'],
     platformEsp: ['platform', 'on'], psdBypass: ['platform', 'on'], trainHold: ['train', 'on'], trainSkip: ['train', 'station', 'on'],
-    turnback: ['train', 'station'], withdraw: ['train'], authRM: ['train'], ebRelease: ['train'], trainLevel: ['train', 'level'],
+    turnback: ['train', 'station'], withdraw: ['train'], recoverService: ['train'], authRM: ['train'], ebRelease: ['train'], trainLevel: ['train', 'level'],
     rescue: ['failed', 'rescuer'], addTrain: ['depot', 'dir', 'to', 'time'], overlay: ['id', 'from', 'to', 'headway'],
-    zoneLevel: ['zones', 'level'], ack: ['ids'], fault: ['kind', 'target', 'duration'], repair: ['fault'],
+    zoneLevel: ['zones', 'level'], ack: ['ids'], fault: ['kind', 'target', 'duration'], repair: ['fault'], trainMaintenance: ['fault'],
     sectionBlock: ['sections', 'on'], switchBlock: ['sw', 'on'], manual: ['train', 'mode'], radio: ['call', 'option'],
     radioAuto: ['on'], env: ['duration'], randomFaults: ['level'], bookmark: ['label'],
   };
   for (const field of required[cmd.c] ?? []) if (!(field in c)) return `命令缺少参数：${field}`;
   for (const field of ['id', 'option', 'label']) if (field in c && (typeof c[field] !== 'string' || !(c[field] as string).trim())) return `无效文本：${field}`;
   for (const field of ['rain', 'recoverable']) if (field in c && typeof c[field] !== 'boolean') return `无效布尔值：${field}`;
-  if (cmd.c === 'repair' && !sim.faults.some(f => f.id === cmd.fault)) return '故障不存在';
+  if ((cmd.c === 'repair' || cmd.c === 'trainMaintenance') && !sim.faults.some(f => f.id === cmd.fault)) return '故障不存在';
   if (cmd.c === 'radio' && !sim.calls.some(call => call.id === cmd.call)) return '来电不存在';
   if (cmd.c === 'ack' && (!Array.isArray(cmd.ids) || cmd.ids.some(id => !Number.isInteger(id) || id < 0))) return '无效报警列表';
   const validId = (id: unknown, n: number) => Number.isInteger(id) && (id as number) >= 0 && (id as number) < n;

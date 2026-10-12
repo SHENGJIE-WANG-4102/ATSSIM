@@ -372,6 +372,7 @@ export class CommandPanel {
     this.el.append(h('div', { class: 'sect-title' }, '调度命令'));
     this.el.append(h('div', { class: 'cmdgrid' },
       this.btn(t0.hold ? '放行' : '扣车', { title: `${t0.hold ? '放行' : '扣车'} 列车 ${t0.svc}-${t0.trip}`, cmd: { c: 'trainHold', train: id, on: !t0.hold } }),
+      this.btn('恢复接续', { title: `列车 ${t0.svc}-${t0.trip} 故障恢复接续`, cmd: { c: 'recoverService', train: id }, detail: '仅在已完成车次的终点停站办理。取消已错过的完整往返车次，按原图接续同一终点的近期始发；无近期接续则保留计划，须另行人工调整。已完成车次和历史晚点保留。' }),
       this.btn('退出服务', { title: `列车 ${t0.svc}-${t0.trip} 退出服务，清客回段`, cmd: { c: 'withdraw', train: id }, detail: '列车在前方站清客后回最近车辆段/停车场，剩余计划车次取消。' }),
       this.btn('授权RM运行', { title: `授权列车 ${t0.svc}-${t0.trip} 以RM模式运行`, cmd: { c: 'authRM', train: id }, critical: true, detail: '司机以≤25km/h目视行车600m，可越过故障占用区段或关闭的信号（须确认进路正确、道岔位置正确）。' }),
     ));

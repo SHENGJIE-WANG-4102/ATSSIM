@@ -20,7 +20,7 @@ import {
 import { updateTrainMotion, indexBodies, refreshAuthority, withdrawAuthority } from './movement';
 import {
   buildRouteTable, type RouteTable, spawnDue, updateTrainTasks, runARS, driverRM, recordTrace,
-  cmdTrainHold, cmdSkip, cmdTurnback, cmdWithdraw, cmdAuthRM, cmdRescue, trainLabel,
+  cmdTrainHold, cmdSkip, cmdTurnback, cmdWithdraw, cmdRecoverService, cmdAuthRM, cmdRescue, trainLabel,
 } from './ats';
 import { stopError } from './movement';
 import { initYards, vehicleName } from './yard';
@@ -31,7 +31,7 @@ import { newMetrics, scenarioTick, startScenario, endScenario, randomTick, setRa
 import { computePis } from './pis';
 import { computeDmi, dmiTick } from './dmi';
 import { passengersTick } from './passengers';
-import { injectFault, repairFault, faultsTick, FAULT_LABELS, faultProcedure, updateFaultLifecycle } from './faults';
+import { injectFault, repairFault, requestTrainMaintenance, faultsTick, FAULT_LABELS, faultProcedure, updateFaultLifecycle } from './faults';
 import { updateOnboard, setManual, cmdTrainLevel, authoriseEBRelease, turnbackSignalPassed } from './onboard';
 import { psdTick, psdOpen, setBypass } from './psd';
 import { updateHalts, HALT } from './halt';
@@ -100,6 +100,8 @@ export class Sim {
   planDirty = false;
   removedTraces: { train: number; pts: number[] }[] = [];
 
+  passengerScale = 0;
+  ridership = { generated: 0, boardings: STATIONS.map(() => Array(28).fill(0) as number[]), alightings: STATIONS.map(() => Array(28).fill(0) as number[]), maxLoad: 0, peakSectionLoad: 0 };
   passengersServed = 0;
   passengersCleared = 0;
   passengersStranded = 0;
@@ -320,7 +322,26 @@ export class Sim {
     if (this.config.scenario && !this.scenario && this.t >= this.config.startTime - 1e-6) startScenario(this, this.config.scenario);
     this.t += dt;
     indexBodies(this);
-    for (const tr of this.trainList) updateTrainMotion(this, tr, dt);
+    for (const tr of this.trainList) {
+      updateTrainMotion(this, tr, dt);
+      const departure = tr.pendingDeparture;
+      if (departure && tr.v > .01) {
+        tr.pendingDeparture = undefined;
+        if (departure.dep !== null) tr.delay = this.t - departure.dep;
+        this.noteDeparture(departure);
+        if (departure.dep !== null && departure.trip >= 0 && departure.revenue) {
+          this.metrics.departures++;
+          if (this.t - departure.dep > 120) this.metrics.departuresLate++;
+          const platform = this.topo.berths[departure.berth].platform;
+          const waiting = this.plat[platform].waiting;
+          if (waiting > 30 && tr.load >= LINE_INFO.crushCapacity - 5) {
+            this.metrics.stranded += waiting;
+            this.passengersStranded += waiting;
+          }
+        }
+        recordTrace(this, tr, true);
+      }
+    }
     indexBodies(this);
     computeOccupancy(this);
     updateInterlocking(this);
@@ -485,6 +506,7 @@ export class Sim {
       case 'psdBypass': return setBypass(this, cmd.platform, cmd.on);
       case 'trainHold': return this.withTrain(cmd.train, (tr) => cmdTrainHold(this, tr, cmd.on));
       case 'trainSkip': return this.withTrain(cmd.train, (tr) => cmdSkip(this, tr, cmd.station, cmd.on));
+      case 'recoverService': return this.withTrain(cmd.train, tr => cmdRecoverService(this, tr));
       case 'turnback': return this.withTrain(cmd.train, (tr) => cmdTurnback(this, tr, cmd.station));
       case 'withdraw': return this.withTrain(cmd.train, (tr) => cmdWithdraw(this, tr));
       case 'authRM': return this.withTrain(cmd.train, (tr) => cmdAuthRM(this, tr, cmd.signal));
@@ -533,6 +555,7 @@ export class Sim {
       }
       case 'fault': return injectFault(this, cmd.kind, cmd.target, cmd.duration, cmd.param, cmd.recoverable);
       case 'repair': return repairFault(this, cmd.fault);
+      case 'trainMaintenance': return requestTrainMaintenance(this,cmd.fault);
       case 'sectionBlock': {
         for (const s of cmd.sections) {
           const st = this.sec[s];
@@ -689,6 +712,7 @@ export class Sim {
       scenario: this.scenario,
       randomLevel: this.randomLevel,
       autoRadio: this.autoRadio,
+      ridership: this.ridership,
       metrics: this.metrics,
       replay: { from: 0, to: 0, replaying: false, pending: 0 },
       bookmarks: this.bookmarks.slice(-60),
@@ -735,6 +759,7 @@ export function describeCommand(sim: Sim, cmd: Command): string {
     case 'trainHold': return `${cmd.on ? '扣车' : '放行'} ${tn(cmd.train)}`;
     case 'trainSkip': return `跳停 ${tn(cmd.train)} ${STATIONS[cmd.station].name}`;
     case 'turnback': return `人工折返 ${tn(cmd.train)} @${STATIONS[cmd.station].name}`;
+    case 'recoverService': return `故障恢复接续 ${tn(cmd.train)}`;
     case 'withdraw': return `退出服务 ${tn(cmd.train)}`;
     case 'authRM': return `授权RM ${tn(cmd.train)}${cmd.signal !== undefined ? ` 越过 ${topo.signals[cmd.signal].name}` : ''}`;
     case 'ebRelease': return `授权缓解紧急制动 ${tn(cmd.train)}`;
@@ -746,6 +771,7 @@ export function describeCommand(sim: Sim, cmd: Command): string {
     case 'ack': return '报警确认';
     case 'fault': return `【教员】注入故障 ${FAULT_LABELS[cmd.kind]}`;
     case 'repair': return '【教员】故障修复';
+    case 'trainMaintenance': return '多故障现场抢修';
     case 'sectionBlock': return `区段${cmd.on ? '封锁' : '解封'} ${cmd.sections.map((x) => topo.sections[x].name).join('、')}`;
     case 'switchBlock': return `道岔${cmd.on ? '封锁' : '解封'} ${topo.switches[cmd.sw].name}`;
     case 'manual': return `${cmd.mode === 'AUTO' ? '恢复自动驾驶' : `人工驾驶${cmd.mode}`} ${tn(cmd.train)}`;

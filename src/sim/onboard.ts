@@ -19,6 +19,7 @@ import { trainLabel } from './ats';
 import { openCall, unsafeAhead } from './radio';
 import { nextLink } from './topology';
 import { swPos } from './interlocking';
+import { withdrawAuthority } from './movement';
 
 /** driver action time for a mode / level change at standstill (s) 【假设】 */
 export const MODE_CHANGE_TIME = 10;
@@ -63,6 +64,9 @@ export function setMode(sim: Sim, tr: Train, mode: Mode, level: Level, why: stri
   tr.level = level;
   tr.modeSince = sim.t;
   if (mode !== 'RM') { tr.rmAuth = 0; tr.rmSig = -1; tr.rmReason = ''; }
+  // A sighting scan is not an ATP authority. Mode/level changes can happen
+  // after the second's ZC refresh, so validate the new protection immediately.
+  withdrawAuthority(sim, tr);
   if (why) sim.log('I', '列车', `列车 ${trainLabel(tr)} ${why}：${stateLabel(from)} → ${stateLabel(to)}`, { train: tr.id });
   return true;
 }

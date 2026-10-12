@@ -43,8 +43,10 @@ export interface Trip {
   stops: PlanStop[];
   revenue: boolean;
   block: number;
-  /** turnback mode at the destination, when the block continues from here */
+  /** Revenue endpoint reached; rescue cancellation preserves already completed trips. */
+  completed?: boolean;
   cancelled?: boolean;
+  cancelReason?: string;
   /** label of the overlay template that created it */
   overlay?: string;
 }
@@ -194,6 +196,8 @@ export interface Train {
   doorsOpen: boolean;
   arrivedAt: number;
   depReadyAt: number;
+  /** Door cycle complete; DEP is recorded only when wheels start. */
+  pendingDeparture?: StopTask;
   load: number;
   delay: number;
   hold: boolean;
@@ -203,6 +207,8 @@ export interface Train {
   failRecoverAt: number;
   failRecoverable: boolean;
   rescueBy: number;
+  /** Stationary change of ends made for an opposing terminal-tail rescue. */
+  rescueReverse?: boolean;
   rescuing: number;
   coupledLen: number;
   inService: boolean;
@@ -414,6 +420,8 @@ export interface Fault {
   /** extra parameters */
   param?: number;
   recoverable?: boolean;
+  /** Timed field intervention for a failed train blocking an existing rescue. */
+  maintenanceAt?: number;
   /** inject → effect → procedure → recovery → closed (fsm.ts FAULT) */
   stage: FaultState;
   /** when the stage was entered */
@@ -443,6 +451,7 @@ export type Command =
   | { c: 'trainSkip'; train: number; station: number; on: boolean }
   | { c: 'turnback'; train: number; station: number }
   | { c: 'withdraw'; train: number }
+  | { c: 'recoverService'; train: number }
   | { c: 'authRM'; train: number; signal?: number }
   | { c: 'ebRelease'; train: number }
   | { c: 'trainLevel'; train: number; level: ForceLevel }
@@ -453,6 +462,7 @@ export type Command =
   | { c: 'ack'; ids: number[] }
   | { c: 'fault'; kind: FaultKind; target: number; duration: number; param?: number; recoverable?: boolean }
   | { c: 'repair'; fault: number }
+  | { c: 'trainMaintenance'; fault: number }
   | { c: 'sectionBlock'; sections: number[]; on: boolean }
   | { c: 'switchBlock'; sw: number; on: boolean }
   | { c: 'manual'; train: number; mode: 'CM' | 'RM' | 'AUTO' }
@@ -548,7 +558,8 @@ export interface TrainSnap {
   len: number;
 }
 
-export interface PisRow { dest: string; eta: number; status: 'eta' | 'arriving' | 'at' | 'departing'; trip: string; load: number }
+export interface PisRow {
+  dwellRemaining?: number; dest: string; eta: number; status: 'eta' | 'arriving' | 'at' | 'departing'; trip: string; load: number }
 export interface PisData { station: number; DN: PisRow[]; UP: PisRow[]; notice: string }
 
 export interface RadioCall {
@@ -626,6 +637,14 @@ export interface ScenarioReport {
 export interface Bookmark { id: number; t: number; label: string; auto: boolean }
 export interface Incident { type: string; t: number; eventId: number; text: string }
 
+export interface Ridership {
+  generated: number;
+  boardings: number[][];
+  alightings: number[][];
+  maxLoad: number;
+  peakSectionLoad: number;
+}
+
 export interface Snapshot {
   t: number;
   speed: number;
@@ -642,6 +661,7 @@ export interface Snapshot {
   trains: TrainSnap[];
   depotCounts: number[];
   traces: { train: number; pts: number[] }[];
+  ridership: Ridership;
   stats: {
     online: number;
     inService: number;

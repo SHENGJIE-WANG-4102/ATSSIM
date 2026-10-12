@@ -121,37 +121,37 @@ export interface StationData {
  * terminus versus 61 940 m in the table (1 m rounding).
  */
 export const STATIONS: StationData[] = [
-  { id: 'PXL', name: '蟠祥路·国家会计学院', interM: null, transfers: [], dwell: 60, demand: 0.35 },
-  { id: 'GJH', name: '国家会展中心', formerName: '徐泾东', interM: 1640, transfers: ['17'], dwell: 35, demand: 0.7 },
-  { id: 'HQZ', name: '虹桥火车站', interM: 1842, transfers: ['10', '17', '机场联络线', '国铁'], dwell: 45, demand: 1.6 },
-  { id: 'HQ2', name: '虹桥2号航站楼', interM: 690, transfers: ['10', '机场联络线'], dwell: 40, demand: 1.0 },
-  { id: 'SHR', name: '淞虹路', interM: 5921, transfers: [], dwell: 30, demand: 0.8 },
-  { id: 'BXJ', name: '北新泾', interM: 1367, transfers: [], dwell: 30, demand: 0.9 },
-  { id: 'WNL', name: '威宁路', interM: 1260, transfers: [], dwell: 30, demand: 0.9 },
-  { id: 'LSG', name: '娄山关路', interM: 1661, transfers: ['15'], dwell: 35, demand: 1.1 },
-  { id: 'ZSG', name: '中山公园', interM: 1618, transfers: ['3', '4'], dwell: 45, demand: 1.5 },
-  { id: 'JSL', name: '江苏路', interM: 1466, transfers: ['11'], dwell: 40, demand: 1.2 },
-  { id: 'JAS', name: '静安寺', interM: 1425, transfers: ['7', '14'], dwell: 45, demand: 1.5 },
-  { id: 'NJX', name: '南京西路', interM: 1490, transfers: ['12', '13'], dwell: 45, demand: 1.5 },
-  { id: 'RMG', name: '人民广场', interM: 1330, transfers: ['1', '8'], dwell: 50, demand: 2.0 },
-  { id: 'NJD', name: '南京东路', interM: 1125, transfers: ['10'], dwell: 45, demand: 1.6 },
-  { id: 'LJZ', name: '陆家嘴', interM: 1834, transfers: ['14'], dwell: 45, demand: 1.6 },
-  { id: 'PDN', name: '浦东南路', formerName: '东昌路', interM: 1367, transfers: ['14'], dwell: 35, demand: 1.0 },
-  { id: 'SJD', name: '世纪大道', interM: 1245, transfers: ['4', '6', '9'], dwell: 50, demand: 2.0 },
-  { id: 'KJG', name: '上海科技馆', interM: 1810, transfers: [], dwell: 30, demand: 0.8 },
-  { id: 'SJG', name: '世纪公园', interM: 1454, transfers: [], dwell: 30, demand: 0.8 },
-  { id: 'LYL', name: '龙阳路', interM: 1100, transfers: ['7', '16', '18', '磁浮'], dwell: 45, demand: 1.4 },
-  { id: 'ZJG', name: '张江高科', interM: 2940, transfers: [], dwell: 35, demand: 1.2 },
-  { id: 'JKL', name: '金科路', interM: 1393, transfers: [], dwell: 30, demand: 0.9 },
-  { id: 'GLL', name: '广兰路', interM: 2055, transfers: [], dwell: 35, demand: 1.0 },
-  { id: 'TZ', name: '唐镇', interM: 3393, transfers: [], dwell: 30, demand: 0.9 },
-  { id: 'CXZ', name: '创新中路', interM: 1788, transfers: [], dwell: 30, demand: 0.5 },
-  { id: 'HXD', name: '华夏东路', interM: 2100, transfers: [], dwell: 30, demand: 0.6 },
-  { id: 'CS', name: '川沙', interM: 2756, transfers: [], dwell: 30, demand: 0.8 },
-  { id: 'LKL', name: '凌空路', interM: 2595, transfers: [], dwell: 30, demand: 0.4 },
-  { id: 'YDD', name: '远东大道', interM: 3070, transfers: [], dwell: 30, demand: 0.3 },
-  { id: 'HTS', name: '海天三路', interM: 5918, transfers: [], dwell: 30, demand: 0.3 },
-  { id: 'PDA', name: '浦东1号2号航站楼', formerName: '浦东国际机场', interM: 2287, transfers: ['磁浮', '机场联络线'], dwell: 60, demand: 0.9 },
+  { id: 'PXL', name: '蟠祥路·国家会计学院', interM: null, transfers: [], dwell: 20, demand: 0.35 },
+  { id: 'GJH', name: '国家会展中心', formerName: '徐泾东', interM: 1640, transfers: ['17'], dwell: 20, demand: 0.7 },
+  { id: 'HQZ', name: '虹桥火车站', interM: 1842, transfers: ['10', '17', '机场联络线', '国铁'], dwell: 25, demand: 1.6 },
+  { id: 'HQ2', name: '虹桥2号航站楼', interM: 690, transfers: ['10', '机场联络线'], dwell: 20, demand: 1.0 },
+  { id: 'SHR', name: '淞虹路', interM: 5921, transfers: [], dwell: 20, demand: 0.8 },
+  { id: 'BXJ', name: '北新泾', interM: 1367, transfers: [], dwell: 20, demand: 0.9 },
+  { id: 'WNL', name: '威宁路', interM: 1260, transfers: [], dwell: 20, demand: 0.9 },
+  { id: 'LSG', name: '娄山关路', interM: 1661, transfers: ['15'], dwell: 20, demand: 1.1 },
+  { id: 'ZSG', name: '中山公园', interM: 1618, transfers: ['3', '4'], dwell: 25, demand: 1.5 },
+  { id: 'JSL', name: '江苏路', interM: 1466, transfers: ['11'], dwell: 20, demand: 1.2 },
+  { id: 'JAS', name: '静安寺', interM: 1425, transfers: ['7', '14'], dwell: 25, demand: 1.5 },
+  { id: 'NJX', name: '南京西路', interM: 1490, transfers: ['12', '13'], dwell: 25, demand: 1.5 },
+  { id: 'RMG', name: '人民广场', interM: 1330, transfers: ['1', '8'], dwell: 25, demand: 2.0 },
+  { id: 'NJD', name: '南京东路', interM: 1125, transfers: ['10'], dwell: 25, demand: 1.6 },
+  { id: 'LJZ', name: '陆家嘴', interM: 1834, transfers: ['14'], dwell: 25, demand: 1.6 },
+  { id: 'PDN', name: '浦东南路', formerName: '东昌路', interM: 1367, transfers: ['14'], dwell: 20, demand: 1.0 },
+  { id: 'SJD', name: '世纪大道', interM: 1245, transfers: ['4', '6', '9'], dwell: 25, demand: 2.0 },
+  { id: 'KJG', name: '上海科技馆', interM: 1810, transfers: [], dwell: 20, demand: 0.8 },
+  { id: 'SJG', name: '世纪公园', interM: 1454, transfers: [], dwell: 20, demand: 0.8 },
+  { id: 'LYL', name: '龙阳路', interM: 1100, transfers: ['7', '16', '18', '磁浮'], dwell: 25, demand: 1.4 },
+  { id: 'ZJG', name: '张江高科', interM: 2940, transfers: [], dwell: 20, demand: 1.2 },
+  { id: 'JKL', name: '金科路', interM: 1393, transfers: [], dwell: 20, demand: 0.9 },
+  { id: 'GLL', name: '广兰路', interM: 2055, transfers: [], dwell: 20, demand: 1.0 },
+  { id: 'TZ', name: '唐镇', interM: 3393, transfers: [], dwell: 20, demand: 0.9 },
+  { id: 'CXZ', name: '创新中路', interM: 1788, transfers: [], dwell: 20, demand: 0.5 },
+  { id: 'HXD', name: '华夏东路', interM: 2100, transfers: [], dwell: 20, demand: 0.6 },
+  { id: 'CS', name: '川沙', interM: 2756, transfers: [], dwell: 20, demand: 0.8 },
+  { id: 'LKL', name: '凌空路', interM: 2595, transfers: [], dwell: 20, demand: 0.4 },
+  { id: 'YDD', name: '远东大道', interM: 3070, transfers: [], dwell: 20, demand: 0.3 },
+  { id: 'HTS', name: '海天三路', interM: 5918, transfers: [], dwell: 20, demand: 0.3 },
+  { id: 'PDA', name: '浦东1号2号航站楼', formerName: '浦东国际机场', interM: 2287, transfers: ['磁浮', '机场联络线'], dwell: 20, demand: 0.9 },
 ];
 
 /** Station chainage (platform centre) in metres from 蟠祥路·国家会计学院. */
@@ -175,7 +175,7 @@ export const LINE_INFO = {
   /** platform length used for drawing/berths (approx) */
   platformLength: 190,
   maxSpeedKmh: 80,
-  /** rated / crush capacity of an 8-car A-type train (approx, 6 / 9 p/m²) */
+  /** Rated 2480: Shanghai planning research tables; crush 3200 is a simulation assumption (D29). */
   capacity: 2480,
   crushCapacity: 3200,
   /** total fleet size: 100 trains, see FLEET */
@@ -368,7 +368,9 @@ export const OPERATIONS = {
   /** reference headways (late 2025): core 2'30", outer ≈3'45" average */
   peakCoreHeadway: 150,
   /** minimum turnback (arrival → departure) at each terminal (approx) */
-  minTurnback: { PXL: 300, PDA: 300, SHR: 300, GLL: 300 } as Record<string, number>,
+  // HQZ front turn changes ends on the platform, without rear-tail journeys.
+  // Its 120 s planning minimum is an assumption checked by physical tests.
+  minTurnback: { PXL: 240, PDA: 240, SHR: 240, GLL: 240, HQZ: 120 } as Record<string, number>,
   /** overnight stabling at terminal tails (approx) */
   terminalStabling: { PXL: 2, PDA: 2 } as Record<string, number>,
 };

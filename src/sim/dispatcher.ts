@@ -28,7 +28,7 @@ import type { Sim } from './engine';
 import type { Command, Train } from './model';
 import { unsafeAhead, rescuerFor } from './radio';
 import { goalBerth } from './movement';
-import { routeLeadsTo } from './ats';
+import { routeLeadsTo, rescueBlockedByConsist } from './ats';
 
 /** reaction time before answering a call / starting a procedure (s) */
 const REACT = 10;
@@ -65,6 +65,12 @@ export function dispatcherTick(sim: Sim) {
   switchProcedures(sim);
   zoneProcedures(sim);
   psdProcedures(sim);
+  for (const fault of sim.faults) {
+    const tr = fault.kind === 'trainFail' && !fault.repaired && fault.maintenanceAt === undefined
+      && sim.t-fault.since >= 240 ? sim.trains.get(fault.target) : undefined;
+    if (tr && rescueBlockedByConsist(sim,tr) >= 0) cmd(sim,{c:'trainMaintenance',fault:fault.id});
+  }
+  recoveryRegulation(sim);
 }
 
 function answerCalls(sim: Sim) {
@@ -106,6 +112,22 @@ function axleProcedures(sim: Sim) {
     const st = sim.sec[s];
     if (!st.disturbed || st.trainOcc || faultActive(sim, 'axle', s)) continue;
     if (due(sim, `axle-${s}`, 60)) cmd(sim, { c: 'axleReset', section: s });
+  }
+  // A preset can prevent ARS from establishing the very route needed for the
+  // sweep. Lock a guide path first, using normal CI checks and empty track.
+  for (const tr of sim.trainList) {
+    if (!['AXLE_PRESET', 'AXLE_FAULT'].includes(tr.halt.code) || tr.halt.train >= 0
+      || tr.v > 0.05 || tr.failed || tr.eb || sim.t - tr.halt.since < GUIDE_AFTER) continue;
+    const sig = tr.nextSignal;
+    if (sig < 0 || tr.nextSignalDist > 60 || sim.sig[sig].route >= 0) continue;
+    const goal = goalBerth(tr) >= 0 ? goalBerth(tr) : sim.rescueGoal(tr);
+    const rid = goal >= 0 ? sim.routeTable.next.get(goal)?.[sig] ?? -1 : -1;
+    if (rid < 0) continue;
+    const route = sim.topo.routes[rid];
+    if (!route.sections.some(s => sim.sec[s].preset || sim.sec[s].disturbed)) continue;
+    if (route.steps.some(step => (sim.linkBodies.get(step.link) ?? []).some(body => body.train !== tr.id))) continue;
+    if (route.switches.some(({sw,pos}) => sim.sw[sw].failed && (!sim.sw[sw].fieldLock || sim.sw[sw].pos !== pos))) continue;
+    if (due(sim, `axle-guide-${tr.id}`, 60)) cmd(sim, { c: 'guideRoute', route: rid });
   }
 }
 
@@ -176,5 +198,24 @@ function psdProcedures(sim: Sim) {
   for (let p = 0; p < sim.plat.length; p++) {
     const ps = sim.plat[p];
     if (ps.psdBypass && !ps.psdFault && due(sim, `psd-${p}`, 60)) cmd(sim, { c: 'psdBypass', platform: p, on: false });
+  }
+}
+
+
+/** Resume the original diagram by dropping missed, unstarted cycles. */
+function recoveryRegulation(sim: Sim) {
+  const clear = sim.randomLevel === 0 && sim.faults.length > 0 && sim.faults.every(f=>f.stage==='closed');
+  if (!clear) sim.dispatcher.next.delete('recovery-cleared-at');
+  else if (!sim.dispatcher.next.has('recovery-cleared-at')) sim.dispatcher.next.set('recovery-cleared-at',sim.t);
+  const positioning = clear && sim.t - (sim.dispatcher.next.get('recovery-cleared-at') ?? sim.t) >= 2700;
+  for (const tr of sim.trainList) {
+    const stop = tr.tasks[0];
+    if (tr.inService && (tr.delay > 600 || positioning && tr.delay > 120) && clear && due(sim, `exhausted-${tr.id}`, 60))
+      cmd(sim, { c: 'recoverService', train: tr.id });
+    if (tr.phase !== 'dwell' || tr.failed || tr.manual || !tr.inService || tr.coupledLen > 0
+      || stop?.k !== 'stop' || stop.dep !== null || stop.trip < 0 || !sim.plan.trips[stop.trip].completed) continue;
+    const next = tr.tasks.find((task, i) => i > 0 && task.k === 'stop' && task.arr === null && task.dep !== null);
+    if (next?.k === 'stop' && next.dep !== null && next.dep < sim.t - 120 && due(sim, `recover-${tr.id}`, 60))
+      cmd(sim, { c: 'recoverService', train: tr.id });
   }
 }

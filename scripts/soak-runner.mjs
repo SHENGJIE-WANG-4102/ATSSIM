@@ -38,7 +38,7 @@ export async function runSoak({ cases, output, model, hashCurrent, workers, time
     complete: results.length === cases.length, requested: cases.length, completed: results.length, failed, results });
   const save = () => atomicJSON(`${output}/summary.json`, summary());
   const record = result => {
-    const compact = { ...result, lateTrips: result.lateTrips?.length, undelivered: result.undelivered?.length };
+    const compact = { ...result, lateTrips: result.lateTrips?.length, cancelledTrips: result.cancelledTrips?.length, undelivered: result.undelivered?.length };
     log(JSON.stringify(compact)); results.push(compact); failed ||= !result.ok; save();
   };
   const run = c => new Promise(resolve => {
@@ -84,11 +84,12 @@ export async function runSoak({ cases, output, model, hashCurrent, workers, time
             failure: result.failure, stateUnavailable: true, stdout: out, stderr: err, exitCode: code, signal });
         }
         result.diagnostics = diagnostics;
+        const checkpoint = existsSync(`${stem}-checkpoint.json`) ? `${stem}-checkpoint.json` : undefined;
         atomicJSON(`${stem}-failure.json`, { model, case: c, failure: result.failure,
-          diagnostics, exitCode: code, signal, timedOut, stderr: err });
+          diagnostics, checkpoint, exitCode: code, signal, timedOut, stderr: err });
       }
       atomicJSON(resultPath, result);
-      if (existsSync(`${stem}-checkpoint.json`)) unlinkSync(`${stem}-checkpoint.json`);
+      if (result.ok && existsSync(`${stem}-checkpoint.json`)) unlinkSync(`${stem}-checkpoint.json`);
       record(result); resolve();
     });
   });

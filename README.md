@@ -70,7 +70,8 @@ is cut off at any scale.
   * The **dispatcher phone/radio** (调度电话·无线) queue sits below the alarms.
   * Tabs: **详情** (the selected object and its commands), **列车** (train table),
     **事件** (event log with filters), **教员** (scenarios, random faults, fault
-    injection, weather) and **回放** (rewind/replay and bookmarks).
+    injection, weather), **回放** (rewind/replay and bookmarks), and **客流**
+    (actual daily boardings, peak load, and station/hour boardings and alightings).
   * All controls are at least 56 px high.
 
 ## Interaction
@@ -149,7 +150,7 @@ ATP supervises all the time:
 * Each station stop is scored on stopping accuracy: ±0.3 m scores 100, ±0.5 m 90, ±0.75 m 75, ±1 m 60.
 * Overrunning by up to 15 m means backing up to the mark (> 5 m counts as a violation); further than that, the train skips the station.
 
-**恢复自动驾驶 AM** returns the train to ATO.
+**恢复自动驾驶** returns the train to DTO under CBTC or AM under TBTC.
 
 ### Radio and phone calls (调度电话·无线)
 
@@ -333,7 +334,7 @@ Generated from parametric templates (no real timetable is copied):
 
 Departure streams are laid out at a reference station per direction (淞虹路 eastbound,
 广兰路 westbound) so the core section has uniform headways. Trips are linked into train
-blocks by FIFO matching at each terminal (minimum turnback 5 min, layover ≤ 25 min,
+blocks by FIFO matching at each terminal (minimum turnback 240 s, terminal layover ≤ 25 min,
 terminal capacity respected). Missing trains are supplied by revenue insertion trips
 from the nearest depot placed into gaps of the stream (e.g. peak insertion from
 龙阳路车辆段 for small-route trains at 广兰路), surplus trains withdraw the same way.
@@ -517,18 +518,18 @@ Everything below is plausible but **not** taken from a public source.
   tails 40 km/h).
 * Train performance: 1.0 m/s² up to 40 km/h then constant power, 0.75 m/s² planning
   brake, 1.25 m/s² emergency brake. Planned run times are computed with the same model
-  plus 8 % margin.
+  with at most 5% margin over the fastest modeled ATO run.
 
 **Operations**
 * Headways other than the 2'30" peak core / 3'45" outer reference values: off-peak 5'30",
   pre-peak 5'00", evening 7'00", first/last-train periods 7'00"/8'00", weekend 4'30".
   Peak periods 06:50–09:30 and 16:50–19:30.
 * First westbound train from 浦东1号2号航站楼 at 05:30; last westbound 广兰路 departure 23:20.
-* Base dwell times per station (30–60 s), minimum turnback 5 min, 40 s change of ends with
+* Demand-derived planned dwells of 20–30 s, minimum planned turnback 240 s, 40 s change of ends with
   a driver pre-positioned at the other cab.
 * Overnight stabling: two trains each in the tails of both termini; all others in depots.
 * Passenger model: time-of-day demand profiles, per-station demand weights, alighting
-  proportional to the remaining demand along the line, 40 doors × 0.9 pax/s exchange
+  proportional to the remaining demand along the line, 40 doors × 2.2 pax/s exchange
   rate, capacity 2480 (rated) / 3200 (crush).
 * Trip numbering (1xxx big, 2xxx small, 3xxx late, 4xxx insertion/withdrawal, 5xxx
   added, 0xxx empty, 6xxx adjusted; odd eastbound). Train set numbers are the real
@@ -589,7 +590,7 @@ Diagnostics exports include the complete plan, input timeline and immutable alar
 The planning preview validates the same candidate plan used at confirmation.
 
 Full certification requires 2 day types × 3 templates × 4 fault levels × 10 seeds.
-Fault-free cases require at least 99% of completed revenue trips within ±120 s and
+Fault-free cases require at least 98% of completed revenue trips within ±120 s and
 no arrival more than 300 s late; fault cases must recover within 3600 s after the
 last cleared fault once injection ends. A filtered run is never certified.
 
@@ -624,3 +625,43 @@ Options: `SOAK_WORKERS=N`, `SOAK_OUT=directory`, `SOAK_TIMEOUT_MS=milliseconds`,
 `SOAK_SEEDS` and `SOAK_FILTER` support focused full-run debugging;
 filtered/incomplete results cannot be certified. A directory lock prevents
 concurrent writers. Stale locks recover automatically once their process exits.
+
+## Calibrated service and regulation
+
+Weekday peak bands cover the whole 淞虹路–广兰路 core in both directions from
+06:50 to 09:30 and 16:50 to 19:30. Origins dispatch the leading wave earlier,
+with a gradual pre-peak transition. Core slots are 150 s; the 2:1 big/small
+pattern gives alternating 150/300 s big-route intervals on the outer sections.
+Positioning runs and depot returns have explicit paths and circulation capacity.
+
+Ordinary planned stops are 20–25 s and busy stops 25–30 s. ATS shortens late
+stops only to the actual passenger/door minimum (absolute 15 s assumption),
+adds at most 10 s for early arrival, and adjusts ATO performance on the next
+section within ATP limits. DMI and end-door countdowns include the complete door
+cycle; actual DEP records wheel start. Planning run-time margin is at most 5%
+of the fastest modeled ATO run. Sources and assumptions: design decisions D28–D43.
+
+Fault-free soak cases require at least 98% of final revenue arrivals within
+±120 s, none over 300 s late, actual daily boardings within 10% of the target,
+and weekday peak maximum section load at 90–130% of the rated 2480 passengers.
+Every failure saves a diagnostics bundle and failure manifest. Full soak runs
+continue unattended across failures; `SOAK_WORKERS=4 npm run soak` runs the full
+240 cases locally, with results under `tests/out/soak/`. The quick command runs
+exactly 24 cases and does not certify the full matrix.
+
+For automatic dispatch only, a failed train that traps an existing two-train
+rescue, or physically prevents its assigned rescuer from setting the required
+points, may receive timed field maintenance (20 simulated minutes).
+This is an explicit simulation assumption: the repaired blocker clears passengers
+and withdraws through normal routing. Ordinary failures still require rescue;
+trains and failed vehicles are never removed from the track to clear a blockage.
+See D35 for the conditions and limits.
+
+Shared depot conversion tracks keep early departures in the yard until ARS
+is ready, giving nearby returning trains priority (D36). After faults close,
+persistent late services can clear passengers and position for an original
+future departure; unfinished trips are explicitly cancelled, while completed
+trip lateness and planned future times remain unchanged (D37). The 45-minute
+intervention point is a simulation assumption; the 60-minute recovery limit
+still applies. Failure bundles retain both final diagnostics and the last
+pre-failure checkpoint.

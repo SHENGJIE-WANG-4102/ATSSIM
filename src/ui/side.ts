@@ -73,7 +73,7 @@ export class SidePanel {
       h('div', { class: 'panel-h' }, h('span', { class: 't' }, '调度电话 · 无线'), this.callsMeta),
       this.callsBody,
     );
-    const names = ['详情', '列车', '事件', '教员', '回放'];
+    const names = ['详情', '列车', '事件', '教员', '回放', '客流'];
     const tabBar = h('div', { class: 'tabs' });
     names.forEach((n, i) => {
       const t = h('div', { class: `tab ${i === 0 ? 'on' : ''}`, onclick: () => this.setTab(i) }, n);
@@ -96,6 +96,7 @@ export class SidePanel {
         if (this.tab === 1) this.renderTrains();
         if (this.tab === 3) { this.renderFaultList(); this.renderScenarioState(); }
         if (this.tab === 4) this.renderReplay();
+        if (this.tab === 5) this.renderRidership();
       }
     });
   }
@@ -109,6 +110,7 @@ export class SidePanel {
     if (i === 2) this.renderEventsTab();
     if (i === 3) this.renderInstructorTab();
     if (i === 4) this.renderReplayTab();
+    if (i === 5) this.renderRidership();
   }
 
   // ---------------------------------------------------------------- alarms
@@ -246,6 +248,25 @@ export class SidePanel {
     this.tabBody.append(h('table', { class: 'grid' }, h('thead', {}, h('tr', {},
       ...['表号-车次', '目的地', '位置', '速度', '模式', '晚点', '满载', '状态'].map((t) => h('th', {}, t)))), this.trainBody));
     this.renderTrains();
+  }
+
+  private ridershipHour = -1;
+  private renderRidership() {
+    const snap = this.store.snap;
+    if (!snap) return;
+    clear(this.tabBody);
+    const r = snap.ridership;
+    const hour = h('select', { class: 'btn', onchange: (e: Event) => { this.ridershipHour = Number((e.target as HTMLSelectElement).value); this.renderRidership(); } },
+      h('option', { value: '-1' }, '全运营日'),
+      ...Array.from({length: 24}, (_,i) => { const h0=i+4; return h('option', { value: String(h0) }, `${h0 >= 24 ? '次日 ' : ''}${String(h0 % 24).padStart(2,'0')}:00–${String((h0+1)%24).padStart(2,'0')}:00`); }));
+    hour.value = String(this.ridershipHour);
+    const sum = (a: number[]) => this.ridershipHour < 0 ? a.reduce((x,y)=>x+y,0) : a[this.ridershipHour];
+    this.tabBody.append(h('div', { class: 'sect-title' }, '线路客流'),
+      h('div', { class: 'hint' }, `今日上车 ${Math.round(snap.stats.passengers).toLocaleString()} 人次 · 高峰最大断面 ${Math.round(r.peakSectionLoad / LINE_INFO.capacity * 100)}% · 全日最大载客 ${Math.round(r.maxLoad).toLocaleString()} 人`),
+      h('div', { class: 'hint' }, `校准目标：${snap.dayType === 'weekday' ? '工作日 109万' : '休息日 76.3万'} 人次 · 包含换乘上车`),
+      h('div', { class: 'form' }, h('label', {}, '统计时段'), hour),
+      h('table', { class: 'grid' }, h('thead', {}, h('tr', {}, h('th', {}, '车站'), h('th', {}, '上车'), h('th', {}, '下车'))),
+        h('tbody', {}, ...STATIONS.map((st,i)=>h('tr', {}, h('td', {}, st.name), h('td', { class:'mono' }, Math.round(sum(r.boardings[i])).toLocaleString()), h('td', { class:'mono' }, Math.round(sum(r.alightings[i])).toLocaleString()))))));
   }
 
   private renderTrains() {

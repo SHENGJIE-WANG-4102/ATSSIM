@@ -12,7 +12,7 @@
 import type { Sim } from './engine';
 import type { RadioCall, Train } from './model';
 import { STATIONS } from '../data/line2';
-import { cmdAuthRM, cmdRescue, trainLabel } from './ats';
+import { cmdAuthRM, cmdRescue, rescueApproach, trainLabel } from './ats';
 import { grantRM, answerDegrade, answerEbRelease } from './onboard';
 import { setBypass } from './psd';
 import { HALT, type HaltCode } from './halt';
@@ -293,15 +293,10 @@ export function rescuerFor(sim: Sim, f: Train): Train | null {
   let best: Train | null = null;
   let bd = Infinity;
   const fCh = sim.trainChain(f);
-  const east = (tr: Train) => {
-    const l = sim.topo.links[tr.link];
-    return tr.dir === 1 ? l.chainB >= l.chainA : l.chainA > l.chainB;
-  };
-  const fe = east(f);
   for (const tr of sim.trainList) {
-    if (tr.id === f.id || tr.failed || tr.rescuing >= 0 || east(tr) !== fe) continue;
+    if (!rescueApproach(sim, f, tr)) continue;
     const ch = sim.trainChain(tr);
-    const behind = fe ? fCh - ch : ch - fCh;
+    const behind = Math.abs(fCh - ch);
     if (behind <= 0 || behind > 6000) continue;
     if (behind < bd) { bd = behind; best = tr; }
   }
@@ -323,6 +318,11 @@ export function radioTick(sim: Sim) {
     if (c.state !== 'ringing') continue;
     if (auto && sim.t - c.t >= AUTO_DELAY) { answerCall(sim, c.id, c.auto, true); continue; }
     if (sim.t >= c.deadline) expire(sim, c);
+  }
+  // A wait response is temporary: repeat rescue requests while no order exists.
+  for (const tr of sim.trainList) if (tr.failed && tr.rescueBy < 0) {
+    const last = sim.calls.slice().reverse().find(c => c.kind === 'rescue' && c.train === tr.id);
+    if (last && last.state !== 'ringing' && sim.t - (last.answeredAt ?? last.deadline) >= REPEAT) callRescue(sim, tr);
   }
   // drivers standing at an obstacle for a long time ask for instructions
   for (const tr of sim.trainList) {
