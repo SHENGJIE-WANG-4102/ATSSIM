@@ -153,7 +153,11 @@ the ATP enables only the platform side (green arrow by the DMI door icon); in RM
 there is no door enable — the wrong side opens and is an A-level incident — and the
 PSD is worked from the PSL by station staff (+15 s each way). Within 300 m of the
 stop a close-up under the DMI shows the platform doors, the last PSD pillar and your
-cab window: stopped right, the window stands at that pillar (D55).
+cab window: stopped right, the window stands at that pillar (D55). Its scale follows the
+distance to go — far out the whole platform and train are in view with the end door at
+the right edge, closing in to 26 px/m over the last metres — and the PSD doors carry
+car-door numbers from the stopping end (1-1 opposite the head car's front door; only
+each car's first door while they would crowd) (D60).
 
 ATP supervises all the time:
 

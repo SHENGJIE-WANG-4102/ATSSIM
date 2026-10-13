@@ -1,17 +1,25 @@
 /**
- * Stopping close-up for a manually driven train (对标近景): the head car in
- * detail, fixed under the view, with the platform sliding past it — what the
- * driver judges the stop by out of the side window: the platform screen doors
- * and the last PSD pillar before the end door. Stopped right, the cab window
- * stands at that pillar and every car door faces its PSD door. It replaces the
- * view out of the window, so it shows no distance figures while the train
- * moves; the error appears once it stands. Plan view, linear scale; the
- * platform is drawn on the side it lies (top = left looking forward), so in RM —
- * no door enable — this is how the driver knows the side.
+ * Stopping close-up for a manually driven train (对标近景): the train in plan
+ * view with the platform beside it — what the driver judges the stop by out of
+ * the side window: the platform screen doors, their door numbers and the last
+ * PSD pillar before the end door. Stopped right, the cab window stands at that
+ * pillar and every car door faces its PSD door. It replaces the view out of the
+ * window, so it shows no distance figures while the train moves; the error
+ * appears once it stands. The platform is drawn on the side it lies (top = left
+ * looking forward), so in RM — no door enable — this is how the driver knows
+ * the side.
+ *
+ * The scale follows the distance still to go: the end door (and a little
+ * beyond) is always at the right edge, so far out the whole platform and train
+ * are in view, and the picture closes in on the cab and the last pillar as the
+ * train comes to a stand (26 px/m over the last couple of metres). Only the
+ * length is scaled; the widths across the track stay as drawn.
  *
  * Geometry is approximate 【假设】: cars of 23.25 m (8 × = 186 m), five doors
  * per side at 4.6 m pitch from 3 m behind the car front, the driver's eye 1.8 m
  * behind the nose, the end door 2.5 m beyond the last pillar, a 188 m platform.
+ * PSD doors are numbered car-door from the stopping end (1-1 opposite the head
+ * car's front door) 【假设】.
  */
 import { h } from './dom';
 import type { TrainSnap } from '../sim/model';
@@ -21,19 +29,29 @@ import { FONT_CN } from './theme';
 const W = 760;
 const H = 200;
 const FONT = `Arial, "Helvetica Neue", Helvetica, sans-serif, ${FONT_CN}`;
-/** pixels per metre */
-const PX = 26;
-/** screen x of the driver's eye (fixed) */
-const XE = 600;
+/** closest scale (px per metre), over the last metres */
+const PX_NEAR = 26;
+/** screen x of the driver's eye at the closest scale, and furthest left */
+const XE_NEAR = 600;
+const XE_FAR = 176;
+/** screen x kept for the end of the view ahead: the end door and a little beyond */
+const X_AHEAD = W - 24;
+/** metres shown beyond the stopping point (pillar): the end door and some wall */
+const BEYOND = 3.5;
 const EYE = 1.8;
 const CARS = 8;
 const CAR = 186 / CARS;
+const GANGWAY = 0.6;
 const DOORS = 5;
 const DOOR_PITCH = 4.6;
 const FIRST_DOOR = 3.0;
 const DOOR_W = 1.4;
 const END_DOOR = 2.5;
 const PLATFORM = 188;
+/** cab side door and windscreen, from the nose (m) */
+const CAB_DOOR = 1.6;
+const CAB_DOOR_W = 0.6;
+const NOSE = 0.55;
 /** distance before the mark at which the view appears (m) */
 export const STOPVIEW_RANGE = 300;
 /** Line 2 green */
@@ -50,6 +68,7 @@ const C = {
   leaf: '#a9d2e4',
   gap: '#141a22',
   mullion: '#2a2f36',
+  number: '#1d2530',
   pillarLast: '#ffffff',
   endDoor: '#a77e4e',
   bed: '#2e3238',
@@ -72,6 +91,21 @@ const C = {
 
 /** door centres of a car, measured from its front end (m, negative = back) */
 const doorsOf = (front: number) => Array.from({ length: DOORS }, (_, k) => front - FIRST_DOOR - k * DOOR_PITCH);
+
+/**
+ * Scale and the eye's screen position for `rem` metres still to go. The eye
+ * moves right as the train closes in, reaching XE_NEAR at the mark; the scale
+ * then fits everything up to BEYOND past the mark between the eye and X_AHEAD.
+ */
+export function stopViewScale(rem: number): { px: number; xe: number } {
+  const s = Math.sqrt(Math.min(1, Math.max(0, (rem - 2) / 150)));
+  const xe = XE_NEAR - (XE_NEAR - XE_FAR) * s;
+  const px = Math.min(PX_NEAR, (X_AHEAD - xe) / (Math.max(0, rem) + BEYOND));
+  return { px, xe };
+}
+
+/** a step of `base` metres, coarsened so that marks stay at least `minPx` apart */
+const stepFor = (base: number, px: number, minPx: number) => base * Math.max(1, Math.ceil(minPx / (base * px)));
 
 export class StopView {
   el: HTMLCanvasElement;
@@ -105,13 +139,15 @@ export class StopView {
     c.setTransform(this.res, 0, 0, this.res, 0, 0);
     c.fillStyle = C.bg;
     c.fillRect(0, 0, W, H);
+    const { px: PX, xe: XE } = stopViewScale(rem);
     // drawn for a platform on top (driver's left); mirrored otherwise
     const top = t.platSide === 'L';
+    const yOf = (y: number, hh = 0) => (top ? y : H - y - hh);
     const rect = (x: number, y: number, w: number, hh: number, col: string) => {
       const a = Math.max(-2, x), b = Math.min(W + 2, x + w);
       if (b <= a) return;
       c.fillStyle = col;
-      c.fillRect(a, top ? y : H - y - hh, b - a, hh);
+      c.fillRect(a, yOf(y, hh), b - a, hh);
     };
     /** screen x of a lineside position p (m from the stop mark, + = beyond) */
     const sx = (p: number) => XE + (p + rem) * PX;
@@ -123,41 +159,58 @@ export class StopView {
     const pa = Math.max(pLeft, -PLATFORM), pb = Math.min(pRight, END_DOOR + 0.8);
     if (pb > pa) {
       rect(sx(pa), 10, (pb - pa) * PX, 62, C.floor);
-      for (let p = Math.ceil(pa / 1.2) * 1.2; p < pb; p += 1.2) rect(sx(p), 10, 1, 62, C.joint);
+      const joint = stepFor(1.2, PX, 8);
+      for (let p = Math.ceil(pa / joint) * joint; p < pb; p += joint) rect(sx(p), 10, 1, 62, C.joint);
       rect(sx(pa), 54, (pb - pa) * PX, 6, C.tactile);
     }
     // ---- track bed, sleepers (they stream past), rails
     rect(0, 82, W, 96, C.bed);
-    for (let p = Math.floor(pLeft / 0.6) * 0.6; p < pRight; p += 0.6) rect(sx(p) - 3, 98, 6, 62, C.sleeper);
+    const sleeper = stepFor(0.6, PX, 7);
+    const sw = Math.min(6, Math.max(1.5, 0.24 * PX));
+    for (let p = Math.floor(pLeft / sleeper) * sleeper; p < pRight; p += sleeper) rect(sx(p) - sw / 2, 98, sw, 62, C.sleeper);
     rect(0, 104, W, 4, C.rail);
     rect(0, 150, W, 4, C.rail);
 
-    // ---- platform screen doors: frame, glass, a sliding door (two leaves) opposite every car door
+    // ---- platform screen doors: frame, glass, a numbered sliding door (two leaves) opposite every car door
     if (pb > pa) {
       const fa = Math.max(pLeft, -PLATFORM), fb = Math.min(pRight, 0);
       if (fb > fa) {
         rect(sx(fa), 70, (fb - fa) * PX, 10, C.psdFrame);
         rect(sx(fa), 73, (fb - fa) * PX, 4, C.glass);
       }
+      const mw = Math.min(4, Math.max(1, 0.15 * PX));
+      // door numbers: every door while there is room for them, else the first door of each car
+      const everyDoor = DOOR_PITCH * PX >= 30;
+      c.font = `bold ${everyDoor ? 13 : 12}px ${FONT}`;
+      c.textAlign = 'center';
+      c.textBaseline = 'middle';
       for (let car = 0; car < CARS; car++) {
-        for (const dc of doorsOf(EYE - car * CAR)) {
-          if (dc < pLeft - 2 || dc > pRight + 2) continue;
+        doorsOf(EYE - car * CAR).forEach((dc, k) => {
+          if (dc < pLeft - 2 || dc > pRight + 2) return;
           const x = sx(dc - DOOR_W / 2), w = DOOR_W * PX;
           // leaves slide apart behind the fixed panels when open
           const shift = t.doors ? w / 2 : 0;
           rect(x, 71, w, 8, t.doors ? C.gap : C.leaf);
           rect(x - shift, 72, w / 2 - 1, 6, C.leaf);
           rect(x + w / 2 + 1 + shift, 72, w / 2 - 1, 6, C.leaf);
-          rect(x - 4, 66, 4, 18, C.mullion);
-          rect(x + w, 66, 4, 18, C.mullion);
-        }
+          rect(x - mw, 66, mw, 18, C.mullion);
+          rect(x + w, 66, mw, 18, C.mullion);
+          if (!everyDoor && k > 0) return;
+          // number plate on the door header, read from the platform
+          const label = `${car + 1}-${k + 1}`;
+          const lw = c.measureText(label).width + 6;
+          const cx = sx(dc);
+          rect(cx - lw / 2, 38, lw, 15, C.sign);
+          c.fillStyle = C.number;
+          c.fillText(label, cx, yOf(38, 15) + 8);
+        });
       }
       // the last pillar, the end door (端门, swinging) and the stop board 8
       rect(sx(0) - 3, 62, 7, 26, C.pillarLast);
-      rect(sx(0) + 4, 72, END_DOOR * PX - 6, 6, C.endDoor);
+      rect(sx(0) + 4, 72, Math.max(2, END_DOOR * PX - 6), 6, C.endDoor);
       if (sx(0) > -30 && sx(0) < W + 30) {
         c.fillStyle = C.sign;
-        const bx = sx(0) - 13, by = top ? 20 : H - 20 - 26;
+        const bx = sx(0) - 13, by = yOf(10, 26);
         c.fillRect(bx, by, 26, 26);
         c.strokeStyle = '#000';
         c.lineWidth = 2;
@@ -165,71 +218,74 @@ export class StopView {
         c.fillStyle = '#000';
         c.font = `bold 19px ${FONT}`;
         c.textAlign = 'center';
+        c.textBaseline = 'alphabetic';
         c.fillText('8', sx(0), by + 20);
       }
     }
 
-    // ---- the head car, fixed: nose EYE ahead of the eye
+    // ---- the train: the nose EYE ahead of the eye, cars behind it
     const xNose = XE + EYE * PX;
-    const xBack = xNose - CAR * PX;
-    rect(0, 90, xBack - 6, 78, C.body);           // the second car
-    rect(0, 106, xBack - 6, 46, C.roof);
-    rect(0, 93, xBack - 6, 4, LINE);
-    rect(0, 161, xBack - 6, 4, LINE);
-    rect(xBack - 6, 98, 6, 62, C.gangway);
-    rect(xBack, 90, xNose - 14 - xBack, 78, C.body);
-    rect(xBack, 106, xNose - 20 - xBack, 46, C.roof);
-    // roof air-conditioning units
-    for (const f of [0.3, 0.72]) rect(xNose - CAR * PX * f - 45, 112, 90, 34, C.ac);
-    // windows and doors on both sides; Line 2 band under the windows
-    const doorX = doorsOf(0).map((d) => xNose + d * PX);
-    for (const side of [0, 1]) {
-      const yWin = side ? 159 : 94, yDoor = side ? 159 : 90;
-      const near = side === 0;
-      for (let k = 0; k < DOORS; k++) {
-        const a = doorX[k] + (DOOR_W / 2) * PX + 6, b = (k ? doorX[k - 1] - (DOOR_W / 2) * PX : xNose - 70) - 6;
-        if (b > a) rect(a, yWin, b - a, 5, C.window);
+    const open = (near: boolean) => (near ? t.doors : !!t.doorSide && !t.doors);
+    const xOf = (m: number) => xNose + m * PX; // m from the nose, negative = back
+    for (let car = 0; car < CARS; car++) {
+      const front = -car * CAR, back = front - CAR;
+      if (xOf(front) < -4 || xOf(back) > W + 4) continue;
+      const head = car === 0;
+      const a = xOf(back + GANGWAY / 2), b = xOf(head ? -NOSE : front - GANGWAY / 2);
+      rect(a, 90, b - a, 78, C.body);
+      rect(a, 106, b - a, 46, C.roof);
+      // roof air-conditioning units
+      for (const f of [0.3, 0.72]) rect(xOf(front - CAR * f - 1.75), 112, 3.5 * PX, 34, C.ac);
+      if (!head) rect(xOf(front - GANGWAY / 2), 98, GANGWAY * PX, 62, C.gangway);
+      // windows between the doors (and up to the cab), doors, the Line 2 band, on both sides
+      const doorX = doorsOf(front);
+      const winFront = head ? front - CAB_DOOR - CAB_DOOR_W / 2 : front - 0.8;
+      for (const side of [0, 1]) {
+        const yWin = side ? 159 : 94, yDoor = side ? 159 : 90;
+        for (let k = 0; k <= DOORS; k++) {
+          const wa = k < DOORS ? doorX[k] + DOOR_W / 2 + 0.25 : back + 0.8;
+          const wb = k === 0 ? winFront - 0.25 : doorX[k - 1] - DOOR_W / 2 - 0.25;
+          if (wb > wa) rect(xOf(wa), yWin, (wb - wa) * PX, 5, C.window);
+        }
+        rect(a, side ? 166 : 90, b - a, 2, LINE);
+        for (const d of doorX) {
+          const o = open(side === 0);
+          rect(xOf(d - DOOR_W / 2), yDoor, DOOR_W * PX, 9, o ? (side === 0 ? C.gap : C.red) : C.carDoor);
+          if (!o && PX >= 6) rect(xOf(d) - 0.5, yDoor, 1, 9, C.doorLine);
+        }
+        if (head) rect(xOf(-CAB_DOOR - CAB_DOOR_W / 2), yDoor, CAB_DOOR_W * PX, 9, C.carDoor);
       }
-      rect(xBack, side ? 166 : 90, xNose - 14 - xBack, 2, LINE);
-      for (const x of doorX) {
-        const w = DOOR_W * PX;
-        const open = near ? t.doors : !!t.doorSide && !t.doors;
-        const col = open ? (near ? C.gap : C.red) : C.carDoor;
-        rect(x - w / 2, yDoor, w, 9, col);
-        if (!open) rect(x - 0.5, yDoor, 1, 9, C.doorLine);
-      }
-      // cab side door
-      rect(xNose - 70, yDoor, 18, 9, C.carDoor);
     }
     // nose and windscreen
     c.fillStyle = C.body;
-    const yT = top ? 90 : H - 90, yB = top ? 168 : H - 168;
+    const yT = yOf(90), yB = yOf(168), xn = xOf(-NOSE);
     c.beginPath();
-    c.moveTo(xNose - 14, yT); c.quadraticCurveTo(xNose + 4, (yT + yB) / 2, xNose - 14, yB); c.closePath();
+    c.moveTo(xn, yT); c.quadraticCurveTo(xNose + Math.max(1, 0.15 * PX), (yT + yB) / 2, xn, yB); c.closePath();
     c.fill();
-    rect(xNose - 20, 104, 8, 50, C.windscreen);
+    rect(xOf(-0.75), 104, Math.max(2, 0.3 * PX), 50, C.windscreen);
     // driver's seat and the eye mark pointing at the platform side
-    rect(XE - 7, 98, 14, 16, C.windscreen);
+    rect(XE - Math.min(7, 0.27 * PX), 98, Math.min(14, 0.54 * PX), 16, C.windscreen);
     c.fillStyle = C.eye;
     c.beginPath();
-    const ey = top ? 88 : H - 88, tip = top ? 80 : H - 80;
+    const ey = yOf(88), tip = yOf(80);
     c.moveTo(XE - 7, ey); c.lineTo(XE + 7, ey); c.lineTo(XE, tip);
     c.closePath();
     c.fill();
 
     // ---- caption: station and side; the error once standing
     c.textAlign = 'left';
+    c.textBaseline = 'alphabetic';
     c.font = `15px ${FONT}`;
     c.fillStyle = C.dim;
     const capY = top ? H - 6 : 16;
     const st = STATIONS[t.nextStation]?.name ?? '';
     c.fillText(`${st}  站台在${top ? '左' : '右'}侧`, 10, capY);
     if (t.v < 0.05) {
-      const a = Math.abs(rem);
+      const e = Math.abs(rem);
       c.textAlign = 'right';
       c.font = `bold 17px ${FONT}`;
-      c.fillStyle = a <= 0.3 ? C.green : a <= 1 ? C.eye : C.red;
-      c.fillText(`${rem >= 0 ? '欠标' : '过标'} ${a.toFixed(2)} m`, W - 10, capY);
+      c.fillStyle = e <= 0.3 ? C.green : e <= 1 ? C.eye : C.red;
+      c.fillText(`${rem >= 0 ? '欠标' : '过标'} ${e.toFixed(2)} m`, W - 10, capY);
     }
   }
 }
