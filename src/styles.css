@@ -73,10 +73,30 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 select, input[type=number], input[type=text], input[type=time] {
   height: var(--ctl); background: #0d1622; border: 1px solid var(--border-strong); color: #fff; font: 24px var(--font-cn); padding: 0 12px; border-radius: 4px;
 }
-/* drop-down pickers (timepick.ts) and the simulation rate */
-.tpick { display: inline-flex; align-items: center; gap: 4px; }
-select.tp { padding: 0 6px; }
-.tp-sep { color: var(--text-dim); font-size: 24px; }
+/* time / date pickers (timepick.ts): a field and its panel */
+.tp-field { height: var(--ctl); padding: 0 14px; background: #0d1622; border: 1px solid var(--border-strong); border-radius: 4px;
+  color: #fff; font: 24px var(--font-mono); cursor: pointer; white-space: nowrap; }
+.tp-field::after { content: ' ▾'; color: var(--text-dim); font-size: 18px; }
+.tp-field:hover, .tp-field.on { border-color: var(--accent); }
+.tp-panel { position: absolute; z-index: 60; padding: 14px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 6px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, .6); font-size: 24px; }
+.tp-time { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 4px 8px 14px; }
+.tp-time select { min-width: 92px; }
+.tp-sep { color: var(--text-dim); font-size: 26px; }
+.tp-foot { display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--border); padding-top: 12px; }
+.tp-foot .btn { min-width: 96px; }
+.tp-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.tp-month { color: #fff; font-size: 26px; }
+.tp-grid { display: grid; grid-template-columns: repeat(7, 52px); gap: 4px; margin-bottom: 12px; }
+.tp-wd { text-align: center; color: var(--text-dim); font-size: 20px; padding: 4px 0; }
+.tp-wd.we { color: #d98c8c; }
+.tp-day { height: 48px; border: 1px solid transparent; border-radius: 4px; background: none; color: #fff; font: 22px var(--font-mono); cursor: pointer; }
+.tp-day:hover { background: var(--panel-2); }
+.tp-day.we { color: #d98c8c; }
+.tp-day.hol { color: var(--warn); }
+.tp-day.out { opacity: .35; }
+.tp-day.today { border-color: var(--border-strong); }
+.tp-day.sel { background: #1e6f9a; border-color: var(--accent); color: #fff; opacity: 1; }
 select.speed-sel { min-width: 96px; padding: 0 8px; }
 option { background: #0d1622; color: #fff; }
 input[type=checkbox] { width: 32px; height: 32px; accent-color: var(--line); }
@@ -102,7 +122,8 @@ input[type=range] { accent-color: var(--line); height: var(--ctl); }
 .clock-meta .period { color: var(--line); font-weight: 600; }
 .hdr .lbl { color: var(--text-dim); font-size: 20px; }
 .hdr .btn { min-width: 64px; padding: 0 12px; }
-.hdr-status { flex: 1 0 auto; justify-content: flex-end; border-right: none !important; }
+/* the name takes the room between the controls and the status, centred in it */
+.hdr-status { flex: 0 0 auto; margin-left: auto; justify-content: flex-end; border-right: none !important; }
 .zone-chip { display: flex; flex-direction: column; align-items: center; justify-content: center; min-width: 96px; height: 76px; border: 1px solid var(--border-strong); background: var(--panel-2); border-radius: 4px; cursor: pointer; }
 .zone-chip .z { font: 600 20px var(--font-mono); color: var(--text-dim); }
 .zone-chip .lv { font: 700 24px var(--font-mono); margin-top: 2px; }
