@@ -14,6 +14,11 @@ import { STATIONS, LINE_INFO, WEATHER_RULES } from '../data/line2';
 import type { FaultKind, RadioCall, SimEvent } from '../sim/model';
 import type { Audio } from './audio';
 import { speedIndication } from './dmi';
+import type { VvvfMode } from './vvvf';
+import { PERF, tractionAccel } from '../sim/dynamics';
+
+/** the inverter sound plays up to this time acceleration (the manual-driving limit); faster it is only a blur */
+const VVVF_MAX_RATE = 5;
 
 const CAT_FILTERS = ['全部', '报警', '调度', '通话', '信号', '列车', '车站', '客流', '施工', '教员'];
 
@@ -173,6 +178,16 @@ export class SidePanel {
     // the manual cab: warning above the permitted speed (RM 25 km/h), before the EB
     const cab = snap.trains.find((t) => t.manual);
     this.audio.setOverspeed(!!cab && cab.phase === 'run' && !cab.eb && cab.v > cab.vPermit + 0.05);
+    // the inverter of the selected train (02A05 recordings for every train until other stock is recorded)
+    const sel = this.store.selection;
+    const heard = sel?.kind === 'train' ? snap.trains.find((t) => t.id === sel.id) : undefined;
+    let mode: VvvfMode = 'off', level = 0;
+    if (heard && !snap.paused && snap.speed <= VVVF_MAX_RATE && heard.phase === 'run' && !heard.eb && !heard.failed) {
+      if (heard.a > 0.03) { mode = 'power'; level = heard.a / tractionAccel(heard.v); }
+      // the electric brake fades out over the last few km/h; the friction brake stops the train
+      else if (heard.a < -0.05 && heard.v > 5 / 3.6) { mode = 'brake'; level = -heard.a / PERF.bService; }
+    }
+    this.audio.setTraction(mode, heard?.v ?? 0, level);
     // and a chime once for each coming restriction announced on its DMI
     const ind = cab && speedIndication(cab) ? `${cab.id}|${Math.round(cab.tgtV * 3.6)}|${cab.tgtReason}` : '';
     if (ind && ind !== this.indication) this.audio.chime();

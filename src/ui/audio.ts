@@ -1,9 +1,11 @@
 /**
  * Synthesised sounds (Web Audio, no assets): alarm tones by level, the
  * radio / phone ring while a call waits, a squelch burst when a call is
- * answered, and a short click for commands. Mute is persisted.
+ * answered, and a short click for commands. Mute is persisted. The one
+ * recorded sound, the inverter of the train listened to, is in vvvf.ts.
  */
 import { loadPref, savePref } from './layout';
+import { VvvfSound, type VvvfMode } from './vvvf';
 
 export class Audio {
   private ctx: AudioContext | null = null;
@@ -12,6 +14,7 @@ export class Audio {
   private ringTimer = 0;
   private alarmTimer = 0;
   private overTimer = 0;
+  private vvvf: VvvfSound | null = null;
 
   constructor() {
     const unlock = () => {
@@ -29,6 +32,7 @@ export class Audio {
       this.master = this.ctx.createGain();
       this.master.gain.value = this.muted ? 0 : 0.35;
       this.master.connect(this.ctx.destination);
+      this.vvvf = new VvvfSound(this.ctx, this.master);
     } catch {
       this.ctx = null;
     }
@@ -133,6 +137,11 @@ export class Audio {
     this.ensure();
     this.tone(880, 0, 0.16, 'sine', 0.45);
     this.tone(660, 0.2, 0.3, 'sine', 0.45);
+  }
+
+  /** the inverter sound of the train listened to (see vvvf.ts) */
+  setTraction(mode: VvvfMode, v: number, level: number) {
+    this.vvvf?.set(this.muted ? 'off' : mode, v, level);
   }
 
   click() {

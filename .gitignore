@@ -4,3 +4,6 @@ dist
 .DS_Store
 tests/out
 /work/
+
+# third-party recordings, not redistributable under the repo licence (see src/data/vvvf.ts)
+/public/sounds/vvvf/*.mp3

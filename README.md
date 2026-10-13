@@ -304,6 +304,14 @@ of every command and lever movement.
 
 Alarm and call tones (Web Audio, no files). Toggle with the speaker button or **M**.
 
+**Traction sound** of the selected train (02A05, TKQ506B-2000 IGBT-VVVF), played from
+recordings by speed: grains are read from where the recording runs at the train's stator
+frequency, so the pitch and the PWM mode changes follow the train. Power uses a recorded
+start, electric braking a recorded stop; coasting, a stand, the EB and the last 5 km/h are
+silent. Up to 5× only. The recordings are third-party (Bilibili BV1VGZiBPEjt) and not in
+the repository: cut them from p02.wav with `scripts/vvvf-clips.sh path/to/p02.wav` into
+`public/sounds/vvvf/` (git-ignored); without them the sound stays off (D61).
+
 ### Keys
 
 | Key | Action |
