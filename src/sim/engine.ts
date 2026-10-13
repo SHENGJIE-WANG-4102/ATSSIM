@@ -156,6 +156,10 @@ export class Sim {
   planRev = 0;
   stepsThisSecond = 0;
   stepsPerSec = 0;
+  /** acceleration the worker was asked for and simulated seconds per second it
+   *  had to drop because the steps did not fit the frame budget (worker.ts) */
+  speedWanted = 0;
+  droppedPerSec = 0;
   inputLog: RecordedInput[] = [];
   replaying = false;
 
@@ -716,7 +720,7 @@ export class Sim {
       stats: {
         online: this.trainList.length, inService: this.trainList.filter((t) => t.inService).length, late, maxDelay,
         punctuality: this.depTotal ? this.depOnTime / this.depTotal : 1, tripsDone: this.tripsDone, tripsPlanned,
-        passengers: this.passengersServed, stepsPerSec: this.stepsPerSec,
+        passengers: this.passengersServed, stepsPerSec: this.stepsPerSec, speedWanted: this.speedWanted, speedActual: this.stepsPerSec * FIXED_DT, droppedPerSec: this.droppedPerSec,
       },
       activeRoutes: Array.from(this.routes.keys()),
       faults: this.faults.filter((f) => !f.repaired || this.t - f.repairAt < 600),

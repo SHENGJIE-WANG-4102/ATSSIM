@@ -707,6 +707,12 @@ export interface Snapshot {
     tripsPlanned: number;
     passengers: number;
     stepsPerSec: number;
+    /** requested acceleration over the last second (0 when paused) */
+    speedWanted: number;
+    /** acceleration achieved over the last second */
+    speedActual: number;
+    /** simulated seconds per wall second dropped: the CPU did not keep up */
+    droppedPerSec: number;
   };
   activeRoutes: number[];
   faults: Fault[];

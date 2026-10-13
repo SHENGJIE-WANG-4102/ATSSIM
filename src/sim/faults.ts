@@ -71,6 +71,9 @@ export const FAULT_LABELS: Record<FaultKind, string> = {
   trackPerson: '人员侵入轨道',
 };
 
+/** largest passenger surge multiplier (进站客流倍数) */
+export const SURGE_MAX = 20;
+
 export function injectFault(sim: Sim, kind: FaultKind, target: number, duration: number, param?: number, recoverable?: boolean): { ok: boolean; msg: string } {
   const { topo } = sim;
   const repairAt = duration > 0 ? sim.t + duration : Infinity;
@@ -173,7 +176,8 @@ export function injectFault(sim: Sim, kind: FaultKind, target: number, duration:
     }
     case 'surge': {
       const st = topo.stations[target];
-      const m = param ?? 4;
+      // (the command layer rejects other values; scenario scripts are clamped too)
+      const m = Math.min(SURGE_MAX, Math.max(1, param ?? 4));
       sim.plat[st.platforms.DN].surge = m;
       sim.plat[st.platforms.UP].surge = m;
       f.text = `${st.name} 大客流（进站客流 ×${m}）`;

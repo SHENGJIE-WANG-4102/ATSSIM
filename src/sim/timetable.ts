@@ -1570,7 +1570,8 @@ export interface PlanIssue {
 }
 
 /** shortest turnback the line can do (s): P1 table 1, CBTC 115–120 s */
-/** shortest station headway (s): P1 table 1, CBTC design headway ≤ 90 s */
+/** shortest station headway (s), a hard planning limit: P1 table 1, CBTC
+ *  design headway ≤ 90 s. The headways the templates aim for (D50) are wider. */
 const MIN_HEADWAY = 90;
 
 /** A front turn occupies the opposite platform from arrival to departure.
@@ -1739,7 +1740,9 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
         const h = list[i].t - list[i - 1].t;
         if (h < MIN_HEADWAY && list[i].t - reported > 1800) {
           reported = list[i].t;
-          out.push({ severity: h < MIN_HEADWAY - 30 ? 'error' : 'warn', code: 'HEADWAY', t: list[i].t, blocks: [list[i-1].block,list[i].block], text: `${name(st)} ${dir === 'DN' ? '下行' : '上行'} ${list[i - 1].no}/${list[i].no} 间隔 ${Math.round(h)} s（最小 ${MIN_HEADWAY} s）` });
+          // the design headway is the hard limit: a plan below it cannot run
+          // to time (the operating headways the templates keep are far wider)
+          out.push({ severity: 'error', code: 'HEADWAY', t: list[i].t, blocks: [list[i-1].block,list[i].block], text: `${name(st)} ${dir === 'DN' ? '下行' : '上行'} ${list[i - 1].no}/${list[i].no} 间隔 ${Math.round(h)} s（最小 ${MIN_HEADWAY} s）` });
         }
       }
     }

@@ -24,7 +24,7 @@ import { HALT, rootCause } from './halt';
 
 export type ViolationKind =
   | 'OVERLAP' | 'BEYOND_MA' | 'MA_NO_ROUTE' | 'SWITCH_UNDER_LOAD' | 'EB_ACCEL' | 'OVERSPEED' | 'FSM'
-  | 'LIVENESS' | 'DEADLOCK';
+  | 'LIVENESS' | 'DEADLOCK' | 'NEGATIVE_COUNT';
 
 export const VIOLATION_LABEL: Record<ViolationKind, string> = {
   OVERLAP: '两列车占用同一段线路',
@@ -36,6 +36,7 @@ export const VIOLATION_LABEL: Record<ViolationKind, string> = {
   FSM: '状态转换不在转换表中',
   LIVENESS: '列车非计划停车超过5分钟（无豁免原因）',
   DEADLOCK: '列车相互等待（死锁）',
+  NEGATIVE_COUNT: '候车人数或载客量为负',
 };
 
 export interface Violation {
@@ -155,6 +156,13 @@ export function checkSafety(sim: Sim) {
   }
   checkSwitches(sim);
   observeMachines(sim);
+  checkCounts(sim);
+}
+
+/** passengers waiting and on board are never negative */
+function checkCounts(sim: Sim) {
+  for (const tr of sim.trainList) if (!(tr.load >= 0)) violate(sim, 'NEGATIVE_COUNT', [tr.id], `${tr.svc}-${tr.tripNo} 载客量 ${tr.load}`, `load${tr.id}`);
+  sim.plat.forEach((p, i) => { if (!(p.waiting >= 0)) violate(sim, 'NEGATIVE_COUNT', [], `${sim.topo.platforms[i].name} 候车 ${p.waiting}`, `wait${i}`); });
 }
 
 function checkOverlap(sim: Sim) {

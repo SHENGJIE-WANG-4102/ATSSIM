@@ -21,6 +21,9 @@ let acc = 0;
 let lastWall = performance.now();
 let lastSnap = 0;
 let stepsWindow = 0;
+/** simulated seconds asked for / dropped (CPU could not keep up) in the window */
+let wantWindow = 0;
+let droppedWindow = 0;
 let windowStart = performance.now();
 let jumping = false;
 
@@ -178,6 +181,7 @@ function tick() {
   lastWall = now;
   if (!paused) {
     acc += dtWall * speed;
+    wantWindow += dtWall * speed;
     const t0 = performance.now();
     let steps = 0;
     while (acc >= FIXED_DT) {
@@ -186,7 +190,7 @@ function tick() {
       steps++;
       if ((steps & 15) === 0 && performance.now() - t0 > STEP_BUDGET) {
         // cannot keep up with the requested acceleration: drop the backlog
-        if (acc > 2 * FIXED_DT * 50) acc = 0;
+        if (acc > 2 * FIXED_DT * 50) { droppedWindow += acc; acc = 0; }
         break;
       }
     }
@@ -194,7 +198,11 @@ function tick() {
   }
   if (now - windowStart > 1000) {
     sim.stepsPerSec = Math.round(stepsWindow * 1000 / (now - windowStart));
+    sim.speedWanted = paused ? 0 : wantWindow * 1000 / (now - windowStart);
+    sim.droppedPerSec = droppedWindow * 1000 / (now - windowStart);
     stepsWindow = 0;
+    wantWindow = 0;
+    droppedWindow = 0;
     windowStart = now;
   }
   // operating-day rollover after the night shutdown (03:45)

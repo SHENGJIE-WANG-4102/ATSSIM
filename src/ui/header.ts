@@ -40,6 +40,8 @@ export class Header {
   private hooks: HeaderHooks;
   speed = 1;
   paused = false;
+  /** achieved acceleration, shown when it falls short of the selected one */
+  private actual = h('span', { class: 'lbl', style: 'color:var(--warn);min-width:0' });
 
   constructor(store: Store, hooks: HeaderHooks) {
     this.store = store;
@@ -66,7 +68,7 @@ export class Header {
     this.menu = h('div', { class: 'hdr-menu', hidden: true });
     this.el = h('div', { class: 'hdr' },
       h('div', { class: 'hdr-clock' }, this.clock, h('div', { class: 'clock-meta' }, this.date, this.period)),
-      h('div', { class: 'hdr-speed' }, h('span', { class: 'lbl' }, '速率'), this.pauseBtn, ...this.speedBtns, jumpInput, jumpBtn),
+      h('div', { class: 'hdr-speed' }, h('span', { class: 'lbl' }, '速率'), this.pauseBtn, ...this.speedBtns, this.actual, jumpInput, jumpBtn),
       h('div', { class: 'hdr-brand' },
         h('img', { class: 'metro-logo', src: metroLogo, alt: '上海地铁' }),
         h('img', { class: 'line-badge', src: lineBadge, alt: '2号线 Line 2' }),
@@ -144,6 +146,14 @@ export class Header {
     const s = this.store.snap;
     if (!s) return;
     this.clock.textContent = fmtTime(s.t);
+    // the worker drops the backlog it cannot compute: say how fast it really runs
+    const got = s.stats.speedActual;
+    const short = s.stats.speedWanted > 1 && got < s.stats.speedWanted * 0.9;
+    const txt = short ? `实际 ${Math.round(got)}×` : '';
+    if (this.actual.textContent !== txt) {
+      this.actual.textContent = txt;
+      this.actual.title = short ? `所选 ${Math.round(s.stats.speedWanted)}×，实际 ${got.toFixed(0)}×（${s.stats.stepsPerSec} 步/秒）；计算跟不上，每秒约 ${s.stats.droppedPerSec.toFixed(0)} 秒仿真时间的积压被舍弃（列车位置不受影响，只是推演变慢）` : '';
+    }
     const dt = s.dayType === 'weekday' ? '工作日图' : '双休日/节假日图';
     this.date.textContent = `${s.dateLabel} · ${dt}`;
     const plan = this.store.plan;

@@ -34,6 +34,28 @@ describe('dispatcher boundary', () => {
     expect(() => sim.command({ c: 'setRoute' } as Command)).not.toThrow();
     expect(sim.command({ c: 'sectionBlock', on: false } as Command).ok).toBe(false);
   });
+  it('accepts only a positive, bounded passenger surge and keeps passenger counts non-negative', () => {
+    const sim = make();
+    for (const param of [-3, 0, 0.5, 21]) expect(sim.command({ c: 'fault', kind: 'surge', target: 5, duration: 60, param }).ok).toBe(false);
+    expect(sim.faults).toHaveLength(0);
+    expect(sim.command({ c: 'fault', kind: 'surge', target: 5, duration: 60, param: 4 }).ok).toBe(true);
+    expect(sim.plat[sim.topo.stations[5].platforms.DN].surge).toBe(4);
+    sim.plat[0].waiting = -1;
+    checkSafety(sim);
+    expect(sim.integrity.violations.some(v => v.kind === 'NEGATIVE_COUNT')).toBe(true);
+  });
+  it('treats any station headway under the 90 s design headway as a plan error', () => {
+    const sim = make();
+    const plan = structuredClone(sim.plan);
+    const t = plan.trips.find(x => x.revenue && x.dir === 'DN' && x.stops.length > 10 && x.stops[0].dep > 8 * 3600)!;
+    const twin = { ...structuredClone(t), id: plan.trips.length, no: 'T999' };
+    for (const s of twin.stops) { s.arr += 75; s.dep += 75; }
+    plan.trips.push(twin);
+    plan.blocks[t.block].trips = [...plan.blocks[t.block].trips];
+    const issues = validatePlan(sim.planCtx, plan).filter(i => i.code === 'HEADWAY');
+    expect(issues.length).toBeGreaterThan(0);
+    expect(issues.every(i => i.severity === 'error')).toBe(true);
+  });
   it('validates a complete zone restoration before changing any zone', () => {
     const sim = make();
     sim.command({ c: 'zoneLevel', zones: [0], level: 'TBTC' });

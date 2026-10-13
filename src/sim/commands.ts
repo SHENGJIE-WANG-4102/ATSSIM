@@ -1,7 +1,7 @@
 /** Validate the whole dispatcher command before any state is changed. */
 import type { Sim } from './engine';
 import type { Command } from './model';
-import { FAULT_LABELS } from './faults';
+import { FAULT_LABELS, SURGE_MAX } from './faults';
 
 const COMMANDS = new Set([
   'setRoute', 'cancelRoute', 'guideRoute', 'autoPass', 'ars', 'switchMove', 'switchLock', 'switchFieldLock',
@@ -66,6 +66,7 @@ export function validateCommand(sim: Sim, cmd: Command): string | null {
   if (cmd.c === 'overlay' && (cmd.to <= cmd.from || cmd.headway < 90 || cmd.to > 27.5 * 3600)) return '无效加开时段或间隔';
   if (cmd.c === 'fault') {
     if (!(cmd.kind in FAULT_LABELS)) return '无效故障类型';
+    if (cmd.kind === 'surge' && cmd.param !== undefined && (cmd.param < 1 || cmd.param > SURGE_MAX)) return `客流倍数须在 1–${SURGE_MAX} 之间`;
     if (['trainComm', 'trainDto', 'trainFail', 'pecu'].includes(cmd.kind)) {
       if (!sim.trains.has(cmd.target)) return '列车不存在';
     } else {

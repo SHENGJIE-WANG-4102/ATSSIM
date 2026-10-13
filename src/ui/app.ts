@@ -644,7 +644,7 @@ export class App {
     if (this.fpsAcc > 1000) {
       const perf = { fps: (this.fpsN * 1000) / this.fpsAcc, updateMs: this.updMs / this.fpsN };
       (window as unknown as { __perf: unknown }).__perf = perf;
-      this.perfEl.textContent = `${Math.round(perf.fps)} fps · ${perf.updateMs.toFixed(1)} ms · 仿真 ${snap ? (snap.stats.stepsPerSec * 0.1).toFixed(0) : 0}×`;
+      this.perfEl.textContent = `${Math.round(perf.fps)} fps · ${perf.updateMs.toFixed(1)} ms · 仿真 ${snap ? snap.stats.speedActual.toFixed(0) : 0}×`;
       this.fpsAcc = 0;
       this.fpsN = 0;
       this.updMs = 0;

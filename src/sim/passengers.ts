@@ -70,7 +70,7 @@ export function passengersTick(sim: Sim, dt: number) {
     const sp = topo.stations[p.station].platforms;
     if (sim.plat[sp.DN].skip && sim.plat[sp.UP].skip) { ps.waiting *= Math.max(0, 1 - dt / 120); continue; }
     const lambda = scale * boardingDemand(sim.plan.dayType, p.station, p.track as 'DN' | 'UP', sim.t) * ps.surge;
-    const inflow = lambda * dt * (0.85 + 0.3 * sim.rng());
+    const inflow = Math.max(0, lambda * dt * (0.85 + 0.3 * sim.rng()));
     if (sim.t < windows.first[p.id]) { ps.waiting = 0; continue; }
     if (sim.t > windows.last[p.id]) continue;
     sim.ridership.generated += inflow;
@@ -110,7 +110,7 @@ export function boardAndAlight(sim: Sim, tr: Train, platform: number, task: Stop
   let board = 0;
   if (!isEnd && task.revenue && !task.noBoard) {
     const room = Math.max(0, LINE_INFO.crushCapacity - tr.load);
-    board = Math.min(Math.floor(ps.waiting), room);
+    board = Math.max(0, Math.min(Math.floor(ps.waiting), room));
     ps.waiting -= board;
     tr.load += board;
     ps.stranded = Math.floor(ps.waiting);
