@@ -265,7 +265,7 @@ export class StationView {
   private endName(rid: number): string {
     const r = this.topo.routes[rid];
     if (r.end >= 0) return this.topo.signals[r.end].name;
-    const dep = this.topo.depots.find((d) => d.gateNode === r.endNode);
+    const dep = this.topo.depots.find((d) => d.transferPaths.some((p) => p.gate === r.endNode));
     if (dep) return dep.short;
     const sec = this.topo.sections[r.sections[r.sections.length - 1]];
     return sec ? sec.name : '终端';
@@ -275,7 +275,7 @@ export class StationView {
     const r = this.topo.routes[rid];
     if (!sel) return false;
     if (sel.kind === 'signal') return r.end === sel.id;
-    if (sel.kind === 'depot') return r.end < 0 && this.topo.depots[sel.id].gateNode === r.endNode;
+    if (sel.kind === 'depot') return r.end < 0 && this.topo.depots[sel.id].transferPaths.some((p) => p.gate === r.endNode);
     if (sel.kind === 'section') {
       const last = r.sections[r.sections.length - 1];
       if (r.end < 0) return last === sel.id || this.topo.sections[sel.id].links.some((l) => this.topo.links[l].a === r.endNode || this.topo.links[l].b === r.endNode);

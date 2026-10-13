@@ -82,7 +82,12 @@ export const SCENARIOS: ScenarioDef[] = [
         at: 60, label: '龙阳路车辆段出段道岔失表',
         run: (sim) => {
           const dp = sim.topo.depots.find((d) => d.key === 'LYD')!;
-          const sw = findSwitch(sim, dp.station, (id) => sim.topo.switches[id].kind === 'depot' && sim.topo.switches[id].nodes.some((n) => Math.abs(sim.topo.nodes[n].chain - dp.junctionChain) < 1));
+          // the exit lead's main-line turnout
+          const lead = dp.transferPaths.find((p) => p.flow === 'out') ?? dp.transferPaths[0];
+          const stub = sim.topo.nodes[lead.throat].links.find((l) => sim.topo.links[l].track === 'SID')!;
+          const start = sim.topo.links[stub].chainA;
+          const sw = findSwitch(sim, dp.station, (id) => sim.topo.switches[id].kind === 'depot'
+            && sim.topo.switches[id].nodes.some((n) => Math.abs(sim.topo.nodes[n].chain - start) < 60));
           injectFault(sim, 'switch', sw, 18 * 60);
         },
       },
@@ -105,7 +110,10 @@ export const SCENARIOS: ScenarioDef[] = [
         at: 90, label: '淞虹路折返线道岔失表',
         run: (sim) => {
           const st = stationIdx('SHR');
-          const sw = findSwitch(sim, st, (id) => sim.topo.switches[id].kind === 'siding');
+          // the merging turnout in front of 1道 (its toe is the start of the track)
+          const { topo } = sim;
+          const sw = findSwitch(sim, st, (id) => topo.switches[id].kind === 'siding' && topo.switches[id].nodes.length === 1
+            && topo.links[topo.nodes[topo.switches[id].nodes[0]].toe!].track === 'SID');
           injectFault(sim, 'switch', sw, 25 * 60);
         },
       },

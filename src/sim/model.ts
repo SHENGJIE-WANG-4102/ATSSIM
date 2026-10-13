@@ -111,7 +111,7 @@ export interface StopTask {
   noBoard?: boolean;
 }
 export interface ReverseTask { k: 'reverse'; berths: number[]; chosen: number; station: number; minTime: number }
-export interface DepotTask { k: 'depot'; depot: number }
+export interface DepotTask { k: 'depot'; depot: number; /** 入段 berth of the lead used (default: the depot's) */ berth?: number }
 export interface StableTask { k: 'stable'; berth: number; reason: string }
 export interface RescueTask { k: 'rescue'; target: number }
 export type Task = StopTask | ReverseTask | DepotTask | StableTask | RescueTask;

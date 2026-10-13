@@ -6,7 +6,7 @@ import { doorCloseHold, departureHold, DOOR_CUT_DWELL } from './vehicle';
  * regulation and dispatcher train commands.
  */
 import type { Sim } from './engine';
-import { cancelTrip, type Block, type StopTask, type Task, type Train, type Trip, type TrackDir } from './model';
+import { cancelTrip, type Block, type DepotTask, type StopTask, type Task, type Train, type Trip, type TrackDir } from './model';
 import type { Dir, Topology } from './topology';
 import { nextLink } from './topology';
 import { cancelRoute, swPos, trySetRoute, releaseRoute, approachLocked, bindRouteApproach, committedTrain, relockRescueApproach } from './interlocking';
@@ -15,7 +15,7 @@ import { takeVehicle, putVehicle } from './yard';
 import { callRmPreset, unsafeAhead, openCall } from './radio';
 import { applyEB, grantRM, setMode, distToNextSignal } from './onboard';
 import { openDoors, closeDoors } from './psd';
-import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation, departureBerthAfterReverse } from './timetable';
+import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation, departureBerthAfterReverse, depotTasks } from './timetable';
 import { STATIONS, LINE_INFO, OPERATIONS } from '../data/line2';
 import { boardAndAlight, boardWhileOpen } from './passengers';
 import { dmiNote } from './dmi';
@@ -134,10 +134,26 @@ function berthBusy(sim: Sim, berth: number, self: number): boolean {
   const res = sim.berthRes.get(berth);
   if (res !== undefined && res !== self && sim.trains.has(res)) return true;
   const b = sim.topo.berths[berth];
+  // the same platform faced the other way, reserved by a train already on its
+  // wrong-direction way in (depot exit changing ends, station-front turnback)
+  if (b.kind === 'platform') for (const o of sim.topo.berths) {
+    if (o.link !== b.link || o.id === berth) continue;
+    const r = sim.berthRes.get(o.id);
+    const t0 = r !== undefined && r !== self ? sim.trains.get(r)?.tasks[0] : undefined;
+    if (t0 && ((t0.k === 'stop' && t0.berth === o.id) || (t0.k === 'reverse' && t0.chosen === o.id))) return true;
+  }
   const sec = sim.topo.links[b.link].section;
   for (const lid of sim.topo.sections[sec].links) {
     const segs = sim.linkBodies.get(lid);
     if (segs && segs.some((s) => s.train !== self)) return true;
+  }
+  // a turnback berth on a depot lead: a train on the lead's transfer track
+  // (coming out, or going in) needs the stub
+  if (b.kind === 'siding') {
+    for (const d of sim.topo.depots) for (const path of d.transferPaths) {
+      if (path.stub !== b.link) continue;
+      for (const lid of path.links) if ((sim.linkBodies.get(lid) ?? []).some((s) => s.train !== self)) return true;
+    }
   }
   // a tail berth: a train anywhere else on that tail (e.g. stabled short of
   // the berth) blocks it as well
@@ -255,6 +271,43 @@ export function cowTask<T extends Task>(tr: Train, task: T): T {
   return copy;
 }
 
+/** turnback berths on the stub of the lead whose 入段 berth is `berth` */
+function leadStubBerths(topo: Topology, depot: number, berth: number): number[] {
+  const dp = topo.depots[depot];
+  const i = dp.entryBerths.indexOf(berth);
+  if (i < 0) return [];
+  const stub = dp.transferPaths[i].stub;
+  return topo.berths.filter((b) => b.link === stub && b.kind === 'siding').map((b) => b.id);
+}
+
+/**
+ * A train going in over a lead whose stub doubles as a turnback track (淞虹路,
+ * 远东大道) claims that stub while it is still on its way: a turnback train
+ * that went in there meanwhile would wait for the very platform this train
+ * changes ends on. With the stub taken it goes in by another lead.
+ */
+function resolveDepot(sim: Sim, tr: Train): void {
+  const { topo } = sim;
+  const i = tr.tasks.findIndex((t) => t.k === 'depot');
+  if (i < 0 || i > 3) return;
+  const task = tr.tasks[i] as DepotTask;
+  const dp = topo.depots[task.depot];
+  if (tr.tasks.slice(0, i).some((t) => (t.k !== 'stop' && t.k !== 'reverse') || t.station !== dp.station)) return;
+  // already on a lead: nothing left to choose; still far out: nothing to claim yet
+  if (dp.transferPaths.some((p) => p.stub === tr.link || p.links.includes(tr.link))) return;
+  if (!(Math.abs(sim.trainChain(tr) - topo.stations[dp.station].chain) < 2500)) return;
+  const cur = depotBerth(topo, task);
+  const free = (b: number) => leadStubBerths(topo, task.depot, b).every((x) => !berthBusy(sim, x, tr.id));
+  let pick = cur;
+  if (!free(cur)) {
+    const alt = dp.entryBerths.find((b) => b >= 0 && b !== cur && free(b));
+    if (alt === undefined) return;
+    const t = cowTask(tr, task);
+    t.berth = pick = alt;
+  }
+  for (const x of leadStubBerths(topo, task.depot, pick)) sim.berthRes.set(x, tr.id);
+}
+
 function resolveChoice(sim: Sim, tr: Train, task0: Task): Task {
   let task = task0;
   if (task.k === 'reverse') {
@@ -290,12 +343,16 @@ function resolveChoice(sim: Sim, tr: Train, task0: Task): Task {
   return task;
 }
 
+export function depotBerth(topo: Topology, task: { depot: number; berth?: number }): number {
+  return task.berth !== undefined && task.berth >= 0 ? task.berth : topo.depots[task.depot].berth;
+}
+
 function taskGoal(sim: Sim, task: Task | undefined): number {
   if (!task) return -1;
   if (task.k === 'stop') return task.berth;
   if (task.k === 'reverse') return task.chosen;
   if (task.k === 'stable') return task.berth;
-  if (task.k === 'depot') return sim.topo.depots[task.depot].berth;
+  if (task.k === 'depot') return depotBerth(sim.topo, task);
   if (task.k === 'rescue') {
     const f = sim.trains.get(task.target);
     if (!f) return -1;
@@ -349,25 +406,34 @@ export function spawnDue(sim: Sim) {
     }
     if (sim.t < b.start.time) continue;
     const dp = topo.depots[b.start.depot];
+    // the lead that serves the first trip's direction
+    const first0 = b.trips.map(id => sim.plan.trips[id]).find(t => !t.cancelled)!;
+    const path = dp.transferPaths[dp.portals.exit[first0.dir].path];
+    const outGateLink = path.links[2];
+    const exitSignal = path.exitSignal;
     // transfer track must be free
-    const t1 = topo.links[dp.outGateLink];
-    const exitL = topo.nodes[t1.a].links.find((l) => l !== dp.outGateLink)!;
-    const busy = [dp.outGateLink, exitL].some((l) => (sim.linkBodies.get(l)?.length ?? 0) > 0
+    const t1 = topo.links[outGateLink];
+    const exitL = topo.nodes[t1.a].links.find((l) => l !== outGateLink)!;
+    const busy = [outGateLink, exitL].some((l) => (sim.linkBodies.get(l)?.length ?? 0) > 0
       || sim.sec[topo.links[l].section].occ || sim.sec[topo.links[l].section].lockRoute >= 0);
     if (busy) continue;
+    // the lead's stub doubles as a turnback track: a train turning back there has it
+    const stubBerths = topo.berths.filter((x) => x.link === path.stub);
+    if (stubBerths.some((x) => { const r = sim.berthRes.get(x.id); return r !== undefined && sim.trains.has(r); })
+      || (sim.linkBodies.get(path.stub)?.length ?? 0) > 0) continue;
     const tasks = blockTasks(topo, sim.plan, b);
-    // BZL/CSD share the conversion track with returning trains. Timetable
-    // positioning belongs inside the yard, before taking a vehicle or track.
-    // Use the same physical ETA and readiness window as ARS at the exit.
-    if (dp.outGateLink === dp.gateLink) {
+    // A two-way lead is shared with returning trains. Timetable positioning
+    // belongs inside the yard, before taking a vehicle or track. Use the same
+    // physical ETA and readiness window as ARS at the exit.
+    if (path.flow === 'shared') {
       const first = tasks[0];
       const goal = taskGoal(sim, first);
       if (first?.k === 'stop' && first.dep !== null && (first.arr === null || first.arr === first.dep)) {
-        const distance = distanceToBerth(sim, dp.exitSignal, goal);
+        const distance = distanceToBerth(sim, exitSignal, goal);
         const terminal = topo.stations[first.station].turnbackBerths.length > 0 && isTurnbackOrigin(sim, first);
         if (!Number.isFinite(distance) || first.dep - sim.t - ((15 + distance) / 15 + 30) > (terminal ? 90 : 40)) continue;
       }
-      const rid = sim.routeTable.next.get(goal)?.[dp.exitSignal] ?? -1;
+      const rid = sim.routeTable.next.get(goal)?.[exitSignal] ?? -1;
       if (rid < 0 || topo.routes[rid].steps.some(step => (sim.linkBodies.get(step.link)?.length ?? 0) > 0)) continue;
       // Do not put an outward consist across the inbound approach already
       // needed by a nearby returning train. Independent LYD tracks bypass this.
@@ -384,9 +450,9 @@ export function spawnDue(sim: Sim) {
     sim.clearAlarm(`short-${b.id}`);
     const vehicle = takeVehicle(sim, b.start.depot)!;
     // head on the transfer link next to the exit signal, heading towards the main line
-    const exitLink = topo.links[topo.nodes[t1.a].links.find((l) => l !== dp.outGateLink)!];
+    const exitLink = topo.links[exitL];
     // exitLink runs j1 → j2 (a = j1). Train heads -1 on it.
-    const tr = newTrain(sim, b, exitLink.id, 15, -1, [{ link: dp.outGateLink, dir: -1 }, { link: exitLink.id, dir: -1 }], vehicle);
+    const tr = newTrain(sim, b, exitLink.id, 15, -1, [{ link: outGateLink, dir: -1 }, { link: exitLink.id, dir: -1 }], vehicle);
     tr.tasks = tasks;
     b.train = tr.id;
     tr.phase = 'run';
@@ -499,7 +565,7 @@ export function updateTrainTasks(sim: Sim, tr: Train, dt = 0.1) {
       if (err < -0.8) atoOverrun(sim, tr, cur, err);
     }
     if (cur.k === 'depot') {
-      const b = topo.berths[topo.depots[cur.depot].berth];
+      const b = topo.berths[depotBerth(topo, cur)];
       const near = tr.manual ? tr.off <= b.offset + 1 && tr.off >= b.offset - 40 : Math.abs(tr.off - b.offset) < 1.5;
       if (tr.link === b.link && near && tr.v < 0.05) enterDepot(sim, tr, cur.depot);
     }
@@ -1049,6 +1115,7 @@ export function runARS(sim: Sim) {
 
 export function trainDesire(sim: Sim, tr: Train): Desire | null {
   const { topo } = sim;
+  resolveDepot(sim, tr);
   let goalTask: Task | undefined = tr.tasks[0];
   let startSig = tr.nextSignal;
   let dist = tr.nextSignalDist;
@@ -1077,6 +1144,7 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
     return null;
   }
   if (!goalTask) return null;
+  if (goalTask.k === 'depot') goalTask = tr.tasks.find((t) => t.k === 'depot') ?? goalTask;
   if (goalTask.k === 'reverse' || (goalTask.k === 'stable' && goalTask.berth < 0)) goalTask = resolveChoice(sim, tr, goalTask);
   let goal = taskGoal(sim, goalTask);
   if (goal === -2 && goalTask.k === 'rescue') {
@@ -1098,7 +1166,8 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
   for (let level = 0; level < 4; level++) {
     const rid = table[sig];
     if (rid < 0) {
-      if (!sim.noRouteLogged.has(tr.id * 1000 + sig)) {
+      // the goal lies short of the next signal (e.g. a reversal berth on the current link): nothing to route
+      if (topo.berths[goal].link !== tr.link && !sim.noRouteLogged.has(tr.id * 1000 + sig)) {
         sim.noRouteLogged.add(tr.id * 1000 + sig);
         sim.log('C', 'ATS', `列车 ${trainLabel(tr)} 在 ${topo.signals[sig].name} 无可用进路至 ${topo.berths[goal].name}`);
       }
@@ -1184,6 +1253,8 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
       const chainSecs = Array.from(new Set(chain.flatMap((c) => topo.routes[c].sections)));
       const busyRoute = chain.find((c) => !chainRouteFree(sim, c, chain, tr.id));
       const free = busyRoute === undefined && !berthBusy(sim, goal, tr.id);
+      // secured: hold the platform for this train against arrivals the normal way
+      if (free && ok && topo.berths[goal].kind === 'platform') sim.berthRes.set(goal, tr.id);
       if (!free) {
         if (ok) {
           const b = busyRoute !== undefined ? routeBlocker(sim, busyRoute, tr.id) : { train: berthHolder(sim, goal, tr.id), detail: topo.berths[goal].name };
@@ -1414,12 +1485,11 @@ export function cmdTurnback(sim: Sim, tr: Train, station: number) {
     } else {
       // last trip before depot
       const en = block.end.kind === 'depot' ? block.end.depot : -1;
-      if (en >= 0) tasks.push({ k: 'depot', depot: en });
+      if (en >= 0) depotTasks(topo, en, back, tasks);
     }
   } else {
     // no follow-on service: withdraw to depot after turning back
-    const dp = nearestDepot(sim, station, back);
-    tasks.push({ k: 'depot', depot: dp });
+    depotTasks(topo, nearestDepot(sim, station, back), back, tasks);
   }
   tr.tasks = tasks;
   sim.planDirty = true;
@@ -1468,6 +1538,25 @@ function returnPathReachable(sim: Sim, tr: Train, berth: number): boolean {
   return false;
 }
 
+/** Depots a train running `d` can still return to from `clearChain` on, nearest
+ * first: straight in, or by changing ends on the junction station's platform
+ * where the leads join against `d` (that platform must be ahead and reachable). */
+function depotsAhead(sim: Sim, tr: Train, d: TrackDir, clearChain: number): { dp: Topology['depots'][number]; index: number }[] {
+  const { topo } = sim;
+  const where = (dp: Topology['depots'][number]) => {
+    const p = dp.portals.entry[d];
+    return p.reverse ? topo.stations[p.station].chain : dp.junctionChain;
+  };
+  return topo.depots.map((dp, index) => ({ dp, index }))
+    .filter(({ dp }) => {
+      const p = dp.portals.entry[d];
+      if (!p.reverse) return (d === 'DN' ? dp.junctionChain > clearChain : dp.junctionChain < clearChain) && returnPathReachable(sim, tr, dp.entryBerths[p.path]);
+      const c = topo.stations[p.station].chain;
+      return (d === 'DN' ? c >= clearChain - 1 : c <= clearChain + 1) && returnPathReachable(sim, tr, platformBerth(topo, p.station, d));
+    })
+    .sort((a, b) => Math.abs(where(a.dp) - clearChain) - Math.abs(where(b.dp) - clearChain));
+}
+
 /** 退出服务（清客回段） */
 export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
   const { topo, plan } = sim;
@@ -1486,10 +1575,7 @@ export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
   // clear-out station, so select a forward return path from that station.
   const clearStation = tr.phase === 'dwell' ? curStop(tr)?.station : tr.inService ? next : undefined;
   const clearChain = clearStation === undefined ? sim.trainChain(tr) : topo.stations[clearStation].chain;
-  const forward = topo.depots.map((dp, index) => ({ dp, index }))
-    .filter(({dp}) => (d === 'DN' ? dp.junctionChain > clearChain : dp.junctionChain < clearChain)
-      && returnPathReachable(sim, tr, dp.berth))
-    .sort((a,b) => Math.abs(a.dp.junctionChain-clearChain)-Math.abs(b.dp.junctionChain-clearChain));
+  const forward = depotsAhead(sim, tr, d, clearChain);
   const depot = forward[0]?.index ?? nearestDepot(sim, tr.lastStation >= 0 ? tr.lastStation : (next ?? 0), d);
   const reachable = forward.length > 0;
   const tasks: Task[] = [];
@@ -1503,7 +1589,7 @@ export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
   } else if (next !== undefined && tr.inService) {
     tasks.push({ k: 'stop', berth: platformBerth(topo, next, d), station: next, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 60, note: '清客' });
   }
-  if (reachable) tasks.push({ k: 'depot', depot });
+  if (reachable) depotTasks(topo, depot, d, tasks);
   else {
     const platform = topo.links[tr.link].platform;
     const current = tr.phase === 'dwell' ? curStop(tr)?.station
@@ -1524,7 +1610,8 @@ export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
     if (!alreadyCleared && !tasks.some((t) => t.k === 'stop' && t.station === tbSt)) tasks.push({ k: 'stop', berth: berth.id, station: tbSt, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 20 });
     const fake: Trip = { id: -1, no: '', dir: d, kind: 'adj', from: tbSt, to: tbSt, stops: [], revenue: false, block: -1 };
     addTurnback(topo, fake, tasks);
-    tasks.push({ k: 'depot', depot: nearestDepot(sim, tbSt, d === 'DN' ? 'UP' : 'DN') });
+    const back: TrackDir = d === 'DN' ? 'UP' : 'DN';
+    depotTasks(topo, nearestDepot(sim, tbSt, back), back, tasks);
   }
   // cancel remaining trips of the block
   if (tr.block >= 0) {
@@ -2088,7 +2175,7 @@ function completeCoupling(sim: Sim, tr: Train) {
       tasks.push({ k: 'reverse', berths, chosen: berths[0], station: tailStation, minTime: 40 });
       const back = d === 'DN' ? 'UP' : 'DN';
       tasks.push({ k: 'stop', berth: platformBerth(topo, tailStation, back), station: tailStation, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 120, note: '故障车清客' });
-      tasks.push({ k: 'depot', depot: nearestDepot(sim, tailStation, back) });
+      depotTasks(topo, nearestDepot(sim, tailStation, back), back, tasks);
       tr.tasks = tasks; tr.tbStage = 'arrive';
       sim.log('B', '列车', '终点折返股道救援连挂完成，换端后清客回段');
       return;
@@ -2105,13 +2192,10 @@ function completeCoupling(sim: Sim, tr: Train) {
   };
   if (next !== undefined && !passed(next)) tasks.push({ k: 'stop', berth: platformBerth(topo, next, d), station: next, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 120, note: '故障车清客' });
   const clearChain = next === undefined ? sim.trainChain(tr) : topo.stations[next].chain;
-  const forward = topo.depots.map((dp,index)=>({dp,index}))
-    .filter(({dp})=>(d==='DN'?dp.junctionChain>clearChain:dp.junctionChain<clearChain)
-      && returnPathReachable(sim,tr,dp.berth))
-    .sort((a,b)=>Math.abs(a.dp.junctionChain-clearChain)-Math.abs(b.dp.junctionChain-clearChain));
+  const forward = depotsAhead(sim, tr, d, clearChain);
   const depot = forward[0]?.index ?? nearestDepot(sim,next ?? 0,d);
   const reachable = forward.length>0;
-  if (reachable) tasks.push({ k: 'depot', depot });
+  if (reachable) depotTasks(topo, depot, d, tasks);
   else {
     // A coupled consist cannot fit a single-train siding. Continue to a
     // terminal tail sized for it, turn back and return both vehicles to depot.
@@ -2124,7 +2208,7 @@ function completeCoupling(sim: Sim, tr: Train) {
       addTurnback(topo, { id: -1, no: '', dir: d, kind: 'adj', from: terminal, to: terminal, stops: [], revenue: false, block: -1 }, tasks);
       const back = d === 'DN' ? 'UP' : 'DN';
       tasks.push({ k: 'stop', berth: platformBerth(topo, terminal, back), station: terminal, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 10 });
-      tasks.push({ k: 'depot', depot: nearestDepot(sim, terminal, back) });
+      depotTasks(topo, nearestDepot(sim, terminal, back), back, tasks);
     }
   }
   tr.tasks = tasks;

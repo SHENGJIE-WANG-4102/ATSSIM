@@ -123,18 +123,17 @@ export function depotIndex(topo: Topology, key: string): number {
   return topo.depots.findIndex((d) => d.key === key);
 }
 
+/** first station of a move out of `depot` heading `dir` (its first trip starts
+ * there); the move may reach it against the direction and change ends there */
 export function exitStation(topo: Topology, depot: number, dir: TrackDir): number {
-  const J = topo.depots[depot].junctionChain;
-  const st = topo.stations;
-  if (dir === 'DN') return st.find((s) => s.chain > J)!.index;
-  return [...st].reverse().find((s) => s.chain < J)!.index;
+  return topo.depots[depot].portals.exit[dir].station;
 }
+/** last station before `depot` for a train running `dir` */
 export function entryStation(topo: Topology, depot: number, dir: TrackDir): number {
-  const J = topo.depots[depot].junctionChain;
-  const st = topo.stations;
-  if (dir === 'DN') return [...st].reverse().find((s) => s.chain < J)!.index;
-  return st.find((s) => s.chain > J)!.index;
+  return topo.depots[depot].portals.entry[dir].station;
 }
+/** extra time a depot move spends changing ends at its junction station (s) */
+const PORTAL_REVERSE = 90;
 
 export function minTurn(st: number): number {
   const id = STATIONS[st].id;
@@ -1124,7 +1123,10 @@ export function depotStartTime(ctx: PlanContext, depot: number, first: Trip): nu
   // when an empty feeder passes it without stopping.
   const refTime = first.stops[0].dep;
   // transfer track (~470 m at 25 km/h) + junction + run on the main line
-  const travel = 95 + dist / 13 + 25;
+  // (+ the change of ends where the lead reaches the line against `dir`)
+  // (callers may pass bare stops: then the direction follows from their order)
+  const dir: TrackDir = first.dir ?? (first.stops.length > 1 && first.stops[1].st < st0 ? 'UP' : 'DN');
+  const travel = 95 + dist / 13 + 25 + (topo.depots[depot].portals.exit[dir].reverse ? PORTAL_REVERSE : 0);
   return Math.round(refTime - travel - (first.stops[0].stop ? 75 : 30));
 }
 
@@ -1501,18 +1503,54 @@ export function blockTasks(topo: Topology, plan: Plan, block: Block, fromTrip = 
   for (let k = 0; k < ids.length; k++) {
     const trip = plan.trips[ids[k]];
     if (trip.cancelled) continue;
-    tripTasks(topo, trip, tasks, k === 0 && block.start.kind === 'depot' && fromTrip === 0);
+    const fromDepot = k === 0 && block.start.kind === 'depot' && fromTrip === 0;
+    if (fromDepot && block.start.kind === 'depot') portalExitTasks(topo, block.start.depot, trip, tasks);
+    tripTasks(topo, trip, tasks, fromDepot);
     const next = ids.slice(k + 1).map((i) => plan.trips[i]).find((t) => !t.cancelled);
     if (next) {
       if (next.dir !== trip.dir) addTurnback(topo, trip, tasks);
     }
-    else if (block.end.kind === 'depot') tasks.push({ k: 'depot', depot: block.end.depot });
+    else if (block.end.kind === 'depot') depotTasks(topo, block.end.depot, trip.dir, tasks);
     else if (block.end.kind === 'stable') {
       const tb = turnbackAt(topo, trip.to, trip.dir);
       if (tb && tb.kind === 'rear') tasks.push({ k: 'stable', berth: -1, reason: '存车' });
     }
   }
   return tasks;
+}
+
+/** A move out of the depot reaching its first platform against the trip's
+ * direction stops there and changes ends before the trip starts. */
+function portalExitTasks(topo: Topology, depot: number, trip: Trip, tasks: Task[]) {
+  const p = topo.depots[depot].portals.exit[trip.dir];
+  if (!p.reverse) return;
+  const plat = topo.stations[p.station].platforms[trip.dir];
+  const travel = trip.dir === 'DN' ? 1 : -1;
+  const berth = topo.berths.find((b) => b.platform === plat && b.dir !== travel)!.id;
+  tasks.push({ k: 'stop', berth, station: p.station, trip: trip.id, arr: null, dep: null, doors: false, revenue: false, note: '出段换端' });
+  tasks.push({ k: 'reverse', berths: [berth], chosen: berth, station: p.station, minTime: 40 });
+  // then stand at the platform in the trip's direction (as after a station-front
+  // turnback) unless the trip itself stops there first
+  const first = trip.stops[0];
+  if (!(first.st === p.station && first.stop)) {
+    const dep = trip.stops.find((x) => x.st === p.station)?.dep ?? first.dep;
+    tasks.push({ k: 'stop', berth: platformBerth(topo, p.station, trip.dir), station: p.station, trip: trip.id, arr: null, dep, doors: false, revenue: false, note: '出段换端' });
+  }
+}
+
+/** Into `depot` after running `dir`: where the leads are entered against that
+ * direction the train first changes ends on the junction station's platform. */
+export function depotTasks(topo: Topology, depot: number, dir: TrackDir, tasks: Task[]) {
+  const p = topo.depots[depot].portals.entry[dir];
+  if (p.reverse) {
+    const berth = platformBerth(topo, p.station, dir);
+    const last = tasks[tasks.length - 1];
+    if (!(last?.k === 'stop' && last.station === p.station && last.berth === berth)) {
+      tasks.push({ k: 'stop', berth, station: p.station, trip: -1, arr: null, dep: null, doors: false, revenue: false, note: '回段换端' });
+    }
+    tasks.push({ k: 'reverse', berths: [berth], chosen: berth, station: p.station, minTime: 40 });
+  }
+  tasks.push({ k: 'depot', depot, berth: topo.depots[depot].entryBerths[p.path] });
 }
 
 export function tripTasks(topo: Topology, trip: Trip, tasks: Task[], fromDepot: boolean) {

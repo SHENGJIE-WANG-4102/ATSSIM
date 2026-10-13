@@ -255,6 +255,14 @@ export interface CrossoverDef {
   kind: CrossoverKind;
 }
 
+/** a stub track's far end runs on into a depot (出入段线) */
+export interface LeadDef {
+  /** depot id (LAYOUT.depots) */
+  depot: string;
+  /** entry-only / exit-only conversion track; omitted = both ways */
+  flow?: 'in' | 'out';
+}
+
 export interface SidingDef {
   id: string;
   name: string;
@@ -272,9 +280,43 @@ export interface SidingDef {
   lane?: SidingLane;
   /** usable for reversing (default true); storage-only sidings set false */
   turnback?: boolean;
+  /** the stub is a depot lead: instead of a buffer it runs on into the yard */
+  lead?: LeadDef;
+  /** a second turnout on the stub, `at` m from its attached end, with a
+   *  connector running on to `main` (龙阳路: middle track → UP main) */
+  link?: { main: 'UP' | 'DN'; at: number };
 }
 
 export type SidingLane = 'mid' | 'midUP' | 'midDN' | 'outUP' | 'outDN';
+
+/** one of the two tracks behind a double Y */
+export interface PairStubDef {
+  id: string;
+  name: string;
+  length: number;
+  turnback?: boolean;
+  lead?: LeadDef;
+}
+
+/**
+ * Two middle tracks joined to both mains by a double Y with a diamond
+ * crossing (双Y形道岔＋菱形交叉, the PDF's common end-of-platform layout): a
+ * turnout on each main leads to a splitting turnout, each splitting turnout
+ * reaches both middle tracks, and the two crossing legs cross on a diamond.
+ * Either middle track is reachable from either main; UP → upper and DN →
+ * lower can be used at the same time.
+ */
+export interface PairDef {
+  id: string;
+  station: number;
+  /** direction the middle tracks run from the junction */
+  side: 'west' | 'east';
+  /** signed offset of the start of the middle tracks from the station centre (m);
+   *  the main-line turnouts lie 80 m back from it */
+  at: number;
+  /** [upper (UP side), lower (DN side)] */
+  stubs: [PairStubDef, PairStubDef];
+}
 
 /**
  * Middle track between the mains joined at both ends to both mains through a
@@ -294,18 +336,21 @@ export interface LoopDef {
 export interface TailDef {
   station: number;
   side: 'west' | 'east';
-  /** usable tail length beyond the scissors crossover */
+  /** usable tail length beyond the last switch */
   length: number;
+  /** scissors crossover between the platform and the tails (default true);
+   *  without one the mains just run on to buffers */
+  scissors?: boolean;
+  /** usable for reversing (default true) */
+  turnback?: boolean;
 }
 
 export interface DepotDef {
   id: string;
   name: string;
   short: string;
-  /** station whose interval hosts the junction */
+  /** station the depot leads join the line at */
   station: number;
-  /** offset of the junction centre from that station centre (m, + = east) */
-  junctionOffset: number;
   stablingTracks: number;
   capacity: number;
   /** seconds from leaving a stabling track to reaching the transfer-track gate */
@@ -314,28 +359,53 @@ export interface DepotDef {
 }
 
 export const LAYOUT = {
-  /** terminal tail tracks with scissors crossovers (站后折返) */
+  /** terminal tail tracks (站后尾轨). Layout per the 配线图 PDF, see docs/layout-pdf.md */
   tails: [
+    // 蟠祥路: the mains run on past the double Y to buffers (storage, no scissors;
+    // trains reverse in the two middle tracks)
+    { station: 0, side: 'west', length: 465, scissors: false, turnback: false },
+    // 航站楼: scissors right behind the platform, both mains on to buffers.
     // Assumed usable rescue length: two 186 m consists plus stopping margin.
-    { station: 0, side: 'west', length: 450 },
     { station: 30, side: 'east', length: 450 },
   ] as TailDef[],
-  /** stub sidings (尽头线). Paired stubs behind a scissors crossover (国家会展中心,
-   *  淞虹路, 上海科技馆) each join one main; with the scissors either stub is
-   *  reachable from both mains. Layout per the 配线图 PDF, see docs/layout-pdf.md. */
+  /** two middle tracks behind a double Y (蟠祥路, 国家会展中心, 淞虹路, 上海科技馆) */
+  pairs: [
+    { id: 'PXL', station: 0, side: 'west', at: -205, stubs: [
+      { id: 'PXL1', name: '蟠祥路1道折返线', length: 400 },
+      { id: 'PXL2', name: '蟠祥路2道折返线', length: 400 },
+    ] },
+    { id: 'GJH', station: 1, side: 'west', at: -205, stubs: [
+      { id: 'GJH1', name: '国家会展中心1道尽头线', length: 400 },
+      { id: 'GJH2', name: '国家会展中心2道尽头线', length: 400 },
+    ] },
+    // the two 北翟路 出入段线, both ways: 1道 runs straight onto the UP main,
+    // 2道 onto the DN main (the diamond reaches the other one). They double as
+    // the 淞虹路 turnback tracks.
+    { id: 'SHR', station: 4, side: 'west', at: -205, stubs: [
+      { id: 'SHR1', name: '淞虹路1道（出入段线）', length: 260, lead: { depot: 'BZL' } },
+      { id: 'SHR2', name: '淞虹路2道（出入段线）', length: 260, lead: { depot: 'BZL' } },
+    ] },
+    { id: 'KJG', station: 17, side: 'east', at: 205, stubs: [
+      { id: 'KJG1', name: '上海科技馆1道折返线', length: 350 },
+      { id: 'KJG2', name: '上海科技馆2道折返线', length: 350 },
+    ] },
+  ] as PairDef[],
+  /** stub sidings (尽头线) and single depot leads */
   sidings: [
-    { id: 'GJH1', name: '国家会展中心1道尽头线', station: 1, side: 'west', at: -400, length: 300, connect: 'UP', lane: 'midUP' },
-    { id: 'GJH2', name: '国家会展中心2道尽头线', station: 1, side: 'west', at: -400, length: 300, connect: 'DN', lane: 'midDN' },
-    // the two 北翟路 lead tracks between the mains double as the turnback (approximation:
-    // the modelled depot junction stays 1.3 km west and does not use these stubs)
-    { id: 'SHR1', name: '淞虹路1道折返线', station: 4, side: 'west', at: -400, length: 300, connect: 'UP', lane: 'midUP' },
-    { id: 'SHR2', name: '淞虹路2道折返线', station: 4, side: 'west', at: -400, length: 300, connect: 'DN', lane: 'midDN' },
     { id: 'WNL', name: '威宁路存车线', station: 6, side: 'west', at: 110, length: 300, connect: 'UP', lane: 'outUP', turnback: false },
     { id: 'RMG', name: '人民广场存车线', station: 12, side: 'east', at: -110, length: 300, connect: 'DN', lane: 'outDN', turnback: false },
-    { id: 'KJG1', name: '上海科技馆1道折返线', station: 17, side: 'east', at: 400, length: 300, connect: 'UP', lane: 'midUP' },
-    { id: 'KJG2', name: '上海科技馆2道折返线', station: 17, side: 'east', at: 400, length: 300, connect: 'DN', lane: 'midDN' },
-    // east of the platform, behind the depot junction crossover that brings DN trains across
-    { id: 'LYL', name: '龙阳路折返线', station: 19, side: 'east', at: 610, length: 300, connect: 'UP' },
+    // 龙阳路: middle track behind a Y off both mains; a connector climbs from it
+    // to the UP main, so eastbound trains reach the depot leads on the UP main
+    { id: 'LYL', name: '龙阳路折返线', station: 19, side: 'east', at: 170, length: 400, link: { main: 'UP', at: 120 } },
+    { id: 'LYD1', name: '龙阳路入段线', station: 19, side: 'east', at: 490, length: 300, connect: 'UP', lane: 'outUP', turnback: false, lead: { depot: 'LYD', flow: 'in' } },
+    { id: 'LYD2', name: '龙阳路出段线', station: 19, side: 'east', at: 640, length: 300, connect: 'UP', lane: 'outUP', turnback: false, lead: { depot: 'LYD', flow: 'out' } },
+    // 远东大道: the middle track behind a Y is a 川沙 lead (it passes the UP
+    // main on a flyover); the exit lead leaves the UP main
+    // two-way: the only lead that reaches the DN main
+    { id: 'YDD1', name: '远东大道出入段线', station: 28, side: 'east', at: 170, length: 300, lead: { depot: 'CSD' } },
+    { id: 'YDD2', name: '远东大道出段线', station: 28, side: 'east', at: 230, length: 240, connect: 'UP', lane: 'outUP', turnback: false, lead: { depot: 'CSD', flow: 'out' } },
+    // 海天三路: middle stub west of the platform behind a Y (PDF; not in earlier notes)
+    { id: 'HTS', name: '海天三路尽头线', station: 29, side: 'west', at: -170, length: 300 },
   ] as SidingDef[],
   loops: [
     { id: 'GLL', name: '广兰路中间线', station: 22, west: -170, east: 170, platform: true },
@@ -343,36 +413,29 @@ export const LAYOUT = {
   ] as LoopDef[],
   /** single crossovers (渡线); a scissors is a '/' and a '\' next to each other */
   crossovers: [
-    // scissors in front of the paired stubs
-    { station: 1, offset: -175, kind: '/' },
-    { station: 1, offset: -295, kind: '\\' },
     // 虹桥火车站: not drawn in the PDF (its legend: only documented track work is
     // drawn); kept for the 虹桥 large-crowd template's station-front turnback
     { station: 2, offset: 210, kind: '/' },
     { station: 2, offset: -210, kind: '/' },
-    { station: 4, offset: -175, kind: '/' },
-    { station: 4, offset: -295, kind: '\\' },
     { station: 6, offset: 215, kind: '/' },
-    // 中山公园: scissors about a third of the way to 江苏路
-    { station: 8, offset: 470, kind: '/' },
-    { station: 8, offset: 590, kind: '\\' },
+    // 中山公园: scissors right behind the platform (towards 江苏路)
+    { station: 8, offset: 175, kind: '/' },
+    { station: 8, offset: 295, kind: '\\' },
     { station: 12, offset: -215, kind: '/' },
-    { station: 17, offset: 175, kind: '/' },
-    { station: 17, offset: 295, kind: '\\' },
     { station: 27, offset: -215, kind: '\\' },
   ] as CrossoverDef[],
   depots: [
     {
-      id: 'BZL', name: '北翟路车辆段', short: '北翟路', station: 4, junctionOffset: -1300,
-      stablingTracks: 14, capacity: 36, exitTime: 240, source: 'wiki-depots（接轨淞虹路，淞虹路西北）',
+      id: 'BZL', name: '北翟路车辆段', short: '北翟路', station: 4,
+      stablingTracks: 14, capacity: 36, exitTime: 240, source: 'wiki-depots（接轨淞虹路，淞虹路西北）; pdf-peixian（两条出入段线在淞虹路站台西端经双Y接两正线）',
     },
     {
-      id: 'LYD', name: '龙阳路车辆段', short: '龙阳路', station: 19, junctionOffset: 700,
-      stablingTracks: 12, capacity: 24, exitTime: 240, source: 'wiki-depots（接轨龙阳路，龙阳路东北）',
+      id: 'LYD', name: '龙阳路车辆段', short: '龙阳路', station: 19,
+      stablingTracks: 12, capacity: 24, exitTime: 240, source: 'wiki-depots（接轨龙阳路，龙阳路东北）; pdf-peixian（出入段线接上行正线）',
     },
     {
-      id: 'CSD', name: '川沙停车场', short: '川沙', station: 28, junctionOffset: 420,
-      stablingTracks: 8, capacity: 32, exitTime: 200, source: 'wiki-depots（接轨远东大道，远东大道东）',
+      id: 'CSD', name: '川沙停车场', short: '川沙', station: 28,
+      stablingTracks: 8, capacity: 32, exitTime: 200, source: 'wiki-depots（接轨远东大道，远东大道东）; pdf-peixian',
     },
   ] as DepotDef[],
   /** ZC (zone controller) / TBTC control areas, by station index boundaries */

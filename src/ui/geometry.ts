@@ -199,26 +199,20 @@ export class Geometry {
       const f = d ? (d.y - topo.layout.rowTop[d.row] - topo.layout.upY) / (topo.layout.dnY - topo.layout.upY) : 0.5;
       pos[n.id] = at(n.chain, p.upY + f * (p.dnY - p.upY));
     }
-    // depot structures
+    // depot transfer tracks: from the end of each lead (on its lane) up over
+    // the UP main to the yard gate, leads of one depot side by side
     for (const d of topo.depots) {
-      if (!inWin(d.junctionChain)) continue;
-      const J = d.junctionChain;
-      const row = this.chainRow(J);
-      const top = this.rows[row].top;
-      const xJ = this.chainX(J, row);
-      for (const path of d.transferPaths) {
-        const x = xJ + (path.flow === 'out' ? -50 : path.flow === 'in' ? 50 : 0);
+      d.transferPaths.forEach((path, k) => {
+        const T = topo.nodes[path.throat];
+        if (!inWin(T.chain)) return;
+        const row = this.chainRow(T.chain);
+        const top = this.rows[row].top;
+        const s = Math.sign(topo.nodes[path.gate].chain - T.chain) || 1;
+        const x = this.chainX(T.chain, row) + s * (10 + 18 * k);
         pos[path.gate] = { row, x, y: top + p.upY - p.depotDy.gate };
         pos[topo.links[path.links[2]].a] = { row, x, y: top + p.upY - p.depotDy.j2 };
         pos[topo.links[path.links[1]].a] = { row, x, y: top + p.upY - p.depotDy.j1 };
-        const z = topo.nodes[path.throat];
-        pos[z.id] = { row, x, y: top + p.upY - p.depotDy.z };
-        if (path.flow === 'shared') for (const lid of [z.normal!, z.reverse!]) {
-          const l = topo.links[lid];
-          const q = topo.nodes[l.a === z.id ? l.b : l.a];
-          pos[q.id] = { row, x: this.chainX(q.chain, row), y: top + p.upY - p.depotDy.q };
-        }
-      }
+      });
     }
     // the rest (diagonal halves: crossovers, connectors, depot legs) sit between their neighbours
     for (let pass = 0; pass < 4; pass++) {
@@ -322,7 +316,10 @@ export function stationWindow(topo: Topology, st: number): [number, number] {
     if (n.kind !== 'end') continue;
     if (Math.abs(n.chain - s.chain) < 1500) { lo = Math.min(lo, n.chain - 60); hi = Math.max(hi, n.chain + 60); }
   }
-  for (const d of topo.depots) if (d.station === st) { lo = Math.min(lo, d.junctionChain - 300); hi = Math.max(hi, d.junctionChain + 300); }
+  for (const d of topo.depots) if (d.station === st) for (const path of d.transferPaths) {
+    const c = topo.nodes[path.throat].chain;
+    lo = Math.min(lo, c - 120); hi = Math.max(hi, c + 120);
+  }
   return [lo, hi];
 }
 

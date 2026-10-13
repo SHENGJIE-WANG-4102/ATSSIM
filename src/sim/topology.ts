@@ -16,7 +16,7 @@
  */
 import {
   STATIONS, LAYOUT, SPEED_LIMITS, TURNOUT_SPEEDS, LINE_INFO, stationChainages,
-  type CrossoverKind, type SidingLane,
+  type CrossoverKind, type SidingLane, type LeadDef,
 } from '../data/line2';
 
 export type TrackKind = 'DN' | 'UP' | 'X' | 'SID' | 'CON' | 'DEP';
@@ -157,14 +157,25 @@ export interface TDepot {
   /** LYD has independent entry and exit conversion tracks (P5 fig.2). */
   outGateNode: number;
   outGateLink: number;
-  transferPaths: { gate: number; links: number[]; throat: number; flow: 'in' | 'out' | 'shared' }[];
+  /** leads into the yard: transfer track t0, t1, t2 (t2 ends at the gate), the
+   *  joint where the lead's stub ends, and the depot exit signal (-1 on an entry-only lead) */
+  transferPaths: { gate: number; links: number[]; throat: number; flow: 'in' | 'out' | 'shared'; exitSignal: number; /** the lead's stub link (a turnback berth may lie on it) */ stub: number }[];
   berth: number; // entry berth at gate
+  /** 入段 berth per transferPaths entry, -1 on an exit-only lead */
+  entryBerths: number[];
   exitSignal: number;
   capacity: number;
   stablingTracks: number;
   exitTime: number;
+  /** mean chainage of the leads' main-line turnouts */
   junctionChain: number;
+  /** first / last platform of a depot move in each direction */
+  portals: { exit: Record<'DN' | 'UP', DepotPortal>; entry: Record<'DN' | 'UP', DepotPortal> };
 }
+
+/** A depot move joins / leaves service at `station`; with `reverse` it reaches
+ *  that platform against its normal direction and changes ends there. */
+export interface DepotPortal { station: number; reverse: boolean; /** transferPaths index used */ path: number }
 
 export interface TZone { id: number; key: string; name: string; chainFrom: number; chainTo: number }
 
@@ -229,7 +240,26 @@ const PLAT_HALF = 105; // platform section half-length (m)
 const SW_HALF = 15; // switch section half-length around a switch point
 const XO_HALF = 25; // half horizontal length of a crossover
 const CON_DX = 40; // siding connector horizontal length
-const JUNC = { xo: 220, pu: 60, pd: 140 };
+/** double Y: main turnout → splitting turnout → merging turnout, each this far apart (m) */
+const PAIR_DX = 40;
+
+/** a depot lead built at the end of a stub track */
+interface LeadOut {
+  depot: number;
+  flow: 'in' | 'out' | 'shared';
+  /** joint where the stub ends and the transfer track starts */
+  throat: number;
+  /** joint at the far end of t0 (depot exit signal) */
+  j1: number;
+  gate: number;
+  /** transfer track t0, t1, t2 */
+  links: number[];
+  stub: number;
+  /** chainage of the lead's main-line turnout(s) */
+  mainCh: number;
+  station: number;
+  s: Dir;
+}
 
 interface MainPoint {
   ch: number;
@@ -351,20 +381,53 @@ export function buildTopology(): Topology {
     addCrossover(chains[x.station] + x.offset, x.kind, x.station);
   }
 
-  // terminal tails with scissors
-  const tailInfo: { station: number; side: 'west' | 'east'; signalCh: Record<'DN' | 'UP', number> }[] = [];
+  // double Y + diamond into two middle tracks (蟠祥路, 国家会展中心, 淞虹路, 上海科技馆)
+  interface PairBuild {
+    def: (typeof LAYOUT.pairs)[number]; s: Dir; e: number; mT: number;
+    u: SwBuild; d: SwBuild; sw: Record<'SU' | 'SD' | 'MU' | 'MD', TSwitch>;
+    /** splitting (SU, SD) and merging (MU, MD) nodes */
+    nodes?: { SU: number; SD: number; MU: number; MD: number };
+    stubs: { link: number; exitNode: number; exitLink: number; bnd: number; lead?: LeadOut }[];
+    cons: number[]; inner: { U: number[]; D: number[]; X: number[] };
+  }
+  const pairs: PairBuild[] = [];
+  for (const pd of LAYOUT.pairs) {
+    const c = chains[pd.station];
+    const s: Dir = pd.side === 'west' ? -1 : 1;
+    const e = c + pd.at;
+    const mT = e - s * 2 * PAIR_DX;
+    const toeSide: 'west' | 'east' = s < 0 ? 'east' : 'west';
+    joinFeature(pd.station, mT);
+    const u: SwBuild = { sw: newSwitch('siding', pd.station).id };
+    const d: SwBuild = { sw: newSwitch('siding', pd.station).id };
+    addSwitchPt('UP', mT, toeSide, u);
+    addSwitchPt('DN', mT, toeSide, d);
+    // single-action turnouts: one failed turnout leaves the other middle track usable
+    const sw = { SU: newSwitch('siding', pd.station), SD: newSwitch('siding', pd.station), MU: newSwitch('siding', pd.station), MD: newSwitch('siding', pd.station) };
+    pairs.push({ def: pd, s, e, mT, u, d, sw, stubs: [], cons: [], inner: { U: [], D: [], X: [] } });
+  }
+
+  // terminal tails: scissors (or just the mains) beyond the platform to buffers
+  const tailInfo: { station: number; side: 'west' | 'east'; signalCh: Record<'DN' | 'UP', number>; turnback: boolean }[] = [];
   for (const t of LAYOUT.tails) {
     const c = chains[t.station];
     const s = t.side === 'west' ? -1 : 1;
-    const c1 = c + s * (PLAT_HALF + SW_HALF + XO_HALF + 30); // centre of first crossover
-    const c2 = c1 + s * (2 * XO_HALF + 2 * SW_HALF + 10 + 30);
-    beginFeature(t.station);
-    addCrossover(c1, '/', t.station);
-    addCrossover(c2, '\\', t.station);
-    const f = features[features.length - 1];
-    const ext = { DN: featureExtent(f, 'DN')!, UP: featureExtent(f, 'UP')! };
-    const signalCh = s < 0 ? { DN: ext.DN.from, UP: ext.UP.from } : { DN: ext.DN.to, UP: ext.UP.to };
-    tailInfo.push({ station: t.station, side: t.side, signalCh });
+    let f: (typeof features)[number] | undefined;
+    if (t.scissors ?? true) {
+      const c1 = c + s * (PLAT_HALF + SW_HALF + XO_HALF + 30); // centre of first crossover
+      const c2 = c1 + s * (2 * XO_HALF + 2 * SW_HALF + 10 + 30);
+      beginFeature(t.station);
+      addCrossover(c1, '/', t.station);
+      addCrossover(c2, '\\', t.station);
+      f = features[features.length - 1];
+    } else {
+      // the mains run on past the station's own switches (a double Y)
+      f = features.find((x) => x.station === t.station && x.pts.some((p) => (p.ch - c) * s > 0));
+    }
+    const ext = f ? { DN: featureExtent(f, 'DN')!, UP: featureExtent(f, 'UP')! } : null;
+    const plat = { from: c - PLAT_HALF, to: c + PLAT_HALF };
+    const signalCh = s < 0 ? { DN: (ext?.DN ?? plat).from, UP: (ext?.UP ?? plat).from } : { DN: (ext?.DN ?? plat).to, UP: (ext?.UP ?? plat).to };
+    tailInfo.push({ station: t.station, side: t.side, signalCh, turnback: t.turnback ?? true });
     const outer = s < 0 ? Math.min(signalCh.DN, signalCh.UP) : Math.max(signalCh.DN, signalCh.UP);
     // move buffer to the requested tail length
     const buf = outer + s * t.length;
@@ -380,6 +443,9 @@ export function buildTopology(): Topology {
     y?: SwBuild; ysw?: TSwitch; u?: SwBuild; d?: SwBuild;
     /** stub link holding the berth, and the joint/link of its exit signal */
     stub?: number; exitNode?: number; exitLink?: number; cons: number[];
+    /** second turnout on the stub with a connector to a main (龙阳路) */
+    k?: { sw: TSwitch; main: SwBuild; ch: number; node?: number; links?: number[]; con?: number[] };
+    lead?: LeadOut;
   }
   const sidings: SidingBuild[] = [];
   for (const sd of LAYOUT.sidings) {
@@ -393,9 +459,19 @@ export function buildTopology(): Topology {
     const toeSide: 'west' | 'east' = s < 0 ? 'east' : 'west';
     joinFeature(sd.station, mainCh);
     const sb: SidingBuild = { def: sd, s, e, dead, mainCh, cons: [] };
-    if (connect !== 'DN') { sb.u = { sw: newSwitch('siding', sd.station).id }; addSwitchPt('UP', mainCh, toeSide, sb.u); }
-    if (connect !== 'UP') { sb.d = { sw: newSwitch('siding', sd.station).id }; addSwitchPt('DN', mainCh, toeSide, sb.d); }
-    if (connect === 'both') { sb.ysw = newSwitch('siding', sd.station); sb.y = { sw: sb.ysw.id }; }
+    const kind: TSwitch['kind'] = sd.lead ? 'depot' : 'siding';
+    if (connect !== 'DN') { sb.u = { sw: newSwitch(kind, sd.station).id }; addSwitchPt('UP', mainCh, toeSide, sb.u); }
+    if (connect !== 'UP') { sb.d = { sw: newSwitch(kind, sd.station).id }; addSwitchPt('DN', mainCh, toeSide, sb.d); }
+    if (connect === 'both') { sb.ysw = newSwitch(kind, sd.station); sb.y = { sw: sb.ysw.id }; }
+    if (sd.link) {
+      const ch = e + s * sd.link.at;
+      // both ends of the connector move together, like a crossover
+      const sw = newSwitch('siding', sd.station);
+      const main: SwBuild = { sw: sw.id };
+      joinFeature(sd.station, ch + s * CON_DX);
+      addSwitchPt(sd.link.main, ch + s * CON_DX, s > 0 ? 'east' : 'west', main);
+      sb.k = { sw, main, ch };
+    }
     sidings.push(sb);
   }
 
@@ -421,32 +497,6 @@ export function buildTopology(): Topology {
     addSwitchPt('DN', e + CON_DX, 'east', de);
     loops.push({ def: lp, w, e, uw, dw, ue, de, ywSw: newSwitch('siding', lp.station), yeSw: newSwitch('siding', lp.station), ends: [], middle: [], exits: [] });
   }
-
-  // depot junctions: grade-separated double connection (出入段线). Each main
-  // line has an exit turnout and an entry turnout; the DN legs pass the UP
-  // track on a flyover, so no depot move crosses the opposite main at grade.
-  interface JunctionBuild {
-    depotIdx: number; J: number;
-    pu1: SwBuild; pu2: SwBuild; pd1: SwBuild; pd2: SwBuild;
-    quSw: TSwitch; qdSw: TSwitch; zSw?: TSwitch;
-  }
-  const junctions: JunctionBuild[] = [];
-  LAYOUT.depots.forEach((dp, di) => {
-    const J = chains[dp.station] + dp.junctionOffset;
-    beginFeature(dp.station);
-    addCrossover(J - JUNC.xo, '/', dp.station, 'crossover');
-    const mk = () => ({ sw: newSwitch('depot', dp.station).id }) as SwBuild;
-    const pu1 = mk(); const pu2 = mk(); const pd1 = mk(); const pd2 = mk();
-    addSwitchPt('UP', J - JUNC.pu, 'west', pu1); // exit → westbound
-    addSwitchPt('UP', J + JUNC.pu, 'east', pu2); // entry ← westbound
-    addSwitchPt('DN', J - JUNC.pd, 'west', pd2); // entry ← eastbound
-    addSwitchPt('DN', J + JUNC.pd, 'east', pd1); // exit → eastbound
-    junctions.push({
-      depotIdx: di, J, pu1, pu2, pd1, pd2,
-      quSw: newSwitch('depot', dp.station), qdSw: newSwitch('depot', dp.station),
-      zSw: dp.id === 'LYD' ? undefined : newSwitch('depot', dp.station),
-    });
-  });
 
   // feature-side signal positions become hard boundaries (they already are switch bounds)
   // equipped stations: any feature within 1.2 km of the station centre
@@ -531,21 +581,71 @@ export function buildTopology(): Topology {
     main.reverse = c2.id;
     return [c1.id, c2.id];
   };
-  const sidingBerthInfo: { sb: SidingBuild; link: number; offset: number; dir: Dir; exitNode: number; exitLink: number }[] = [];
+  const sidingBerthInfo: { name: string; station: number; turnback: boolean; link: number; offset: number; dir: Dir; exitNode: number; exitLink: number }[] = [];
+  /**
+   * A stub from `bnd` running `s`-wards: either to a buffer, or (a depot lead)
+   * on through a transfer track to the yard gate. Returns the stub link that
+   * holds the berth; with a `link` turnout the stub is split around it.
+   */
+  const leads: LeadOut[] = [];
+  const buildStub = (bnd: TNode, s: Dir, length: number, station: number, lead: LeadDef | undefined, mainCh: number,
+    k?: SidingBuild['k']): number => {
+    const endCh = bnd.chain + s * length;
+    let from = bnd;
+    if (k) {
+      // bnd → kw → K → ke → … (K: toe towards bnd, normal on along the stub, reverse to the connector)
+      const kw = newNode('joint', k.ch - s * SW_HALF);
+      const kn = newNode('switch', k.ch);
+      kn.sw = k.sw.id; k.sw.nodes.push(kn.id); k.node = kn.id;
+      const ke = newNode('joint', k.ch + s * SW_HALF);
+      const l0 = newLink(bnd.id, kw.id, Math.abs(kw.chain - bnd.chain), 'SID', 0, bnd.chain, kw.chain);
+      const l1 = newLink(kw.id, kn.id, SW_HALF, 'SID', 0, kw.chain, kn.chain);
+      const l2 = newLink(kn.id, ke.id, SW_HALF, 'SID', 0, kn.chain, ke.chain);
+      kn.toe = l1.id; kn.normal = l2.id;
+      k.con = mkCon(kn, findMainNode(k.main));
+      kn.reverse = k.con[0];
+      k.links = [l0.id, l1.id, l2.id];
+      for (const l of [l0, l1, l2]) l.limit = TURNOUT_SPEEDS.siding;
+      from = ke;
+    }
+    if (!lead) {
+      const dead = newNode('end', endCh);
+      dead.endKind = 'buffer';
+      const ls = newLink(from.id, dead.id, Math.abs(endCh - from.chain), 'SID', 0, from.chain, endCh);
+      ls.limit = TURNOUT_SPEEDS.siding;
+      return ls.id;
+    }
+    // depot lead: stub → throat T → t0 → j1 → t1 → j2 → t2 → gate
+    const di = LAYOUT.depots.findIndex((x) => x.id === lead.depot);
+    if (di < 0) throw new Error(`unknown depot ${lead.depot}`);
+    const T = newNode('joint', endCh);
+    const ls = newLink(from.id, T.id, Math.abs(endCh - from.chain), 'SID', 0, from.chain, endCh);
+    ls.limit = TURNOUT_SPEEDS.siding;
+    const j1 = newNode('joint', endCh + s * 20);
+    const j2 = newNode('joint', endCh + s * 35);
+    const gate = newNode('end', endCh + s * 45);
+    gate.endKind = 'depot'; gate.depot = di;
+    const t0 = newLink(T.id, j1.id, SW_HALF + 10, 'DEP', 0, T.chain, j1.chain);
+    const t1 = newLink(j1.id, j2.id, 220, 'DEP', 0, j1.chain, j2.chain);
+    const t2 = newLink(j2.id, gate.id, 220, 'DEP', 0, j2.chain, gate.chain);
+    for (const l of [t0, t1, t2]) {
+      l.limit = TURNOUT_SPEEDS.depot;
+      if (lead.flow) l.depotFlow = lead.flow;
+    }
+    leads.push({ depot: di, flow: lead.flow ?? 'shared', throat: T.id, j1: j1.id, gate: gate.id, links: [t0.id, t1.id, t2.id], stub: ls.id, mainCh, station, s });
+    return ls.id;
+  };
   for (const sb of sidings) {
     const s = sb.s;
-    const dead = newNode('end', sb.dead);
-    dead.endKind = 'buffer';
-    let ls: TLink;
+    let bnd: TNode;
     if (sb.y) {
       const y = newNode('switch', sb.e);
       y.sw = sb.ysw!.id;
       sb.ysw!.nodes.push(y.id);
       sb.y.node = y.id;
-      const bnd = newNode('joint', sb.e + s * SW_HALF);
+      bnd = newNode('joint', sb.e + s * SW_HALF);
       // siding links run from station side outward: y → bnd → dead
       const ly = newLink(y.id, bnd.id, SW_HALF, 'SID', 0, sb.e, sb.e + s * SW_HALF);
-      ls = newLink(bnd.id, dead.id, sb.def.length - SW_HALF, 'SID', 0, sb.e + s * SW_HALF, sb.dead);
       ly.limit = TURNOUT_SPEEDS.siding;
       y.toe = ly.id;
       const cu = mkCon(y, findMainNode(sb.u!));
@@ -556,16 +656,54 @@ export function buildTopology(): Topology {
       sb.exitLink = ly.id;
     } else {
       // single turnout: main → connector → stub, the stub starting at the attached end
-      const bnd = newNode('joint', sb.e);
-      ls = newLink(bnd.id, dead.id, sb.def.length, 'SID', 0, sb.e, sb.dead);
+      bnd = newNode('joint', sb.e);
       sb.cons = mkCon(bnd, findMainNode(sb.u ?? sb.d!));
       sb.exitNode = bnd.id;
       sb.exitLink = sb.cons[0];
     }
-    ls.limit = TURNOUT_SPEEDS.siding;
+    const length = sb.y ? sb.def.length - SW_HALF : sb.def.length;
+    const ls = links[buildStub(bnd, s, length, sb.def.station, sb.def.lead, sb.mainCh, sb.k)];
+    if (sb.def.lead) sb.lead = leads[leads.length - 1];
     sb.stub = ls.id;
-    // berth: head stops 15 m short of the dead end, travelling outward (+1 on ls)
-    sidingBerthInfo.push({ sb, link: ls.id, offset: ls.len - 15, dir: 1, exitNode: sb.exitNode, exitLink: sb.exitLink });
+    // berth: head stops 15 m short of the dead end / lead throat, travelling outward (+1 on ls)
+    sidingBerthInfo.push({ name: sb.def.name, station: sb.def.station, turnback: sb.def.turnback ?? true, link: ls.id, offset: ls.len - 15, dir: 1, exitNode: sb.exitNode, exitLink: sb.exitLink });
+  }
+  // double Y: main turnout → splitter (SU/SD) → own-lane merger (normal) or
+  // the diamond leg to the other lane's merger (reverse); merger → middle track
+  for (const pb of pairs) {
+    const s = pb.s;
+    const mkSw = (sw: TSwitch, ch: number) => { const n = newNode('switch', ch); n.sw = sw.id; sw.nodes.push(n.id); return n; };
+    const chS = pb.mT + s * PAIR_DX;
+    const SU = mkSw(pb.sw.SU, chS); const SD = mkSw(pb.sw.SD, chS);
+    const MU = mkSw(pb.sw.MU, pb.e); const MD = mkSw(pb.sw.MD, pb.e);
+    pb.nodes = { SU: SU.id, SD: SD.id, MU: MU.id, MD: MD.id };
+    const cu = mkCon(SU, findMainNode(pb.u));
+    const cd = mkCon(SD, findMainNode(pb.d));
+    pb.cons = [...cu, ...cd];
+    SU.toe = cu[0]; SD.toe = cd[0];
+    const mk = (a: TNode, b: TNode, cross: boolean) => {
+      const l = newLink(a.id, b.id, (cross ? Math.hypot(PAIR_DX, 5) : PAIR_DX) + 1, 'SID', 0, a.chain, b.chain);
+      l.limit = TURNOUT_SPEEDS.siding;
+      return l.id;
+    };
+    const uu = mk(SU, MU, false); const dd = mk(SD, MD, false);
+    const ud = mk(SU, MD, true); const du = mk(SD, MU, true);
+    SU.normal = uu; SU.reverse = ud;
+    SD.normal = dd; SD.reverse = du;
+    MU.normal = uu; MU.reverse = du;
+    MD.normal = dd; MD.reverse = ud;
+    pb.inner = { U: [cu[0], uu], D: [cd[0], dd], X: [ud, du] };
+    pb.def.stubs.forEach((st, i) => {
+      const M = i === 0 ? MU : MD;
+      const bnd = newNode('joint', pb.e + s * SW_HALF);
+      const lt = newLink(M.id, bnd.id, SW_HALF, 'SID', 0, M.chain, bnd.chain);
+      lt.limit = TURNOUT_SPEEDS.siding;
+      M.toe = lt.id;
+      (i === 0 ? pb.inner.U : pb.inner.D).push(lt.id);
+      const ls = links[buildStub(bnd, s, st.length - SW_HALF, pb.def.station, st.lead, pb.mT)];
+      pb.stubs.push({ link: ls.id, exitNode: bnd.id, exitLink: lt.id, bnd: bnd.id, lead: st.lead ? leads[leads.length - 1] : undefined });
+      sidingBerthInfo.push({ name: st.name, station: pb.def.station, turnback: st.turnback ?? true, link: ls.id, offset: ls.len - 15, dir: 1, exitNode: bnd.id, exitLink: lt.id });
+    });
   }
 
   // loops: yw → bw → [platform] → be → ye, each Y joined to both mains
@@ -598,80 +736,6 @@ export function buildTopology(): Topology {
     lb.exits = lb.def.platform
       ? [{ node: pts[1].id, link: lb.middle[0] }, { node: pts[2].id, link: lb.middle[2] }]
       : [{ node: bw.id, link: lw.id }, { node: be.id, link: le.id }];
-  }
-
-  // depot junction links
-  interface DepotBuild { jb: JunctionBuild; gate: TNode; gateLink: TLink; outGate: TNode; outGateLink: TLink; exitNode: number; exitLink: number; qu: number; qd: number; z?: number; tLinks: number[]; paths: { gate: number; links: number[]; throat: number; flow: 'in' | 'out' | 'shared' }[] }
-  const depotBuild: DepotBuild[] = [];
-  for (const jb of junctions) {
-    const mkSw = (sw: TSwitch, ch: number) => { const n = newNode('switch', ch); n.sw = sw.id; sw.nodes.push(n.id); return n; };
-    const qu = mkSw(jb.quSw, jb.J - 25);
-    const qd = mkSw(jb.qdSw, jb.J + 25);
-    const mkLeg = (p: TNode, q: TNode): number => {
-      const mid = newNode('joint', (p.chain + q.chain) / 2);
-      const half = Math.hypot(Math.abs(p.chain - q.chain), 8) / 2 + 3;
-      const a = newLink(p.id, mid.id, half, 'DEP', 0, p.chain, mid.chain);
-      const b = newLink(mid.id, q.id, half, 'DEP', 0, mid.chain, q.chain);
-      a.limit = b.limit = TURNOUT_SPEEDS.depot;
-      p.reverse = a.id;
-      return b.id;
-    };
-    if (LAYOUT.depots[jb.depotIdx].id === 'LYD') {
-      // Independent entry and exit mergers. Each connects to its own pair
-      // of mainline points, so an inbound reservation never locks the exit
-      // conversion track or vice versa (P5 fig.2).
-      qu.normal = mkLeg(findMainNode(jb.pu1), qu);
-      qu.reverse = mkLeg(findMainNode(jb.pd1), qu);
-      qd.normal = mkLeg(findMainNode(jb.pu2), qd);
-      qd.reverse = mkLeg(findMainNode(jb.pd2), qd);
-      const transfer = (throat: TNode) => {
-        const j1 = newNode('joint', jb.J);
-        const j2 = newNode('joint', jb.J);
-        const gate = newNode('end', jb.J);
-        gate.endKind = 'depot'; gate.depot = jb.depotIdx;
-        const t0 = newLink(throat.id, j1.id, SW_HALF + 10, 'DEP', 0, jb.J, jb.J);
-        const t1 = newLink(j1.id, j2.id, 220, 'DEP', 0, jb.J, jb.J);
-        const t2 = newLink(j2.id, gate.id, 220, 'DEP', 0, jb.J, jb.J);
-        for (const l of [t0, t1, t2]) l.limit = TURNOUT_SPEEDS.depot;
-        throat.toe = t0.id;
-        return { gate, gateLink: t2, exitNode: j1.id, exitLink: t0.id, links: [t0.id, t1.id, t2.id] };
-      };
-      const out = transfer(qu);
-      const entry = transfer(qd);
-      for (const id of out.links) links[id].depotFlow = 'out';
-      for (const id of entry.links) links[id].depotFlow = 'in';
-      depotBuild.push({ jb, ...entry, outGate: out.gate, outGateLink: out.gateLink,
-        exitNode: out.exitNode, exitLink: out.exitLink, qu: qu.id, qd: qd.id,
-        tLinks: [...out.links.slice(1), ...entry.links.slice(1)],
-        paths: [{ gate: out.gate.id, links: out.links, throat: qu.id, flow: 'out' },
-          { gate: entry.gate.id, links: entry.links, throat: qd.id, flow: 'in' }] });
-      continue;
-    }
-    const z = mkSw(jb.zSw!, jb.J);
-    qu.normal = mkLeg(findMainNode(jb.pu1), qu);
-    qu.reverse = mkLeg(findMainNode(jb.pu2), qu);
-    qd.normal = mkLeg(findMainNode(jb.pd1), qd);
-    qd.reverse = mkLeg(findMainNode(jb.pd2), qd);
-    const lzq = newLink(qu.id, z.id, 30, 'DEP', 0, qu.chain, z.chain);
-    const lzd = newLink(qd.id, z.id, 30, 'DEP', 0, qd.chain, z.chain);
-    qu.toe = lzq.id;
-    qd.toe = lzd.id;
-    z.normal = lzq.id;
-    z.reverse = lzd.id;
-    // transfer track z → j1 → j2 → gate
-    const j1 = newNode('joint', jb.J);
-    const j2 = newNode('joint', jb.J);
-    const gate = newNode('end', jb.J);
-    gate.endKind = 'depot';
-    gate.depot = jb.depotIdx;
-    const t0 = newLink(z.id, j1.id, SW_HALF + 10, 'DEP', 0, jb.J, jb.J);
-    const t1 = newLink(j1.id, j2.id, 220, 'DEP', 0, jb.J, jb.J);
-    const t2 = newLink(j2.id, gate.id, 220, 'DEP', 0, jb.J, jb.J);
-    for (const l of [lzq, lzd, t0, t1, t2]) l.limit = TURNOUT_SPEEDS.depot;
-    z.toe = t0.id;
-    // exit signal at j1 governing entry into t0 travelling toward z (t0 runs z→j1, so dir -1)
-    depotBuild.push({ jb, gate, gateLink: t2, outGate: gate, outGateLink: t2, exitNode: j1.id, exitLink: t0.id, qu: qu.id, qd: qd.id, z: z.id, tLinks: [t1.id, t2.id],
-      paths: [{ gate: gate.id, links: [t0.id, t1.id, t2.id], throat: z.id, flow: 'shared' }] });
   }
 
   // tail limits: main links beyond the outer scissors
@@ -796,8 +860,21 @@ export function buildTopology(): Topology {
       const secId = links[y.normal!].section >= 0 ? links[y.normal!].section : newSection('switch', 'SID', sb.e).id;
       for (const lid of [y.toe!, y.normal!, y.reverse!]) moveTo(lid, secId);
     } else moveTo(sb.cons[0], links[sb.cons[1]].section);
-    const sec = newSection('siding', 'SID', sb.dead);
-    assign(sb.stub!, sec);
+    if (sb.k) {
+      // the connector turnout on the stub: its own switch section; the piece before it a short siding section
+      const ks = newSection('switch', 'SID', sb.k.ch).id;
+      for (const lid of [sb.k.links![1], sb.k.links![2], sb.k.con![0]]) moveTo(lid, ks);
+      moveTo(sb.k.links![0], newSection('siding', 'SID', links[sb.k.links![0]].chainA).id);
+    }
+    moveTo(sb.stub!, newSection('siding', 'SID', sb.dead).id);
+  }
+  // double Y: each splitter with its own-lane merger, and the diamond, are sections
+  for (const pb of pairs) {
+    for (const k of ['U', 'D', 'X'] as const) {
+      const sid = newSection('switch', 'SID', pb.mT + pb.s * PAIR_DX).id;
+      for (const lid of pb.inner[k]) moveTo(lid, sid);
+    }
+    for (const st of pb.stubs) moveTo(st.link, newSection('siding', 'SID', links[st.link].chainB).id);
   }
   for (const lb of loops) {
     for (const yid of [lb.yw!, lb.ye!]) {
@@ -810,34 +887,8 @@ export function buildTopology(): Topology {
       assign(lid, newSection(lid === lb.platLink ? 'platform' : 'siding', 'SID', (l.chainA + l.chainB) / 2));
     }
   }
-  // depot throat sections (QU, QD, Z) and transfer track sections
-  const reassign = (lid: number, secId: number) => {
-    const l = links[lid];
-    if (l.section === secId) return;
-    if (l.section >= 0) {
-      const old = sections[l.section];
-      old.links = old.links.filter((x) => x !== lid);
-      old.len -= l.len;
-    }
-    l.section = -1;
-    assign(lid, sections[secId]);
-  };
-  for (const db of depotBuild) {
-    for (const nid of [db.qu, db.qd]) {
-      const n = nodes[nid];
-      const sid = newSection('switch', 'DEP', db.jb.J).id;
-      for (const lid of [n.toe!, n.normal!, n.reverse!]) reassign(lid, sid);
-    }
-    if (db.z !== undefined) {
-      const zs = newSection('switch', 'DEP', db.jb.J).id;
-      reassign(nodes[db.z].toe!, zs);
-    }
-    for (const lid of db.tLinks) {
-      const sec = newSection('depot', 'DEP', db.jb.J);
-      links[lid].section = -1;
-      assign(lid, sec);
-    }
-  }
+  // depot transfer tracks: one section per link
+  for (const ld of leads) for (const lid of ld.links) moveTo(lid, newSection('depot', 'DEP', links[lid].chainA).id);
   // remove empty sections (from re-assignment) by compaction
   {
     const keep = sections.filter((s) => s.links.length > 0);
@@ -996,7 +1047,12 @@ export function buildTopology(): Topology {
   for (const b of sidingBerthInfo) addSignal(b.exitNode, b.exitLink, 'exit');
   for (const lb of loops) for (const x of lb.exits) addSignal(x.node, x.link, 'exit');
   // depot exit signals
-  for (const db of depotBuild) addSignal(db.exitNode, db.exitLink, 'depot');
+  for (const ld of leads) {
+    // depot exit signal at the yard end of the transfer track, and the depot
+    // entry signal where the stub track ends (a turnback berth lies short of it)
+    if (ld.flow !== 'in') addSignal(ld.j1, ld.links[0], 'depot');
+    if (ld.flow !== 'out') addSignal(ld.throat, ld.links[0], 'home');
+  }
 
   // ------------------------------------------------------------------ berths
   const berths: TBerth[] = [];
@@ -1027,12 +1083,12 @@ export function buildTopology(): Topology {
       const l = links[lid];
       const offset = dir === -1 ? 15 : l.len - 15;
       const id = addBerth({ kind: 'tail', link: lid, offset, dir, platform: -1, station: ti.station, depot: -1, reverse: false, name: `${STATIONS[ti.station].name}${t === 'DN' ? '下行' : '上行'}尾轨` });
-      stationTurnback[ti.station].push(id);
+      if (ti.turnback) stationTurnback[ti.station].push(id);
     }
   }
   for (const b of sidingBerthInfo) {
-    const id = addBerth({ kind: 'siding', link: b.link, offset: b.offset, dir: b.dir, platform: -1, station: b.sb.def.station, depot: -1, reverse: false, name: b.sb.def.name });
-    if (b.sb.def.turnback ?? true) stationTurnback[b.sb.def.station].push(id);
+    const id = addBerth({ kind: 'siding', link: b.link, offset: b.offset, dir: b.dir, platform: -1, station: b.station, depot: -1, reverse: false, name: b.name });
+    if (b.turnback) stationTurnback[b.station].push(id);
   }
   // 广兰路: small-loop trains reverse at the middle-track platform (arriving eastbound)
   for (const lb of loops) {
@@ -1040,17 +1096,97 @@ export function buildTopology(): Topology {
     const id = berths.find((b) => b.link === lb.platLink && b.dir === 1)!.id;
     stationTurnback[lb.def.station].push(id);
   }
+  /**
+   * Is (link, dir) → accept reachable without reversing, over any switch
+   * position `swOk` allows, within `maxLen` metres? Shortest paths first.
+   */
+  const reach = (from: number, dir: Dir, maxLen: number, accept: (lid: number, d: Dir) => boolean,
+    swOk: (sw: number, pos: 'N' | 'R') => boolean = () => true): boolean => reachLen(from, dir, maxLen, accept, swOk) < Infinity;
+  /** length of the shortest such path, Infinity if none */
+  const reachLen = (from: number, dir: Dir, maxLen: number, accept: (lid: number, d: Dir) => boolean,
+    swOk: (sw: number, pos: 'N' | 'R') => boolean = () => true): number => {
+    const seen = new Set<number>();
+    const open: { l: number; d: Dir; len: number }[] = [{ l: from, d: dir, len: 0 }];
+    while (open.length) {
+      let bi = 0;
+      for (let i = 1; i < open.length; i++) if (open[i].len < open[bi].len) bi = i;
+      const { l, d, len } = open.splice(bi, 1)[0];
+      const key = l * 2 + (d > 0 ? 1 : 0);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      if (accept(l, d)) return len;
+      if (len > maxLen) continue;
+      const nid = d === 1 ? links[l].b : links[l].a;
+      const n = nodes[nid];
+      const nexts: { l: number; sw?: [number, 'N' | 'R'] }[] = [];
+      if (n.kind === 'joint') {
+        const o = n.links.find((x) => x !== l);
+        if (o !== undefined) nexts.push({ l: o });
+      } else if (n.kind === 'switch') {
+        if (l === n.toe) nexts.push({ l: n.normal!, sw: [n.sw!, 'N'] }, { l: n.reverse!, sw: [n.sw!, 'R'] });
+        else if (l === n.normal) nexts.push({ l: n.toe!, sw: [n.sw!, 'N'] });
+        else if (l === n.reverse) nexts.push({ l: n.toe!, sw: [n.sw!, 'R'] });
+      }
+      for (const nx of nexts) {
+        if (nx.sw && !swOk(nx.sw[0], nx.sw[1])) continue;
+        const nl = links[nx.l];
+        const nd: Dir = nl.a === nid ? 1 : -1;
+        if (nl.depotFlow && (nl.depotFlow === 'in' ? nd !== 1 : nd !== -1)) continue;
+        open.push({ l: nx.l, d: nd, len: len + nl.len });
+      }
+    }
+    return Infinity;
+  };
+  const normalDirOf = (t: 'DN' | 'UP'): Dir => (t === 'DN' ? 1 : -1);
+  const platLinkOf = (st: number, t: 'DN' | 'UP') => platforms[stationPlat[st][t]].link;
+
   const depots: TDepot[] = [];
-  for (const db of depotBuild) {
-    const dp = LAYOUT.depots[db.jb.depotIdx];
-    const berth = addBerth({ kind: 'depot', link: db.gateLink.id, offset: db.gateLink.len - 5, dir: 1, platform: -1, station: dp.station, depot: depots.length, reverse: false, name: `${dp.name}入段` });
+  LAYOUT.depots.forEach((dp, di) => {
+    const own = leads.filter((ld) => ld.depot === di);
+    // dedicated leads first, two-way leads after them
+    const exits = own.filter((ld) => ld.flow !== 'in').sort((a, b) => +(a.flow !== 'out') - +(b.flow !== 'out'));
+    const entries = own.filter((ld) => ld.flow !== 'out').sort((a, b) => +(a.flow !== 'in') - +(b.flow !== 'in'));
+    const inL = entries[0];
+    const outL = exits.find((ld) => ld !== inL) ?? exits[0];
+    if (!inL || !outL) throw new Error(`depot ${dp.id} needs an entry and an exit lead`);
+    const id = depots.length;
+    // one 入段 berth at the gate of every lead a train can go in by
+    const entryBerths = own.map((ld) => ld.flow === 'out' ? -1
+      : addBerth({ kind: 'depot', link: ld.links[2], offset: links[ld.links[2]].len - 5, dir: 1, platform: -1, station: dp.station, depot: id, reverse: false, name: `${dp.name}入段` }));
+    const berth = entryBerths[own.indexOf(inL)];
+    // where trains leaving in each direction first reach a platform, and where
+    // trains coming in last leave one: at the junction station, directly or
+    // against the platform's normal direction (then they change ends there)
+    const S = dp.station;
+    const portal = (t: 'DN' | 'UP', exit: boolean): DepotPortal => {
+      const n = normalDirOf(t);
+      const plat = platLinkOf(S, t);
+      // the shortest way wins: with two leads behind a double Y that is the
+      // one running straight onto the main, not across the diamond
+      for (const reverse of [false, true]) {
+        const want: Dir = (reverse ? -n : n) as Dir;
+        const len = (ld: LeadOut) => exit ? reachLen(ld.links[1], -1, 4000, (l, d) => l === plat && d === want)
+          : reachLen(plat, want, 4000, (l, d) => l === ld.links[2] && d === 1);
+        const best = (exit ? exits : entries).map((ld) => ({ ld, len: len(ld) })).filter((x) => x.len < Infinity)
+          .sort((a, b) => a.len - b.len)[0];
+        if (best) return { station: S, reverse, path: own.indexOf(best.ld) };
+      }
+      throw new Error(`${dp.name}: no ${exit ? 'exit' : 'entry'} path for ${t} at ${STATIONS[S].name}`);
+    };
     depots.push({
-      id: depots.length, key: dp.id, name: dp.name, short: dp.short, station: dp.station, gateNode: db.gate.id,
-      gateLink: db.gateLink.id, outGateNode: db.outGate.id, outGateLink: db.outGateLink.id,
-      transferPaths: db.paths, berth, exitSignal: signalByEntry.get(sigEntryKey(db.exitNode, db.exitLink))!,
-      capacity: dp.capacity, stablingTracks: dp.stablingTracks, exitTime: dp.exitTime, junctionChain: db.jb.J,
+      id, key: dp.id, name: dp.name, short: dp.short, station: dp.station, gateNode: inL.gate,
+      gateLink: inL.links[2], outGateNode: outL.gate, outGateLink: outL.links[2],
+      transferPaths: own.map((ld) => ({ gate: ld.gate, links: ld.links, throat: ld.throat, flow: ld.flow, stub: ld.stub,
+        exitSignal: ld.flow === 'in' ? -1 : signalByEntry.get(sigEntryKey(ld.j1, ld.links[0]))! })),
+      berth, entryBerths, exitSignal: signalByEntry.get(sigEntryKey(outL.j1, outL.links[0]))!,
+      capacity: dp.capacity, stablingTracks: dp.stablingTracks, exitTime: dp.exitTime,
+      junctionChain: own.reduce((a, ld) => a + ld.mainCh, 0) / own.length,
+      portals: {
+        exit: { DN: portal('DN', true), UP: portal('UP', true) },
+        entry: { DN: portal('DN', false), UP: portal('UP', false) },
+      },
     });
-  }
+  });
 
   // ------------------------------------------------------------------ routes
   const routes: TRoute[] = [];
@@ -1093,7 +1229,15 @@ export function buildTopology(): Topology {
       for (const nx of nexts) {
         const nl = links[nx.link];
         const ndir: Dir = nl.a === exitNode ? 1 : -1;
-        if (nl.depotFlow && (nl.depotFlow === 'in' ? ndir !== 1 : ndir !== -1)) continue;
+        if (nl.depotFlow && (nl.depotFlow === 'in' ? ndir !== 1 : ndir !== -1)) {
+          // an exit-only lead can still be entered from the main as far as its throat (折返/停车 on 出段线)
+          if (nl.depotFlow === 'out' && fr.steps.length > 1) {
+            finish(-1, exitNode);
+            routes[routes.length - 1].switches = fr.sws;
+            routes[routes.length - 1].diverging = fr.sws.some((s) => s.pos === 'R');
+          }
+          continue;
+        }
         const sigId = signalByEntry.get(sigEntryKey(exitNode, nx.link));
         // consistent position for paired switches
         if (nx.sw) {
@@ -1142,7 +1286,12 @@ export function buildTopology(): Topology {
     const ordered = [...signals].sort((a, b) => a.chain - b.chain);
     for (const s of ordered) {
       const st = zz(s.station + 1);
-      if (s.role === 'depot') { s.name = `D${depots.find((d) => d.exitSignal === s.id)?.key ?? ''}`; continue; }
+      if (s.role === 'depot') {
+        const d = depots.find((x) => x.transferPaths.some((p) => p.exitSignal === s.id));
+        const outs = d ? d.transferPaths.filter((p) => p.exitSignal >= 0) : [];
+        s.name = `D${d?.key ?? ''}${outs.length > 1 ? outs.findIndex((p) => p.exitSignal === s.id) + 1 : ''}`;
+        continue;
+      }
       const l = links[s.link];
       const facingEast = (s.dir === 1 ? l.chainB - l.chainA : l.chainA - l.chainB) > 0;
       const prefix = facingEast ? 'X' : 'S';
@@ -1276,8 +1425,15 @@ export function buildTopology(): Topology {
   };
   for (const sb of sidings) {
     const y = laneY(sb.def.lane);
+    if (sb.k) placeLane(sb.k.links!, y);
     placeLane([sb.stub!], y);
     if (sb.y) placeLane([nodes[sb.y.node!].toe!], y);
+  }
+  for (const pb of pairs) {
+    const yu = laneY('midUP');
+    const yd = laneY('midDN');
+    placeLane([pb.inner.U[1], pb.inner.U[2], pb.stubs[0].link], yu);
+    placeLane([pb.inner.D[1], pb.inner.D[2], pb.stubs[1].link], yd);
   }
   for (const lb of loops) placeLane([...lb.ends, ...lb.middle], laneY(lb.def.platform ? 'midDN' : 'mid'));
   for (const n of nodes) {
@@ -1286,37 +1442,32 @@ export function buildTopology(): Topology {
     if (ends.some((m) => !m.pos.length)) continue;
     n.pos = posFor(n.chain, (ends[0].pos[0].y + ends[1].pos[0].y) / 2 - g.rowTop[ends[0].pos[0].row]);
   }
-  // depot junctions
-  for (const db of depotBuild) {
-    const qu = nodes[db.qu];
-    const qd = nodes[db.qd];
-    qu.pos = posFor(qu.chain, g.depotQY + 10);
-    qd.pos = posFor(qd.chain, g.depotQY + 10);
-    if (db.z !== undefined) nodes[db.z].pos = posFor(nodes[db.z].chain, g.depotQY - 8);
-    for (const q of [qu, qd]) {
-      for (const lid of [q.normal!, q.reverse!]) {
-        const mid = links[lid].a;
-        const mainLink = links[nodes[mid].links.find((x) => x !== lid)!];
-        const p = nodes[mainLink.a === mid ? mainLink.b : mainLink.a];
-        const py = links[p.links.find((x) => links[x].track === 'DN' || links[x].track === 'UP')!].track === 'UP' ? g.upY : g.dnY;
-        nodes[mid].pos = posFor(nodes[mid].chain, (py + g.depotQY + 10) / 2);
-      }
-    }
-    for (const path of db.paths) {
-      const x = db.jb.J + (path.flow === 'out' ? -50 : path.flow === 'in' ? 50 : 0);
-      nodes[links[path.links[0]].b].pos = posFor(x, g.depotQY - 22);
-      nodes[links[path.links[1]].b].pos = posFor(x, g.depotQY - 40);
-      nodes[path.gate].pos = posFor(x, g.depotGateY);
-    }
+  // depot transfer tracks climb from the end of their lead over the UP main to the yard
+  for (const ld of leads) {
+    const k = leads.filter((x) => x.depot === ld.depot).indexOf(ld);
+    const T = nodes[ld.throat].chain;
+    const at = (d: number) => T + ld.s * (25 + 50 * k + d);
+    nodes[links[ld.links[0]].b].pos = posFor(at(0), g.upY - 34);
+    nodes[links[ld.links[1]].b].pos = posFor(at(12), g.depotQY - 30);
+    nodes[ld.gate].pos = posFor(at(20), g.depotGateY);
   }
   for (const n of nodes) if (n.pos.length === 0) n.pos = posFor(n.chain, g.midY);
 
   // ------------------------------------------------------------------ stations
   const stations: TStation[] = STATIONS.map((s, i) => {
     const r = chainRow(chains[i]);
-    const frontDN = xos.some((x) => x.station === i && x.kind === '/' && x.center < chains[i] && chains[i] - x.center < 700);
-    const frontUP = xos.some((x) => x.station === i && x.kind === '/' && x.center > chains[i] && x.center - chains[i] < 700) ||
-      junctions.some((j) => LAYOUT.depots[j.depotIdx].station === i && j.J - JUNC.xo > chains[i] && j.J - chains[i] < 1000);
+    // station-front turnback: an arriving train can cross, over this station's
+    // own switches, onto the opposite platform (against its normal direction)
+    const front = (t: 'DN' | 'UP'): boolean => {
+      const n = normalDirOf(t);
+      const from = chains[i] - n * 700;
+      const start = mainLinks[t].find((lid) => Math.min(links[lid].chainA, links[lid].chainB) <= from && Math.max(links[lid].chainA, links[lid].chainB) > from);
+      if (start === undefined) return false;
+      const opp = platLinkOf(i, t === 'DN' ? 'UP' : 'DN');
+      return reach(start, n, 1400, (l, d) => l === opp && d === n, (sw, pos) => pos === 'N' || switches[sw].station === i);
+    };
+    const frontDN = front('DN');
+    const frontUP = front('UP');
     return {
       index: i, id: s.id, name: s.name, chain: chains[i], platforms: stationPlat[i],
       turnbackBerths: stationTurnback[i], frontTurnback: { DN: frontDN, UP: frontUP }, equipped: equipped[i],

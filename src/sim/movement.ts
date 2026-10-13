@@ -134,7 +134,8 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
   const onSight = tr.manual && tr.mode === 'RM';
   const cbtc = tr.level === 'CBTC' && tr.comm;
   const rescueTarget = tr.tasks[0]?.k === 'rescue' ? (tr.tasks[0] as { target: number }).target : -1;
-  const depotGoal = tr.tasks[0]?.k === 'depot' ? topo.depots[(tr.tasks[0] as { depot: number }).depot].berth : -1;
+  const dt0 = tr.tasks[0]?.k === 'depot' ? tr.tasks[0] as { depot: number; berth?: number } : null;
+  const depotGoal = dt0 ? (dt0.berth !== undefined && dt0.berth >= 0 ? dt0.berth : topo.depots[dt0.depot].berth) : -1;
   const gb = goal >= 0 ? goal : depotGoal;
   const berth = gb >= 0 ? topo.berths[gb] : null;
 

@@ -671,7 +671,7 @@ export class TrackView {
       this.addStatic({ t, kind: 'depot', prio: 90, wx: x0, wy: y0, w: textWidth(d.name, 24), h: 28, minZoom: 0, cands: [{ dx: 10, dy: 3 }] });
       // the yard box and the junction throat are obstacles for train windows
       this.obstacles.push({ x: x0, y: y0, w, h: hgt });
-      const legs = topo.nodes.filter((n) => Math.abs(n.chain - d.junctionChain) < 160 && n.links.some((l) => topo.links[l].track === 'DEP')).map((n) => geom.pos[n.id]).filter((q): q is P => !!q);
+      const legs = d.transferPaths.flatMap((path) => path.links.flatMap((l) => [topo.links[l].a, topo.links[l].b])).map((n) => geom.pos[n]).filter((q): q is P => !!q);
       if (legs.length) {
         const xs = legs.map((q) => q.x);
         const ys = legs.map((q) => q.y);
