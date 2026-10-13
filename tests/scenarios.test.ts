@@ -196,6 +196,6 @@ describe('scenario catalogue', () => {
       const fired = sim.events.filter((e) => e.text.startsWith('场景事件：'));
       expect(fired.length).toBe(def.events.length);
       expect(fired.filter((e) => e.text.includes('未找到')).map((e) => e.text)).toEqual([]);
-    }, 400_000);
+    }, 600_000); // evening scenarios warm up a whole operating day first
   }
 });

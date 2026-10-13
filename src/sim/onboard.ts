@@ -87,6 +87,9 @@ export function applyEB(sim: Sim, tr: Train, reason: string, cause: EbCause) {
   }
   tr.eb = true;
   tr.ebSince = sim.t;
+  // the integrity check measures "never faster under EB" from the speed at
+  // which it was applied (an EB from an event after this step's integration)
+  sim.integrity.prevV.set(tr.id, tr.v);
   tr.ebReason = reason;
   tr.ebCause = cause;
   tr.ebAuth = false;
