@@ -156,8 +156,8 @@ stop a close-up under the DMI shows the platform doors, the last PSD pillar and 
 cab window: stopped right, the window stands at that pillar (D55). Its scale follows the
 distance to go — far out the whole platform and train are in view with the end door at
 the right edge, closing in to 26 px/m over the last metres — and the PSD doors carry
-car-door numbers from the stopping end (1-1 opposite the head car's front door; only
-each car's first door while they would crowd) (D60).
+car-door numbers from the stopping end (1-1 opposite the head car's front door; doors 1/3/5,
+then only each car's first door, while they would crowd) (D60).
 
 ATP supervises all the time:
 

@@ -189,8 +189,10 @@ export class StopView {
         rect(sx(fa), 73, (fb - fa) * PX, 4, C.glass);
       }
       const mw = Math.min(4, Math.max(1, 0.15 * PX));
-      // door numbers: every door while there is room for them, else the first door of each car
-      const everyDoor = DOOR_PITCH * PX >= 30;
+      // door numbers: every door while there is plenty of room, then doors 1/3/5, then the first door of each car
+      const everyDoor = DOOR_PITCH * PX >= 60;
+      // in between: doors 1, 3 and 5 of each car
+      const oddDoors = !everyDoor && DOOR_PITCH * PX >= 30;
       const small = k < 0.55;
       c.font = `bold ${small ? 10 : everyDoor ? 13 : 12}px ${FONT}`;
       const ph = small ? 12 : 15;
@@ -207,7 +209,7 @@ export class StopView {
           rect(x + w / 2 + 1 + shift, 72, w / 2 - 1, 6, C.leaf);
           rect(x - mw, 66, mw, 18, C.mullion);
           rect(x + w, 66, mw, 18, C.mullion);
-          if (!everyDoor && k > 0) return;
+          if (!everyDoor && (oddDoors ? k % 2 === 1 : k > 0)) return;
           // number plate on the door header, read from the platform
           const label = `${car + 1}-${k + 1}`;
           const lw = c.measureText(label).width + (small ? 4 : 6);
