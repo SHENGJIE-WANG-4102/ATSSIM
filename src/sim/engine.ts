@@ -3,6 +3,7 @@
  * time step. Runs inside a Web Worker (src/sim/worker.ts) or headless in
  * tests.
  */
+import { gradePermille } from './gradient';
 import { buildTopology, linkChain, type Topology } from './topology';
 import { computeRunTimes, type RunTimes } from './dynamics';
 import {
@@ -728,6 +729,7 @@ export class Sim {
         task: t0 ? describeTask(this, t0) : '—', kind: tr.tripId >= 0 ? this.plan.trips[tr.tripId].kind : '',
         rm: tr.mode === 'RM',
         vTarget: tr.vTarget, tgtV: tr.tgtV, tgtD: Number.isFinite(tr.tgtD) ? tr.tgtD : -1, tgtReason: tr.tgtReason,
+        grade: gradePermille(this.topo, tr.link, tr.off, tr.dir),
         stopDist: Number.isFinite(tr.stopDist) ? tr.stopDist : -1, a: tr.a, manual: tr.manual, notch: tr.notch,
         dwellLeft: tr.phase === 'dwell' || tr.phase === 'reversing' ? Math.max(0, tr.dwellUntil - this.t) : 0,
         nextStation: nextStopStation(tr), ebReason: tr.eb ? tr.ebReason : tr.stopUntil > this.t ? tr.stopReason : '',

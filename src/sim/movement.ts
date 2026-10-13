@@ -4,7 +4,8 @@
  */
 import type { Sim } from './engine';
 import type { Train, BodySeg } from './model';
-import { nextLink, type Dir } from './topology';
+import { nextLink, linkChain, type Dir } from './topology';
+import { profileOf, heightAt, chainSense, gradeAccelAt, brakingSpeedH } from './gradient';
 import { swPos } from './interlocking';
 import { TRACTION_UNITS } from './vehicle';
 import { PERF, brakingSpeed, controlAccel, jerkLimited, speedAfterEasing, tractionAccel } from './dynamics';
@@ -572,6 +573,14 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     tr.delay = sim.t + etaToStop(scan.stopDist, tr.v, Math.max(1, scan.vBody - PERF.atoMargin)) - nextStop.arr;
   const atoMargin = regulated && tr.delay > 2 ? PERF.atoFastMargin : PERF.atoMargin;
   const stopAt = Math.min(scan.stopDist, scan.maDist);
+  // the profile (gradient.ts): gravity on the train, and the height of a point
+  // ahead for the ATP curves, which brake against the grade as well (D65)
+  const prof = profileOf(sim.topo);
+  const sense = chainSense(sim.topo, tr.link, tr.dir);
+  const head = linkChain(sim.topo, tr.link, tr.off);
+  const aG = gradeAccelAt(prof, head, sense);
+  const h0 = heightAt(prof, head);
+  const rise = (d: number) => sense ? heightAt(prof, head + sense * d) - h0 : 0;
   let vT = scan.vBody - (rm ? 0.3 : atoMargin);
   let vPerm = scan.vBody;
   let vEbi = scan.vBody + PERF.atpTolerance;
@@ -588,16 +597,18 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     const d = scan.constraints[i];
     const v = scan.constraints[i + 1];
     vT = Math.min(vT, brakingSpeed(d - 3, v - (rm ? 0.2 : atoMargin), PERF.bPlan));
-    vPerm = Math.min(vPerm, brakingSpeed(d, v, PERF.bPermit));
-    vEbi = Math.min(vEbi, brakingSpeed(d, v, PERF.bEbGuaranteed) + PERF.atpTolerance);
+    const dh = rise(d);
+    vPerm = Math.min(vPerm, brakingSpeedH(d, v, PERF.bPermit, dh));
+    vEbi = Math.min(vEbi, brakingSpeedH(d, v, PERF.bEbGuaranteed, dh) + PERF.atpTolerance);
     if (v < scan.vBody - 0.1) consider(d, v, '限速');
   }
   vT = Math.min(vT, brakingSpeed(scan.maDist - 1, 0, PERF.bPlan));
   if (scan.stopDist !== Infinity) vT = Math.min(vT, brakingSpeed(scan.stopDist - 0.2, 0, PERF.bPlan));
   if (!(tr.manual && rm)) {
-    vPerm = Math.min(vPerm, brakingSpeed(scan.maDist, 0, PERF.bPermit));
+    const dh = rise(scan.maDist);
+    vPerm = Math.min(vPerm, brakingSpeedH(scan.maDist, 0, PERF.bPermit, dh));
     // the EB intervention curve ends at the EOA itself: at / past it any motion trips the EB
-    vEbi = Math.min(vEbi, scan.maDist > 0 ? brakingSpeed(scan.maDist, 0, PERF.bEbGuaranteed) + 0.3 : 0);
+    vEbi = Math.min(vEbi, scan.maDist > 0 ? brakingSpeedH(scan.maDist, 0, PERF.bEbGuaranteed, dh) + 0.3 : 0);
   }
   consider(tr.maDist, 0, tr.maReason || 'MA终点');
   if (scan.stopDist !== Infinity && scan.stopDist <= scan.maDist) consider(scan.stopDist, 0, '停车点');
@@ -633,6 +644,9 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     }
   }
 
+  // `a` is the effort of the motors and brakes; the train accelerates at a + aG.
+  // The driver's notch is an effort; ATO asks for an acceleration and works
+  // out the effort against the grade, within what the train has.
   let a: number;
   if (tr.eb) {
     // released only by onboard.ts after the dispatcher's authorisation
@@ -644,7 +658,12 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     if ((standStill || tr.doorSide || tr.doorsOpen) && a > 0) a = 0;
     trackApproach(tr);
   } else {
-    a = controlAccel(speedAfterEasing(tr.v, tr.a), vT, stopAt);
+    const c = controlAccel(speedAfterEasing(tr.v, tr.a), vT, stopAt);
+    // in traction a falling grade is a bonus, not something to brake off
+    a = c > 0 ? Math.max(c - aG, c) : c - aG;
+    // standing with nothing asked for: the brakes hold it against the grade
+    if (tr.v === 0 && vT <= 0.01) a = 0;
+    a = Math.max(-PERF.bService, Math.min(tractionAccel(tr.v), a));
   }
   // inverters cut out (vehicle.ts): less traction, braking blended out by the friction brake
   if (tr.tractionCut > 0 && a > 0) a = Math.min(a, tractionAccel(tr.v) * (1 - tr.tractionCut / TRACTION_UNITS));
@@ -652,7 +671,9 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   if (!tr.eb) a = jerkLimited(tr.a, a, dt);
   tr.a = a;
   const v0 = tr.v;
-  tr.v = Math.max(0, tr.v + a * dt);
+  // at a stand the holding brake keeps it there until traction beats the grade (no roll-back)
+  const net = v0 === 0 && a <= Math.max(0, -aG) ? 0 : a + aG;
+  tr.v = Math.max(0, tr.v + net * dt);
   let ds = ((v0 + tr.v) / 2) * dt;
   if (tr.manual) {
     // the driver controls the stop; only physical obstacles stop the train regardless
@@ -675,8 +696,9 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     if (ds > hard) { ds = hard; tr.v = Math.min(tr.v, 0.3); }
     if (stopAt < 0.4 && tr.v < 0.35 && !tr.eb) tr.v = 0;
   }
-  // at a stand the brakes hold it: nothing left to ease off, traction builds up from nothing
-  if (tr.v === 0) tr.a = 0;
+  // at a stand the brakes hold it: nothing left to ease off, traction builds up from
+  // nothing (on a rising grade it keeps building until it lifts the train)
+  if (tr.v === 0 && tr.a <= 0) tr.a = 0;
   // Distinguish the new restrictive braking target from the authority already
   // issued. Do not replace an issued EOA with an unreachable one under a train.
   const prevEoa = tr.lastMa - tr.lastDs;

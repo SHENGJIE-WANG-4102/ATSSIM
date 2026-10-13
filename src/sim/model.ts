@@ -618,6 +618,8 @@ export interface TrainSnap {
   tgtV: number;
   tgtD: number;
   tgtReason: string;
+  /** grade under the head in the direction of travel (‰, + = climbing) */
+  grade: number;
   stopDist: number;
   a: number;
   manual: boolean;

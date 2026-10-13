@@ -5,6 +5,7 @@
  */
 import type { Topology } from './topology';
 import { OPERATIONS } from '../data/line2';
+import { profileOf, heightAt, gradeAccelAt, brakingSpeedH, type Profile } from './gradient';
 
 export const PERF = {
   /** max traction acceleration at low speed (m/s²) */
@@ -127,7 +128,7 @@ function limitAt(prof: LimitSeg[], ch: number): number {
  * (standstill) to `end` (standstill if stopAtEnd). Returns elapsed seconds.
  * `marks` are chainages where the pass time is recorded.
  */
-function simulateRun(prof: LimitSeg[], sgn: 1 | -1, start: number, end: number, trainLen: number, stopAtEnd: boolean, marks: number[] = []): { t: number; markTimes: number[] } {
+function simulateRun(prof: LimitSeg[], hp: Profile, sgn: 1 | -1, start: number, end: number, trainLen: number, stopAtEnd: boolean, marks: number[] = []): { t: number; markTimes: number[] } {
   const dt = 0.1;
   let x = start;
   let v = 0;
@@ -143,9 +144,12 @@ function simulateRun(prof: LimitSeg[], sgn: 1 | -1, start: number, end: number, 
     vLim = Math.min(vLim, limitAt(prof, x - sgn * trainLen));
     // look ahead up to 600 m for lower limits
     let vT = vLim - PERF.atoFastMargin;
+    const h0 = heightAt(hp, x);
     for (let d = 10; d <= 600; d += 10) {
-      const lim = limitAt(prof, x + sgn * d) - PERF.atoFastMargin;
-      vT = Math.min(vT, brakingSpeed(d - 5, lim, PERF.bPlan));
+      const lim = limitAt(prof, x + sgn * d);
+      vT = Math.min(vT, brakingSpeed(d - 5, lim - PERF.atoFastMargin, PERF.bPlan));
+      // the permitted-speed curve, which brakes against the grade (movement.ts)
+      vT = Math.min(vT, brakingSpeedH(d, lim, PERF.bPermit, heightAt(hp, x + sgn * d) - h0));
     }
     const remaining = totalDist - travelled;
     let stopDist = Infinity;
@@ -153,8 +157,13 @@ function simulateRun(prof: LimitSeg[], sgn: 1 | -1, start: number, end: number, 
       stopDist = remaining;
       vT = Math.min(vT, brakingSpeed(remaining - 0.3, 0, PERF.bPlan));
     }
-    a = jerkLimited(a, controlAccel(speedAfterEasing(v, a), Math.max(0, vT), stopDist), dt);
-    v = Math.max(0, v + a * dt);
+    // effort against the grade, as in movement.ts
+    const aG = gradeAccelAt(hp, x, sgn, trainLen);
+    const c = controlAccel(speedAfterEasing(v, a), Math.max(0, vT), stopDist);
+    const want = c > 0 ? Math.max(c - aG, c) : c - aG;
+    a = jerkLimited(a, Math.max(-PERF.bService, Math.min(tractionAccel(v), want)), dt);
+    const net = v === 0 && a <= Math.max(0, -aG) ? 0 : a + aG;
+    v = Math.max(0, v + net * dt);
     const ds = v * dt;
     travelled += ds;
     x += sgn * ds;
@@ -173,17 +182,18 @@ export function computeRunTimes(topo: Topology, trainLen: number, stopPlatformKm
   const ch = topo.stations.map((s) => s.chain);
   const n = ch.length;
   const half = trainLen / 2;
+  const hp = profileOf(topo);
   const profDn = trackProfile(topo, 'DN', stopPlatformKmh);
   const profUp = trackProfile(topo, 'UP', stopPlatformKmh);
   const dn: number[] = [];
   const up: number[] = [];
   for (let i = 0; i + 1 < n; i++) {
-    dn.push(simulateRun(profDn, 1, ch[i] + half, ch[i + 1] + half, trainLen, true).t);
-    up.push(simulateRun(profUp, -1, ch[i + 1] - half, ch[i] - half, trainLen, true).t);
+    dn.push(simulateRun(profDn, hp, 1, ch[i] + half, ch[i + 1] + half, trainLen, true).t);
+    up.push(simulateRun(profUp, hp, -1, ch[i + 1] - half, ch[i] - half, trainLen, true).t);
   }
   const pass = (pDn: LimitSeg[], pUp: LimitSeg[]) => {
-    const passD = simulateRun(pDn, 1, ch[0], ch[n - 1], trainLen, false, ch).markTimes;
-    const passU = simulateRun(pUp, -1, ch[n - 1], ch[0], trainLen, false, [...ch].reverse()).markTimes.reverse();
+    const passD = simulateRun(pDn, hp, 1, ch[0], ch[n - 1], trainLen, false, ch).markTimes;
+    const passU = simulateRun(pUp, hp, -1, ch[n - 1], ch[0], trainLen, false, [...ch].reverse()).markTimes.reverse();
     const passDn: number[] = [];
     const passUp: number[] = [];
     for (let i = 0; i + 1 < n; i++) {

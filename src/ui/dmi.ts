@@ -412,6 +412,15 @@ export class Dmi {
       c.font = `bold 22px ${FONT}`;
       c.fillText(d.maDist >= 10000 ? `${(d.maDist / 1000).toFixed(1)} km` : `${Math.round(d.maDist)} m`, x + 46, 610);
     }
+    if (t.phase === 'run' && t.v >= 0.05) {
+      // the grade under the head (gradient.ts, synthesized profile)
+      c.fillStyle = C.blue;
+      c.font = `20px ${FONT}`;
+      c.fillText('坡度', x, 632);
+      c.fillStyle = C.white;
+      c.font = `bold 22px ${FONT}`;
+      c.fillText(Math.abs(t.grade) < 1 ? '平坡' : `${t.grade > 0 ? '↗' : '↘'} ${Math.abs(t.grade)}‰`, x + 46, 632);
+    }
     if (!Number.isNaN(t.stopErr) && Math.abs(t.stopErr) < 5 && t.v < 0.05 && t.phase === 'run') {
       const e = t.stopErr;
       c.fillStyle = Math.abs(e) <= 0.5 ? C.green : C.yellow;
