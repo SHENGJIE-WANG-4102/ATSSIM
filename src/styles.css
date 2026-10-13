@@ -80,6 +80,12 @@ select, input[type=number], input[type=text], input[type=time] {
 .tp-field:hover, .tp-field.on { border-color: var(--accent); }
 .tp-panel { position: absolute; z-index: 60; padding: 14px; background: var(--panel); border: 1px solid var(--border-strong); border-radius: 6px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, .6); font-size: 24px; }
+.sl-panel { position: absolute; z-index: 61; max-height: 560px; overflow-y: auto; padding: 4px 0; background: #0d1622;
+  border: 1px solid var(--border-strong); border-radius: 4px; box-shadow: 0 12px 32px rgba(0, 0, 0, .6); color: #fff; }
+.sl-item { padding: 6px 14px; white-space: nowrap; cursor: pointer; }
+.sl-item:hover { background: #1e3a52; }
+.sl-item.sel { background: #1e6f9a; }
+.sl-item.off { color: var(--text-muted); cursor: default; }
 .tp-time { display: flex; align-items: center; justify-content: center; gap: 8px; padding: 4px 8px 14px; }
 .tp-time select { min-width: 92px; }
 .tp-sep { color: var(--text-dim); font-size: 26px; }

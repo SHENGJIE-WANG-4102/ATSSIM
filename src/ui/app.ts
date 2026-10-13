@@ -3,6 +3,7 @@
  * overview schematic / station view switching, the train graph strip,
  * DOM panels, pointer & keyboard input, banners and modal dialogs.
  */
+import { installSelectLists } from './popup';
 import { datePick } from './timepick';
 import { Container, type Application, type Text } from 'pixi.js';
 import type { Topology } from '../sim/topology';
@@ -143,6 +144,7 @@ export class App {
     this.buildGraphCtl();
     overlay.append(this.header.el, this.vtool, this.graphCtl, this.station.hint, this.side.el, this.tooltip.el, this.header.menu, this.veil);
     initConfirm(overlay);
+    installSelectLists(overlay);
 
     this.setMode('overview');
     this.layout();

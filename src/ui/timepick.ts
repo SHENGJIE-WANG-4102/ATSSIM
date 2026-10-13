@@ -2,53 +2,14 @@
  * Time and date pickers: a field showing the value that opens a small panel,
  * hour : minute drop-downs for a time of the operating day (04:00 to 03:59
  * the next morning), a month calendar for a date, each with 取消 / 确定.
- * The panel is placed in #overlay (the header and dialogs clip their
- * overflow) at the field's position in overlay coordinates (the overlay is
- * scaled with the UI scale).
+ * The panels are placed in #overlay by popup.ts.
  */
 import { h } from './dom';
 import { dayTypeOf, holidayOf, isoDate } from '../sim/calendar';
+import { popup, isOpenFrom, closePopups } from './popup';
 
 const pad = (n: number) => String(n).padStart(2, '0');
 const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
-
-let openPanel: { el: HTMLElement; close(): void } | null = null;
-
-function closeOpen() {
-  openPanel?.close();
-}
-document.addEventListener('pointerdown', (e) => {
-  if (openPanel && !openPanel.el.contains(e.target as Node)) closeOpen();
-}, true);
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && openPanel) { e.stopPropagation(); closeOpen(); } }, true);
-
-/** open `panel` under (or above) `field`, inside #overlay */
-function popup(field: HTMLElement, panel: HTMLElement) {
-  closeOpen();
-  const root = document.getElementById('overlay') ?? document.body;
-  panel.classList.add('tp-panel');
-  panel.addEventListener('pointerdown', (e) => e.stopPropagation());
-  root.append(panel);
-  const or = root.getBoundingClientRect();
-  const k = root.offsetWidth ? or.width / root.offsetWidth : 1;
-  const fr = field.getBoundingClientRect();
-  const W = root.offsetWidth, H = root.offsetHeight;
-  const pw = panel.offsetWidth, ph = panel.offsetHeight;
-  let x = (fr.left - or.left) / k;
-  let y = (fr.bottom - or.top) / k + 6;
-  if (y + ph > H - 8) y = (fr.top - or.top) / k - ph - 6;
-  x = Math.max(8, Math.min(W - pw - 8, x));
-  y = Math.max(8, y);
-  panel.style.left = `${x}px`;
-  panel.style.top = `${y}px`;
-  field.classList.add('on');
-  const entry = {
-    el: panel,
-    close: () => { panel.remove(); field.classList.remove('on'); if (openPanel === entry) openPanel = null; },
-  };
-  openPanel = entry;
-  return entry;
-}
 
 function footer(cancel: () => void, ok: () => void) {
   return h('div', { class: 'tp-foot' },
@@ -78,7 +39,7 @@ export function timePick(sec: number, step = 5, onchange?: () => void): TimePick
   set(sec);
   field.onclick = (e) => {
     e.stopPropagation();
-    if (openPanel && field.classList.contains('on')) { closeOpen(); return; }
+    if (isOpenFrom(field)) { closePopups(); return; }
     // hours in operating-day order: 04 … 23, 00 … 03
     const hh = h('select', { title: '时' }, ...[...Array(24).keys()].map((i) => (i + 4) % 24).map((x) => h('option', { value: x }, pad(x)))) as HTMLSelectElement;
     const mm = h('select', { title: '分' }, ...[...Array(60 / step).keys()].map((i) => h('option', { value: i * step }, pad(i * step)))) as HTMLSelectElement;
@@ -114,7 +75,7 @@ export function datePick(d: Date, onchange?: () => void): DatePick {
   show();
   field.onclick = (e) => {
     e.stopPropagation();
-    if (openPanel && field.classList.contains('on')) { closeOpen(); return; }
+    if (isOpenFrom(field)) { closePopups(); return; }
     let pick = new Date(cur);
     let month = new Date(cur.getFullYear(), cur.getMonth(), 1);
     const today = isoDate(new Date());
