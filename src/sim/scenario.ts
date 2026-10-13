@@ -396,7 +396,7 @@ export const SCENARIOS: ScenarioDef[] = [
 
 export function newMetrics(t: number): Metrics {
   return {
-    since: t, tripDelays: [], tripsCompleted: 0, departures: 0, departuresLate: 0, boardedDelayed: 0, stranded: 0, cleared: 0, limited: 0,
+    since: t, tripDelays: [], tripsCompleted: 0, boarded: 0, departures: 0, departuresLate: 0, boardedDelayed: 0, stranded: 0, cleared: 0, limited: 0,
     safety: { spad: 0, overspeed: 0, rmNearMiss: 0, unsafeAuth: 0, espIgnored: 0, overrun: 0, wrongDoor: 0 },
     callsAnswered: 0, callsExpired: 0, faults: 0,
   };
@@ -459,9 +459,13 @@ export function buildReport(sim: Sim, title: string, from: number): ScenarioRepo
     avgScore: stops.reduce((a, x) => a + x.score, 0) / stops.length,
   } : null;
   const delayMinutes = delaySec / 60;
+  // normalised, so a longer session is not marked down for its length:
+  // average delay per planned trip (s), affected passengers as a share of those carried
+  const avgDelay = delaySec / Math.max(1, planned.length);
+  const affectedShare = affected / Math.max(1000, m.boarded ?? 0);
   const pen = {
-    delay: Math.min(30, delayMinutes * 0.25),
-    affected: Math.min(20, affected / 400),
+    delay: Math.min(30, avgDelay / 4),
+    affected: Math.min(20, affectedShare * 400),
     delivery: Math.min(25, (1 - delivery) * 150),
     safety: Math.min(45, safetyTotal * 12),
     calls: Math.min(10, m.callsExpired * 2),

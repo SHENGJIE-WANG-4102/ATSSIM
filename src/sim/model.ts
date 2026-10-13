@@ -638,6 +638,8 @@ export interface Metrics {
   /** final-arrival delays of revenue trips (s) */
   tripDelays: number[];
   tripsCompleted: number;
+  /** passengers boarded in the window (base of the affected-passenger share) */
+  boarded: number;
   departures: number;
   departuresLate: number;
   boardedDelayed: number;

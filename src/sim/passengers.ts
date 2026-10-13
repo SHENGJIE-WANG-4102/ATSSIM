@@ -116,6 +116,7 @@ export function boardAndAlight(sim: Sim, tr: Train, platform: number, task: Stop
     ps.stranded = Math.floor(ps.waiting);
   }
   sim.passengersServed += board;
+  sim.metrics.boarded = (sim.metrics.boarded ?? 0) + board;
   const hour = Math.min(27, Math.floor(sim.t / 3600));
   sim.ridership.boardings[st][hour] += board;
   sim.ridership.alightings[st][hour] += alight;
