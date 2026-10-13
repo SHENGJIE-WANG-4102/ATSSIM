@@ -6,6 +6,7 @@ import type { Sim } from './engine';
 import type { Train, BodySeg } from './model';
 import { nextLink, type Dir } from './topology';
 import { swPos } from './interlocking';
+import { TRACTION_UNITS } from './vehicle';
 import { PERF, brakingSpeed, controlAccel, jerkLimited, speedAfterEasing, tractionAccel } from './dynamics';
 import { routeLeadsTo } from './ats';
 import type { HaltCode } from './halt';
@@ -609,7 +610,7 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
       vT = Math.min(vT, Math.max(12 / 3.6, scan.stopDist / Math.max(1, budget - 18)));
     }
   }
-  vT = Math.min(vT, vPerm);
+  vT = Math.min(vT, vPerm, tr.vCap);
   if (tr.mode === 'CM') vT *= 0.96;
   if (tr.hold && tr.v < 0.1) vT = 0;
   if (standStill) vT = 0;
@@ -645,6 +646,8 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   } else {
     a = controlAccel(speedAfterEasing(tr.v, tr.a), vT, stopAt);
   }
+  // inverters cut out (vehicle.ts): less traction, braking blended out by the friction brake
+  if (tr.tractionCut > 0 && a > 0) a = Math.min(a, tractionAccel(tr.v) * (1 - tr.tractionCut / TRACTION_UNITS));
   // traction and service braking build up and ease off at the jerk limit; the EB does not
   if (!tr.eb) a = jerkLimited(tr.a, a, dt);
   tr.a = a;

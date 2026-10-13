@@ -28,6 +28,9 @@ import { initYards, vehicleName } from './yard';
 import { radioTick, answerCall, type CallSpec } from './radio';
 import { dispatcherTick, newDispatcher, type DispatcherState } from './dispatcher';
 import { exposureOf, envTick, initPossessions, setWeather } from './env';
+import { holidayOf, holidayFixedRuns, holidayTick, type HolidayDay } from './holiday';
+import { vehicleTick, vehicleNote } from './vehicle';
+import { initConnections, connectionsTick, connectionDeparture, type Connection } from './connections';
 import { newMetrics, scenarioTick, startScenario, endScenario, randomTick, setRandomFaults, SCENARIOS } from './scenario';
 import { computePis } from './pis';
 import { computeDmi, dmiTick } from './dmi';
@@ -144,6 +147,13 @@ export class Sim {
   metrics: Metrics;
   scenario: ScenarioState | null = null;
   scenarioFired = 0;
+  /** the holiday programme of the operating day (holiday.ts), null on an ordinary day */
+  holiday: HolidayDay | null = null;
+  holidayFired = 0;
+  /** last-train connections with the other lines tonight (connections.ts) */
+  connections: Connection[] = [];
+  /** pending driver resets of cut-out inverters (vehicle.ts) */
+  vehicleResets: { train: number; at: number; fault: number }[] = [];
   reportReady: ScenarioReport | null = null;
   randomLevel = 0;
   nextRandomAt = Infinity;
@@ -196,7 +206,9 @@ export class Sim {
     this.autoDispatch = config.autoDispatch ?? false;
     this.metrics = newMetrics(config.startTime);
     // a scenario may run its own fixed-time special trains (加班车)
-    const fixedRuns = config.scenario ? SCENARIOS.find((x) => x.id === config.scenario)?.fixedRuns : undefined;
+    // and a holiday its own planned ones (holiday.ts)
+    this.holiday = config.scenario ? null : holidayOf(config.date);
+    const fixedRuns = config.scenario ? SCENARIOS.find((x) => x.id === config.scenario)?.fixedRuns : holidayFixedRuns(this.holiday);
     this.atoLine = config.driveMode === 'ATO';
     this.planCtx = { topo: this.topo, rt: this.rt, dayType: config.dayType, ...(fixedRuns ? { fixedRuns } : {}) };
     this.plan = generatePlan(this.planCtx);
@@ -227,6 +239,7 @@ export class Sim {
     this.log('I', '系统', `ATS 启动：${config.dateLabel}（${config.dayType === 'weekday' ? '工作日' : '双休日/节假日'}运行图，计划车次 ${this.plan.trips.length}，最大上线 ${this.plan.fleetPeak} 列）`);
     for (const p of this.possessions) if (p.state === 'active') this.log('B', '施工', `${p.name} 施工封锁中（计划 ${String(Math.floor(p.to / 3600)).padStart(2, '0')}:${String(Math.floor((p.to % 3600) / 60)).padStart(2, '0')} 销点）`, { key: `poss-${p.id}` });
     if (config.randomFaults) setRandomFaults(this, config.randomFaults);
+    initConnections(this);
     spawnDue(this);
   }
 
@@ -350,6 +363,7 @@ export class Sim {
         tr.pendingDeparture = undefined;
         if (departure.dep !== null) tr.delay = this.t - departure.dep;
         this.noteDeparture(departure);
+        connectionDeparture(this, tr, departure);
         if (departure.dep !== null && departure.trip >= 0 && departure.revenue) {
           this.metrics.departures++;
           if (this.t - departure.dep > 120) this.metrics.departuresLate++;
@@ -398,6 +412,9 @@ export class Sim {
     radioTick(this);
     dmiTick(this);
     scenarioTick(this);
+    holidayTick(this);
+    connectionsTick(this);
+    vehicleTick(this);
     randomTick(this);
     updateFaultLifecycle(this);
     updateHalts(this);
@@ -701,7 +718,7 @@ export class Sim {
       for (const b of tr.body) body.push(b.link, b.from, b.to);
       const t0 = tr.tasks[0];
       return {
-        id: tr.id, dto: tr.dtoInhibit, vehicle: tr.vehicle, svc: tr.svc, trip: tr.tripNo, dest: tr.destText, link: tr.link, off: tr.off, dir: tr.dir,
+        id: tr.id, dto: tr.dtoInhibit, vehicle: tr.vehicle, svc: tr.svc, trip: tr.tripNo, tripId: tr.tripId, vehicleNote: vehicleNote(tr), dest: tr.destText, link: tr.link, off: tr.off, dir: tr.dir,
         body, v: tr.v, level: tr.level, comm: tr.comm, mode: tr.mode, eb: tr.eb, phase: tr.phase, delay: tr.delay,
         tbStage: tr.tbStage, depotStage: tr.depotStage,
         load: tr.load, hold: tr.hold, failed: tr.failed, doors: tr.doorsOpen, doorSide: tr.doorSide, doorsAwait: tr.doorsAwait,
@@ -747,6 +764,7 @@ export class Sim {
       randomLevel: this.randomLevel,
       autoRadio: this.autoRadio,
       ridership: this.ridership,
+      connections: this.t >= 20.5 * 3600 ? this.connections : [],
       metrics: this.metrics,
       replay: { from: 0, to: 0, replaying: false, pending: 0 },
       bookmarks: this.bookmarks.slice(-60),

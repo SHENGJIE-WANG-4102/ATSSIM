@@ -31,18 +31,19 @@ export interface Checkpoint {
 const CLONED = [
   'sw', 'sec', 'sig', 'plat', 'zoneState', 'routes', 'routeUnlockedSw', 'berthRes', 'depotStock', 'depotShortLogged', 'blockDone',
   'faults', 'alarms', 'noRouteLogged', 'truncatedTrips', 'yards', 'stabledPool', 'calls', 'pendingCalls', 'env', 'possessions',
-  'ridership', 'metrics', 'scenario', 'dispatcher', 'integrity', 'bookmarks', 'incidents',
+  'ridership', 'metrics', 'scenario', 'dispatcher', 'integrity', 'bookmarks', 'incidents', 'connections', 'vehicleResets',
 ] as const;
 
 const SCALARS = [
   'passengerScale', 'nextTrainId', 'nextFaultId', 'passengersServed', 'passengersCleared', 'passengersStranded', 'depTotal', 'depOnTime', 'tripsDone',
-  'nextCallId', 'autoRadio', 'autoDispatch', 'atoLine', 'scenarioFired', 'randomLevel', 'nextRandomAt', 'nextBookmarkId', 'planRev',
+  'nextCallId', 'autoRadio', 'autoDispatch', 'atoLine', 'scenarioFired', 'holidayFired', 'randomLevel', 'nextRandomAt', 'nextBookmarkId', 'planRev',
 ] as const;
 
 function cloneTrain(tr: Train): Train {
   return {
     ...tr,
     hist: tr.hist.slice(),
+    vfault: tr.vfault ? { ...tr.vfault } : null,
     body: tr.body.map((b) => ({ ...b })),
     tasks: tr.tasks.slice(),
     skipStations: new Set(tr.skipStations),

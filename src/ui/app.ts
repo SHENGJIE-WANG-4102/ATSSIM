@@ -22,7 +22,7 @@ import { openHelp, helpSeen } from './help';
 import { openReport } from './report';
 import { h, clear } from './dom';
 import { fmtTime, hex, C } from './theme';
-import { isoDate, parseTime } from '../sim/calendar';
+import { holidayOf, isoDate, parseTime } from '../sim/calendar';
 export { parseTime };
 import { SCENARIOS } from '../sim/scenario';
 import { WEATHER_RULES } from '../data/line2';
@@ -675,6 +675,16 @@ export class App {
     st.value = '07:40';
     const auto = h('input', { type: 'checkbox' }) as HTMLInputElement;
     const drive = h('select', {}, h('option', { value: 'DTO' }, 'DTO（正常）'), h('option', { value: 'ATO' }, 'ATO（DTO兼容模式，司机驾驶）')) as HTMLSelectElement;
+    // the holiday programme of the date (holiday.ts) is shown as soon as the date is typed
+    const holHint = h('div', { class: 'hint', style: 'margin-top:10px;color:var(--warn, #d9a400)' });
+    const showHol = () => {
+      const hd = holidayOf(dateIn.value.trim());
+      holHint.textContent = !hd ? ''
+        : hd.day === 0 ? '国庆前夜：20:00 起南京东路站封站跳停至运营结束，人民广场、陆家嘴客流增加。'
+        : `国庆第${hd.day}天（节假日运行图）：16:00 起南京东路站封站跳停至运营结束，人民广场、陆家嘴、南京东路、上海科技馆客流增加${hd.day >= hd.days - 1 ? '；返程日晚间虹桥枢纽、浦东机场到达客流集中，虹桥火车站往龙阳路定点加班车至 00:30' : ''}。全天按计划自动执行，故障按随机故障设置。`;
+    };
+    dateIn.addEventListener('input', showHol);
+    showHol();
     const back = h('div', { class: 'modal-back' });
     const close = () => back.remove();
     const go = () => {
@@ -693,6 +703,7 @@ export class App {
       h('div', { class: 'modal-h' }, '运营日设置'),
       h('div', { class: 'modal-b' },
         h('div', { class: 'form' }, h('label', {}, '运营日期'), dateIn, h('label', {}, '节假日'), hol),
+        holHint,
         h('div', { class: 'form', style: 'margin-top:14px' }, h('label', {}, '开始时刻'), st),
         h('div', { class: 'form', style: 'margin-top:14px' }, h('label', {}, '来电自动应答（观摩模式）'), auto),
         h('div', { class: 'form', style: 'margin-top:14px' }, h('label', {}, '运营驾驶模式'), drive),

@@ -3,9 +3,12 @@ import type { DayType } from './model';
 
 const WEEK = ['日', '一', '二', '三', '四', '五', '六'];
 
+/** the National Day week (10-01…10-07) runs the holiday timetable whatever the weekday */
+export const nationalDay = (d: Date) => d.getMonth() === 9 && d.getDate() <= 7;
+
 export function dayTypeOf(d: Date, holiday: boolean): DayType {
   const wd = d.getDay();
-  return holiday || wd === 0 || wd === 6 ? 'weekend' : 'weekday';
+  return holiday || nationalDay(d) || wd === 0 || wd === 6 ? 'weekend' : 'weekday';
 }
 
 export function isoDate(d: Date): string {
@@ -14,6 +17,7 @@ export function isoDate(d: Date): string {
 
 export function dateLabel(d: Date, holiday: boolean): string {
   const s = `${isoDate(d)} 星期${WEEK[d.getDay()]}`;
+  if (nationalDay(d)) return `${s}（国庆第${d.getDate()}天）`;
   return holiday ? `${s}（节假日）` : s;
 }
 
@@ -32,3 +36,21 @@ export function parseTime(v: string): number {
   const t = hh * 3600 + mm * 60;
   return t < 4 * 3600 ? t + 86400 : t;
 }
+
+export interface HolidayDay {
+  /** e.g. 国庆 */
+  name: string;
+  /** day of the holiday (1-based; 0 = the eve, an ordinary working day) and its length */
+  day: number;
+  days: number;
+}
+
+/** the holiday programme of an ISO date, null on an ordinary day */
+export function holidayOf(date: string | undefined): HolidayDay | null {
+  if (!date) return null;
+  const d = parseIso(date);
+  if (d.getMonth() === 9 && d.getDate() <= 7) return { name: '国庆', day: d.getDate(), days: 7 };
+  if (d.getMonth() === 8 && d.getDate() === 30) return { name: '国庆', day: 0, days: 7 };
+  return null;
+}
+

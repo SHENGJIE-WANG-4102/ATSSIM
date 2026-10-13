@@ -118,6 +118,21 @@ export type Task = StopTask | ReverseTask | DepotTask | StableTask | RescueTask;
 
 // ---------------------------------------------------------------- trains
 
+/** a door / brake fault in progress on a train (vehicle.ts, D64) */
+export interface VehicleFault {
+  kind: 'door' | 'brake';
+  /** 1: the driver can isolate / cut it out; 2: he cannot */
+  sev: 1 | 2;
+  /** armed: waits for the next door close / departure */
+  stage: 'armed' | 'stuck' | 'decide' | 'maintainer' | 'lock';
+  until: number;
+  fault: number;
+  /** brake: a release attempt succeeds */
+  recover: boolean;
+  car: number;
+  door: number;
+}
+
 export interface BodySeg { link: number; from: number; to: number }
 
 export type TrainPhase =
@@ -226,6 +241,13 @@ export interface Train {
   delay: number;
   hold: boolean;
   skipStations: Set<number>;
+  /** vehicle faults (vehicle.ts): inverters cut out, doors isolated, speed cap from a cut-out brake (m/s) */
+  tractionCut: number;
+  doorsCut: number;
+  vCap: number;
+  vfault: VehicleFault | null;
+  /** withdraw at the end of the current trip (终点站下线) */
+  withdrawAtEnd: boolean;
   /** train status flags */
   failed: boolean;
   failRecoverAt: number;
@@ -435,6 +457,9 @@ export type FaultKind =
   | 'psd'
   | 'psdLink'
   | 'trainFail'
+  | 'traction'
+  | 'door'
+  | 'brake'
   | 'surge'
   | 'pecu'
   | 'trackPerson';
@@ -554,6 +579,10 @@ export interface TrainSnap {
   vehicle: string;
   svc: string;
   trip: string;
+  /** plan trip id (-1 none) */
+  tripId: number;
+  /** vehicle fault state for the train list ('' none): 牵引切除 / 门切除 / 限速 / 终点下线 */
+  vehicleNote: string;
   dest: string;
   link: number;
   off: number;
@@ -602,6 +631,29 @@ export interface TrainSnap {
   stopErr: number;
   drv: DriveRecord | null;
   len: number;
+}
+
+/** a last-train connection with another line at an interchange (connections.ts, D63) */
+export interface Connection {
+  id: number;
+  kind: 'feed' | 'onward';
+  /** interchange station index */
+  st: number;
+  line: string;
+  toward: string;
+  /** other line, as planned: last arrival (feed) or departure (onward) */
+  planned: number;
+  /** the same with the day's delay (onward: plus any wait agreed) */
+  actual: number;
+  walk: number;
+  dir: TrackDir;
+  /** Line 2 trip and its planned departure (feed) or arrival (onward) here */
+  trip: number;
+  l2: number;
+  pax: number;
+  state: 'pending' | 'asked' | 'held' | 'waiting' | 'made' | 'missed' | 'void';
+  /** we set the platform hold (feed, until the transfer is done) */
+  holdUntil?: number;
 }
 
 export interface PisRow {
@@ -712,6 +764,8 @@ export interface Snapshot {
   depotCounts: number[];
   traces: { train: number; pts: number[] }[];
   ridership: Ridership;
+  /** tonight's last-train connections, from 20:30 */
+  connections: Connection[];
   stats: {
     online: number;
     inService: number;

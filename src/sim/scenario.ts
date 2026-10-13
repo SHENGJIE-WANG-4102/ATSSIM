@@ -5,6 +5,7 @@
 import type { Sim } from './engine';
 import type { DayType, Metrics, ScenarioReport, Train, FaultKind } from './model';
 import { STATIONS, LINE_INFO, HQ_LATE_RUN, type FixedRun } from '../data/line2';
+import { closeStation } from './holiday';
 import { injectFault } from './faults';
 import { setWeather, addPossession } from './env';
 import { callPecu, callTrackPerson } from './radio';
@@ -60,11 +61,6 @@ function extraTrain(sim: Sim, pred: (tr: Train) => boolean = () => true): Train 
     && sim.plan.trips[tr.tripId]?.kind === 'extra' && pred(tr));
 }
 
-/** close a station (封站): trains pass both platforms, the entrances are shut */
-function closeStation(sim: Sim, id: string, on: boolean) {
-  const st = sim.topo.stations[stationIdx(id)];
-  for (const p of [st.platforms.DN, st.platforms.UP]) sim.command({ c: 'platformSkip', platform: p, on });
-}
 const stationClosed = (sim: Sim, id: string) => {
   const st = sim.topo.stations[stationIdx(id)];
   return sim.plat[st.platforms.DN].skip && sim.plat[st.platforms.UP].skip;
@@ -358,7 +354,7 @@ export const SCENARIOS: ScenarioDef[] = [
     name: '国庆南京东路封站跳停',
     desc: '国庆假期，外滩客流管控，公安部门通告16:00起南京东路站临时封站：列车跳站通过、出入口关闭、不办理换乘。客流转向人民广场、陆家嘴，两站站台迅速拥挤；一列下行列车通过南京东路时有乘客要求下车，按下紧急报警。',
     objectives: [
-      '16:00 前对南京东路上、下行站台设置跳停（封站），封站期间不得取消',
+      '确认16:00 ATS按计划设置南京东路上下行跳停（封站），封站期间不得取消',
       '列车以不超过45 km/h通过南京东路站台',
       '人民广场、陆家嘴大客流：视情限流，扣车均衡间隔',
       '应答列车乘客紧急报警，在前方站处置',
@@ -367,15 +363,14 @@ export const SCENARIOS: ScenarioDef[] = [
     events: [
       {
         at: 60, label: '公安通告：16:00起南京东路站封站',
-        run: (sim) => { sim.log('B', '客流', '公安通告：外滩地区客流管控，16:00起南京东路站临时封站，列车跳站通过（请设置上下行站台跳停）'); },
+        run: (sim) => { sim.log('B', '客流', '公安通告：外滩地区客流管控，16:00起南京东路站临时封站，列车跳站通过（运行图已排计划跳停，ATS 届时自动设置）'); },
       },
       {
         at: 21 * 60, label: '南京东路站封站',
         run: (sim) => {
           if (stationClosed(sim, 'NJD')) { sim.log('I', '客流', '南京东路站已封站，出入口关闭'); return; }
           closeStation(sim, 'NJD', true);
-          sim.log('B', '客流', '南京东路站未按时设置跳停，车站已自行封站（出入口关闭）');
-          return '未按时设置跳停，系统代为封站';
+          sim.log('B', '客流', '南京东路站封站：上、下行站台跳停（计划），出入口关闭');
         },
       },
       { at: 21 * 60, label: '人民广场客流激增（×3）', run: (sim) => { injectFault(sim, 'surge', stationIdx('RMG'), 38 * 60, 3); } },
@@ -490,9 +485,9 @@ export function buildReport(sim: Sim, title: string, from: number): ScenarioRepo
 
 const LEVELS = [
   null,
-  { label: '初级', mean: 25 * 60, kinds: [['trainFailR', 3], ['trainComm', 1], ['trainDto', 1], ['psd', 2], ['surge', 2], ['pecu', 2]] as [string, number][] },
-  { label: '中级', mean: 14 * 60, kinds: [['trainFailR', 3], ['trainComm', 1], ['trainDto', 1], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 2], ['axle', 2], ['signal', 2], ['wind', 1]] as [string, number][] },
-  { label: '高级', mean: 8 * 60, kinds: [['trainFailR', 2], ['trainFail', 2], ['trainComm', 1], ['trainDto', 1], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 3], ['axle', 2], ['signal', 2], ['zcFail', 1], ['wind', 1], ['rain', 1], ['trackPerson', 2]] as [string, number][] },
+  { label: '初级', mean: 25 * 60, kinds: [['trainFailR', 3], ['trainComm', 1], ['trainDto', 1], ['traction', 1], ['door', 1], ['psd', 2], ['surge', 2], ['pecu', 2]] as [string, number][] },
+  { label: '中级', mean: 14 * 60, kinds: [['trainFailR', 3], ['trainComm', 1], ['trainDto', 1], ['traction', 2], ['door', 2], ['brake', 1], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 2], ['axle', 2], ['signal', 2], ['wind', 1]] as [string, number][] },
+  { label: '高级', mean: 8 * 60, kinds: [['trainFailR', 2], ['trainFail', 2], ['trainComm', 1], ['trainDto', 1], ['traction', 2], ['door', 2], ['brake', 2], ['psd', 2], ['surge', 2], ['pecu', 2], ['switch', 3], ['axle', 2], ['signal', 2], ['zcFail', 1], ['wind', 1], ['rain', 1], ['trackPerson', 2]] as [string, number][] },
 ];
 
 export const RANDOM_LEVELS = ['关闭', '初级', '中级', '高级'];
@@ -539,6 +534,19 @@ function injectRandom(sim: Sim, kind: string): string {
     case 'trainFail': {
       const tr = pick(sim, running);
       return tr ? result(injectFault(sim, 'trainFail', tr.id, 0, undefined, false)) : '';
+    }
+    case 'traction': {
+      const tr = pick(sim, running.filter((t) => !t.tractionCut));
+      return tr ? result(injectFault(sim, 'traction', tr.id, 0, sim.rng() < 0.7 ? 1 : 2, sim.rng() < 0.4)) : '';
+    }
+    case 'door': {
+      const tr = pick(sim, running.filter((t) => !t.vfault));
+      return tr ? result(injectFault(sim, 'door', tr.id, 0, sim.rng() < 0.8 ? 1 : 2)) : '';
+    }
+    case 'brake': {
+      const tr = pick(sim, running.filter((t) => !t.vfault && t.vCap === Infinity));
+      const r = sim.rng();
+      return tr ? result(injectFault(sim, 'brake', tr.id, 0, r < 0.85 ? 1 : 2, r < 0.5)) : '';
     }
     case 'trainComm': {
       const tr = pick(sim, running.filter((t) => t.level === 'CBTC' && t.comm));

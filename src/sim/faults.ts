@@ -2,6 +2,7 @@
  * Fault injection (教员台) and maintenance completion.
  */
 import type { Sim } from './engine';
+import { injectTraction, injectDoor, injectBrake, clearVehicleFault } from './vehicle';
 import type { Fault, FaultKind, Command } from './model';
 import { STATIONS } from '../data/line2';
 import { cancelRoute, committedTrain } from './interlocking';
@@ -66,6 +67,9 @@ export const FAULT_LABELS: Record<FaultKind, string> = {
   psd: '站台门故障',
   psdLink: '站台门与信号联动故障',
   trainFail: '列车故障',
+  traction: '牵引单元故障',
+  door: '车门故障',
+  brake: '制动不缓解',
   surge: '车站大客流',
   pecu: '车厢乘客紧急报警',
   trackPerson: '人员侵入轨道',
@@ -174,6 +178,19 @@ export function injectFault(sim: Sim, kind: FaultKind, target: number, duration:
       sim.log('A', '列车', `${f.text}，司机处置中${rec ? '' : '（无法自行恢复，需组织救援）'}`, { key: `tf-${tr.id}` });
       break;
     }
+    case 'traction':
+    case 'door':
+    case 'brake': {
+      const tr = sim.trains.get(target);
+      if (!tr) return { ok: false, msg: '列车不存在' };
+      // closes when the train reaches the depot (or, for inverters, on a successful reset)
+      f.repairAt = Infinity;
+      if (kind === 'traction') f.text = injectTraction(sim, tr, Math.max(1, Math.min(3, param ?? 1)), recoverable ?? false, f.id);
+      else if (kind === 'door') f.text = injectDoor(sim, tr, (param ?? 1) >= 2 ? 2 : 1, f.id);
+      else f.text = injectBrake(sim, tr, (param ?? 1) >= 2 ? 2 : 1, recoverable ?? false, f.id);
+      if (kind !== 'traction') sim.log('I', '列车', `${f.text}（下次${kind === 'door' ? '关门' : '发车'}时发生）`, { train: tr.id });
+      break;
+    }
     case 'surge': {
       const st = topo.stations[target];
       // (the command layer rejects other values; scenario scripts are clamped too)
@@ -250,6 +267,14 @@ export function faultsTick(sim: Sim) {
     if (sim.t < f.repairAt) continue;
     f.repaired = true;
     switch (f.kind) {
+      case 'traction':
+      case 'door':
+      case 'brake': {
+        const tr = sim.trains.get(f.target);
+        clearVehicleFault(sim, f.kind, tr);
+        if (tr && tr.phase !== 'stabled' && f.kind !== 'traction') sim.log('C', '列车', `列车 ${trainLabel(tr)} ${FAULT_LABELS[f.kind]}处置完毕`, { train: tr.id });
+        break;
+      }
       case 'trainComm': {
         const tr = sim.trains.get(f.target);
         if (tr) {

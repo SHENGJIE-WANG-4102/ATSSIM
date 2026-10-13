@@ -32,6 +32,9 @@ const PROCEDURES: Record<FaultKind, string> = {
   psd: '后果：站台门无法关闭锁紧，列车不能发车。处置：车站来电申请互锁解除 → 同意（二次确认）；修复后取消互锁解除。',
   psdLink: '后果：车门与站台门不能联动，由车站人员在PSL开关站台门，每次开/关约多耗时15秒；列车仍按DTO运行。处置：通知车站PSL操作；修复后自动恢复联动。',
   trainFail: '后果：列车故障停车。处置：可恢复时司机约4分钟内恢复；不能恢复时司机来电请求救援 → 组织后车救援。',
+  traction: '后果：切除1–2个牵引单元（共6个），加速变慢，晚点并拖累后车；“可自行恢复”时司机约3–5分钟复位成功。处置：司机来电 → 继续运营终点站下线 / 前方站清客回段 / 继续运营夜间检修。',
+  door: '后果：下次关门时一扇车门关不上，司机约75秒切除后发车，此后每站停站略长。严重（无法切除）：列车不能动车 → 本站清客锁闭车门回段，或等候检修人员（约8分钟）。',
+  brake: '后果：下次发车时一辆车制动不缓解，司机约2分钟处置；“可自行恢复”时缓解成功，否则切除该车制动、限速60 km/h → 终点站下线或前方站清客回段。严重（多车）：无法动车，组织救援。',
   surge: '后果：进站客流成倍增加，停站时间延长。处置：限流、扣车均衡间隔、加开列车。',
   pecu: '后果：司机来电请求处置方式。未应答时司机自行区间停车。',
   trackPerson: '后果：车站来电请求紧急关闭站台。必须立即同意；未应答时车站自行按下紧急停车按钮（安全违章）。',
@@ -296,6 +299,37 @@ export class SidePanel {
       h('div', { class: 'form' }, h('label', {}, '统计时段'), hour),
       h('table', { class: 'grid' }, h('thead', {}, h('tr', {}, h('th', {}, '车站'), h('th', {}, '上车'), h('th', {}, '下车'))),
         h('tbody', {}, ...STATIONS.map((st,i)=>h('tr', {}, h('td', {}, st.name), h('td', { class:'mono' }, Math.round(sum(r.boardings[i])).toLocaleString()), h('td', { class:'mono' }, Math.round(sum(r.alightings[i])).toLocaleString()))))));
+    this.renderConnections(snap);
+  }
+
+  /** tonight's last-train connections near now (D63) */
+  private renderConnections(snap: NonNullable<Store['snap']>) {
+    const now = snap.t;
+    const list = snap.connections.filter((c) => c.state === 'asked' || c.state === 'held' || c.state === 'missed'
+      || (c.kind === 'feed' ? c.l2 : c.planned) >= now - 15 * 60 && (c.kind === 'feed' ? c.l2 : c.planned) <= now + 60 * 60)
+      .sort((a, b) => (a.kind === 'feed' ? a.l2 : a.planned) - (b.kind === 'feed' ? b.l2 : b.planned));
+    if (!list.length) return;
+    const STATE: Record<string, [string, string]> = {
+      pending: ['—', ''], asked: ['待调度应答', 'color:var(--warn)'], held: ['扣车等候', 'color:var(--warn)'], waiting: ['按图', ''],
+      made: ['已衔接', 'color:var(--ok, inherit)'], missed: ['未衔接', 'color:var(--bad)'], void: ['车次取消', ''],
+    };
+    const hm = (t: number) => fmtTime(t).slice(0, 5);
+    const line = (c: (typeof list)[number]) => `${/^\d+$/.test(c.line) ? `${c.line}号线` : c.line}往${c.toward}`;
+    const trip = (id: number) => snap.trains.find((t) => t.tripId === id);
+    this.tabBody.append(h('div', { class: 'sect-title' }, '末班接续（他线末班 ↔ 2号线）'),
+      h('div', { class: 'hint' }, '“他线→2号线”：他线末班换乘乘客能否赶上2号线该方向末班，晚点时车站请求扣车；“2号线→他线”：2号线列车晚点赶不上他线末班时，可请求他线等候。'),
+      h('table', { class: 'grid' }, h('thead', {}, h('tr', {}, h('th', {}, '车站'), h('th', {}, '接续'), h('th', {}, '他线'), h('th', {}, '2号线'), h('th', {}, '状态'))),
+        h('tbody', {}, ...list.map((c) => {
+          const tr = trip(c.trip);
+          const [label, style] = STATE[c.state];
+          const late = c.actual - c.planned > 60 ? `（晚${Math.round((c.actual - c.planned) / 60)}′）` : '';
+          return h('tr', { style: tr ? 'cursor:pointer' : '', onclick: () => { if (tr) { this.store.select({ kind: 'train', id: tr.id }); this.hooks.locate(); } } },
+            h('td', {}, STATIONS[c.st].name),
+            h('td', {}, c.kind === 'feed' ? `${line(c)} → 2号线${c.dir === 'DN' ? '下行' : '上行'}` : `2号线${c.dir === 'DN' ? '下行' : '上行'} → ${line(c)}`),
+            h('td', { class: 'mono' }, `${hm(c.kind === 'feed' ? c.planned + 30 : c.planned)}${late}`),
+            h('td', { class: 'mono' }, `${hm(c.l2)}${tr && tr.delay > 60 ? `（晚${Math.round(tr.delay / 60)}′）` : ''}`),
+            h('td', { style }, label));
+        }))));
   }
 
   private renderTrains() {
@@ -315,7 +349,8 @@ export class SidePanel {
         h('td', { class: 'mono', style: late ? 'color:var(--late)' : '' }, t.inService ? fmtDelay(t.delay) : '—'), h('td', { class: 'mono' }, `${Math.round((t.load / LINE_INFO.capacity) * 100)}%`),
         h('td', { style: t.failed || t.eb ? 'color:var(--bad)' : '', title: t.halt ? `${t.halt.code} ${t.halt.detail}` : '' },
           t.failed ? '故障' : t.eb ? '紧急制动' : t.hold ? '扣车' : t.phase === 'dwell' ? '停站' : t.phase === 'reversing' ? '折返' : t.v > 0.1 ? '运行'
-            : t.halt ? `${t.halt.label}${t.halt.blocker ? `（${t.halt.blocker}）` : ''}` : '停车'),
+            : t.halt ? `${t.halt.label}${t.halt.blocker ? `（${t.halt.blocker}）` : ''}` : '停车',
+          t.vehicleNote ? h('span', { style: 'color:var(--warn);margin-left:6px' }, t.vehicleNote) : ''),
       ));
     }
   }
@@ -367,6 +402,7 @@ export class SidePanel {
     const rec = h('input', { type: 'checkbox' }) as HTMLInputElement;
     const mult = h('select', {}, ...[2, 3, 4, 6, 8].map((v) => h('option', { value: v }, `×${v}`))) as HTMLSelectElement;
     mult.value = '4';
+    const sev = h('select', {}, h('option', { value: 1 }, '一般'), h('option', { value: 2 }, '严重')) as HTMLSelectElement;
     const proc = h('div', { class: 'hint' });
     const extra = h('span', { style: 'display:flex;gap:10px;align-items:center' });
     const fillTargets = () => {
@@ -376,9 +412,14 @@ export class SidePanel {
       const sel = this.store.selection;
       const opt = (v: number, t: string, chosen = false) => { const o = h('option', { value: v }, t); if (chosen) (o as HTMLOptionElement).selected = true; return o; };
       const s = this.store.snap!;
-      if (k === 'trainComm' || k === 'trainDto' || k === 'trainFail' || k === 'pecu') {
+      if (k === 'trainComm' || k === 'trainDto' || k === 'trainFail' || k === 'traction' || k === 'door' || k === 'brake' || k === 'pecu') {
         for (const t of [...s.trains].sort((a, b) => a.svc.localeCompare(b.svc))) if (t.inService || t.phase === 'run') target.append(opt(t.id, `${t.svc}-${t.trip}（${t.vehicle}）`, sel?.kind === 'train' && sel.id === t.id));
-        if (k === 'trainFail') extra.append(h('label', {}, '可自行恢复'), rec);
+        if (k === 'traction' || k === 'door' || k === 'brake') {
+          (sev.options[0] as HTMLOptionElement).text = k === 'traction' ? '切除1个单元' : '一般';
+          (sev.options[1] as HTMLOptionElement).text = k === 'traction' ? '切除2个单元' : k === 'door' ? '严重（无法切除）' : '严重（多车）';
+          extra.append(h('label', {}, '程度'), sev);
+        }
+        if (k === 'trainFail' || k === 'traction' || k === 'brake') extra.append(h('label', {}, '可自行恢复'), rec);
       } else if (k === 'zcFail') {
         target.append(opt(-1, 'DCS/全部ZC（全线）'));
         topo.zones.forEach((z) => target.append(opt(z.id, z.name, sel?.kind === 'zone' && sel.id === z.id)));
@@ -400,7 +441,7 @@ export class SidePanel {
     fillTargets();
     const inject = h('button', { class: 'btn danger', onclick: async () => {
       if (!target.value) return;
-      const r = await this.store.command({ c: 'fault', kind: kind.value as FaultKind, target: Number(target.value), duration: Number(dur.value), param: Number(mult.value), recoverable: rec.checked });
+      const r = await this.store.command({ c: 'fault', kind: kind.value as FaultKind, target: Number(target.value), duration: Number(dur.value), param: ['traction', 'door', 'brake'].includes(kind.value) ? Number(sev.value) : Number(mult.value), recoverable: rec.checked });
       toast(r.msg, r.ok);
       this.renderFaultList();
     } }, '注入故障');

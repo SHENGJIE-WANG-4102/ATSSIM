@@ -1,4 +1,5 @@
 import { PERF } from './dynamics';
+import { doorCloseHold, departureHold, DOOR_CUT_DWELL } from './vehicle';
 /**
  * ATS: train spawning from the plan, task execution (dwell, turnback, depot),
  * automatic route setting (ARS) with plan-order arbitration, dwell
@@ -325,7 +326,7 @@ export function newTrain(sim: Sim, block: Block | null, link: number, off: numbe
     load: 0, delay: 0, hold: false, skipStations: new Set(), failed: false, failRecoverAt: 0, failRecoverable: true,
     rescueBy: -1, rescuing: -1, coupledLen: 0, inService: true, nextSignal: -1, nextSignalDist: Infinity,
     lastStation: -1, trace: [], lastTraceT: -1e9, lastTraceCh: NaN, stopsMade: 0, overspeedEvents: 0, passedRed: 0,
-    withdrawn: false, extraDwell: 0,
+    withdrawn: false, extraDwell: 0, tractionCut: 0, doorsCut: 0, vCap: Infinity, vfault: null, withdrawAtEnd: false,
     manual: false, notch: 0, tgtV: 0, tgtD: Infinity, tgtReason: '', coupledVehicle: '',
     drv: { stops: [], overspeed: 0, spad: 0, since: sim.t, releases: 0, braking: false, restop: false }, stopUntil: 0, stopReason: '', waitSince: 0,
     vEbi: 0, dmiLog: [], dmiPrev: null,
@@ -521,6 +522,8 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
     // doors close five seconds before zero; faults may extend that countdown.
     const closeExtra = ps.psd === 'bypass' ? BYPASS_EXTRA : ps.psdLinkFault || ps.psd === 'pslOpen' ? PSL_EXTRA : 0;
     if (tr.doorsOpen && !tr.manual && sim.t >= tr.dwellUntil - (DOOR_CYCLE - 3) - closeExtra) {
+      // a car door that does not close (vehicle.ts)
+      if (st.doors && doorCloseHold(sim, tr)) return;
       const extra = closeDoors(sim, tr, p);
       if (extra < 0) return;
       tr.dwellUntil = Math.max(tr.dwellUntil, sim.t + (DOOR_CYCLE - 3) + extra);
@@ -530,6 +533,8 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
     // following a train into an occupied tail locks both in (CBTC would allow it)
     const nx = tr.tasks[1];
     if (nx?.k === 'reverse' && nx.berths.every((b) => berthBusy(sim, b, tr.id))) return;
+    // a brake that does not release, a door being dealt with (vehicle.ts)
+    if (departureHold(sim, tr)) return;
     // depart
     tr.tasks.shift();
     ps.lastDep = sim.t;
@@ -691,6 +696,8 @@ function startDoorCycle(sim: Sim, tr: Train, task: StopTask, p: number, noLink =
   }
   if (task.minDwell) dwell = Math.max(dwell, task.minDwell);
   dwell += doorExtra;
+  // isolated car doors: the passengers at them move to the next door
+  if (task.doors) dwell += tr.doorsCut * DOOR_CUT_DWELL;
   if (tr.extraDwell > 0) { dwell += tr.extraDwell; tr.extraDwell = 0; }
   // Passenger exchange and the complete door/PSD cycle are the minimum.
   // Only origin departures retain unrestricted timetable positioning holds.

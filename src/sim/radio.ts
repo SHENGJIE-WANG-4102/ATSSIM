@@ -18,6 +18,8 @@ import { setBypass } from './psd';
 import { HALT, type HaltCode } from './halt';
 import { nextLink } from './topology';
 import { swPos } from './interlocking';
+import { answerConnection, expireConnection } from './connections';
+import { answerVehicle } from './vehicle';
 
 export const AUTO_DELAY = 15;
 const REPEAT = 120;
@@ -92,6 +94,14 @@ export function answerCall(sim: Sim, id: number, option: string, auto = false): 
 function applyAnswer(sim: Sim, call: RadioCall, option: string): { ok: boolean; msg: string } {
   const tr = call.train !== undefined ? sim.trains.get(call.train) : undefined;
   switch (call.kind) {
+    case 'connFeed':
+    case 'connOnward':
+      return answerConnection(sim, call.kind, call.target!, option);
+    case 'vTraction':
+    case 'vDoorCut':
+    case 'vDoorStuck':
+    case 'vBrake':
+      return answerVehicle(sim, call.kind, tr, option);
     case 'degrade':
       if (!tr) return { ok: false, msg: '列车已不在线' };
       return answerDegrade(sim, tr, option);
@@ -369,6 +379,14 @@ function expire(sim: Sim, c: RadioCall) {
   const tr = c.train !== undefined ? sim.trains.get(c.train) : undefined;
   const again = (delay: number) => sim.pendingCalls.push({ at: sim.t + delay, spec: { kind: c.kind, from: c.from, text: c.text, options: c.options, auto: c.auto, timeout: c.deadline - c.t, train: c.train, station: c.station, target: c.target } });
   switch (c.kind) {
+    case 'connFeed':
+    case 'connOnward':
+      expireConnection(sim, c.target!);
+      break;
+    case 'vDoorStuck':
+      // the train cannot move until somebody decides
+      if (tr?.vfault?.stage === 'decide') again(60);
+      break;
     case 'degrade':
       if (tr && !tr.comm && tr.level === 'CBTC') again(REPEAT / 2);
       break;

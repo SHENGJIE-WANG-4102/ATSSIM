@@ -233,7 +233,36 @@ Any train passing a platform without stopping (a special train, an empty move, �
 a closed station) runs through it at **no more than 45 km/h**, against the pressure wave
 on the platform screen doors. The holiday scenarios add their own special trains
 (虹桥火车站 → 龙阳路 extended to 00:05, 浦东1号2号航站楼 → 中山公园 boarding only at the
-airport) and close 南京东路 (both platforms skipped: entrances shut, no passengers).
+airport) and close 南京东路 (both platforms skipped: entrances shut, no passengers); in
+the 南京东路 closure scenario ATS sets the planned skip-stops itself at 16:00.
+
+### Holiday operation (国庆)
+
+Pick a date from 9-30 to 10-07 in **运营日** and the whole day runs with the holiday
+measures planned in, from the first train (the dialog shows what the day brings):
+10-01…10-07 run the holiday timetable; 南京东路 is closed by ATS at 16:00 (20:00 on 9-30)
+until the end of service, as published for 2021, 2024 and 2026, with the crowds moving to
+人民广场 and 陆家嘴; the afternoons bring more demand at 南京东路, 陆家嘴 and 上海科技馆;
+on the return evenings (10-06, 10-07) 虹桥火车站, 虹桥2号航站楼 and 浦东1号2号航站楼
+fill up and 虹桥火车站 → 龙阳路 fixed-time trains run until 00:30 (23:04, 23:30, 23:50,
+00:10, 00:30). Equipment faults come only from the random fault setting (D62).
+
+### Last-train connections (末班车接续)
+
+Every evening the last trains of the other lines at the 15 interchange stations are
+checked against Line 2 (times from the other lines' published last-train tables, Fri/Sat
+times on those days; walking times are estimates). Two kinds (D63):
+
+- **接入** (other line → Line 2): the last Line 2 train that still takes the transfer
+  passengers. When the other line's last train runs late, the station calls about 3 min
+  before departure: hold the Line 2 train (it is held at the platform until the
+  passengers are across) or leave on time. The auto answer holds up to 5 min.
+- **接出** (Line 2 → other line): when a late Line 2 train would miss the other line's last
+  train, NCC asks the other line to wait. It agrees up to 4 min.
+
+A missed connection strands its passengers (shown in 客流 › 末班车接续 and counted in the
+score). Holding one last train delays the connections further down: our synthetic last
+down train 3011 meets several of them within minutes, which is the classic chain.
 
 ### Weather and night possessions
 
@@ -341,6 +370,9 @@ the repository: cut them from p02.wav with `scripts/vvvf-clips.sh path/to/p02.wa
 | 列车故障 | Train brakes to a stand under EB; followers queue behind it. "Recoverable" clears after driver troubleshooting | Non-recoverable: 组织救援 (★) with the following train → it clears passengers, approaches in RM, couples (≤3 km/h, 60 s), pushes to the next station, clears passengers, returns to depot; remaining trips of both trains are cancelled on the graph |
 | 车站大客流 | Arrival rate ×N at a station: crowding alarm, longer dwells, full trains, delays | Holding, skip-stop, added trains / added-service templates |
 | PECU / 人员侵入 / ESP | Train held at the platform / platform closed until cleared | Answer the call; cancel 紧急关闭 after the line is clear |
+| 牵引单元故障 | 1–2 of the 6 traction units cut: acceleration ×(1 − n/6), the train loses time on every run; "recoverable" comes back after the driver resets the inverters at a stop (3–5 min) | Driver's call: run on and withdraw at the terminus (终点站下线), clear passengers and return at the next station, or keep running until the night |
+| 车门故障 | At the next station a door does not close. Normal: the driver isolates it (≈75 s), each cut door adds 2 s dwell from then on. Severe: it can neither close nor be isolated, the train cannot move | Severe: clear passengers and lock the door (2 min), then empty to the depot; or wait for the maintainer (≈8 min) |
+| 制动不缓解 | At departure a car's brake does not release; the driver tries for 2 min. Recoverable: it releases. One car: its brake is cut out, ≤ 60 km/h. Several cars: train cannot move → rescue | One car: run to the terminus and withdraw, or withdraw now; several cars: 组织救援 as for 列车故障 |
 | 大风 / 暴雨 | Speed restriction on the exposed sections (table above) | Ends with the weather; regulate with holds and turnbacks |
 
 Every automatic and manual event goes to the event log; alarms stay active until the
