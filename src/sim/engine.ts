@@ -346,7 +346,7 @@ export class Sim {
     for (const tr of this.trainList) {
       updateTrainMotion(this, tr, dt);
       const departure = tr.pendingDeparture;
-      if (departure && tr.v > .01) {
+      if (departure && tr.v > 0) {
         tr.pendingDeparture = undefined;
         if (departure.dep !== null) tr.delay = this.t - departure.dep;
         this.noteDeparture(departure);

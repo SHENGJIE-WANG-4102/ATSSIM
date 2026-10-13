@@ -6,7 +6,7 @@ import type { Sim } from './engine';
 import type { Train, BodySeg } from './model';
 import { nextLink, type Dir } from './topology';
 import { swPos } from './interlocking';
-import { PERF, brakingSpeed, controlAccel, tractionAccel } from './dynamics';
+import { PERF, brakingSpeed, controlAccel, jerkLimited, speedAfterEasing, tractionAccel } from './dynamics';
 import { routeLeadsTo } from './ats';
 import type { HaltCode } from './halt';
 import { applyEB } from './onboard';
@@ -644,8 +644,10 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     if ((standStill || tr.doorSide || tr.doorsOpen) && a > 0) a = 0;
     trackApproach(tr);
   } else {
-    a = controlAccel(tr.v, vT, stopAt);
+    a = controlAccel(speedAfterEasing(tr.v, tr.a), vT, stopAt);
   }
+  // traction and service braking build up and ease off at the jerk limit; the EB does not
+  if (!tr.eb) a = jerkLimited(tr.a, a, dt);
   tr.a = a;
   const v0 = tr.v;
   tr.v = Math.max(0, tr.v + a * dt);
@@ -671,6 +673,8 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     if (ds > hard) { ds = hard; tr.v = Math.min(tr.v, 0.3); }
     if (stopAt < 0.4 && tr.v < 0.35 && !tr.eb) tr.v = 0;
   }
+  // at a stand the brakes hold it: nothing left to ease off, traction builds up from nothing
+  if (tr.v === 0) tr.a = 0;
   // Distinguish the new restrictive braking target from the authority already
   // issued. Do not replace an issued EOA with an unreachable one under a train.
   const prevEoa = tr.lastMa - tr.lastDs;

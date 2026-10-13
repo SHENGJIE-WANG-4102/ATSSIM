@@ -442,7 +442,7 @@ export const OPERATIONS = {
   /** a train entering or leaving a platform it stops at runs at no more than this (km/h) */
   platformStopKmh: 50,
   /** planned run time margin over the minimum ATO run between stations */
-  runMargin: 0.05,
+  runMargin: 0.04,
   /** ATO with a driver (DTO degraded / ATO operation): change of ends at a
    *  turnback, on top of the unattended DTO reversal (s) 【假设】 */
   atoEndChange: 45,

@@ -19,7 +19,7 @@ function fixture(station:number,delay:number,dwell:number,waiting=0,load=0){
  for(const t of s.plan.trips)t.cancelled=true;s.planRev++;s.t=8*3600;
  for(const p of s.plat)p.waiting=0;
  const berth=s.topo.berths[platformBerth(s.topo,station,'DN')];
- tr.link=berth.link;tr.off=berth.offset;tr.dir=1;tr.hist=[{link:berth.link,dir:1}];tr.v=0;tr.eb=false;tr.phase='run';tr.block=-1;tr.tripId=-1;tr.inService=true;tr.load=load;tr.tbStage='none';tr.depotStage='none';
+ tr.link=berth.link;tr.off=berth.offset;tr.dir=1;tr.hist=[{link:berth.link,dir:1}];tr.v=0;tr.a=0;tr.eb=false;tr.phase='run';tr.block=-1;tr.tripId=-1;tr.inService=true;tr.load=load;tr.tbStage='none';tr.depotStage='none';
  const arr=s.t-delay;let dep=arr+dwell;
  tr.tasks=[{k:'stop',berth:berth.id,station,trip:-1,arr,dep,doors:true,revenue:true}];
  for(let st=station+1;st<=Math.min(22,station+5);st++){

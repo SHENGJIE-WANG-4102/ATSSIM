@@ -9,8 +9,8 @@ import { OPERATIONS } from '../data/line2';
 export const PERF = {
   /** max traction acceleration at low speed (m/s²) */
   aMax: 1.0,
-  /** speed at which constant-power region starts (m/s) */
-  vBase: 11,
+  /** longitudinal jerk limit in traction and service braking; not under EB (m/s³, GB/T 7928 6.13) */
+  jerk: 0.75,
   /** max service brake (m/s²) */
   bService: 1.0,
   /** braking rate used by ATO planning (comfort) */
@@ -35,8 +35,34 @@ export const PERF = {
   resist: 0.03,
 };
 
+/**
+ * Traction force against speed, as a fraction of the starting force: the AW2
+ * curve of the Line 2 study (560 kN flat to 40 km/h, 420 at 50, 180 at 80;
+ * reference/…Rolling_Stock_Research.md 图3(b), read off the figure), normalised.
+ * Beyond 80 km/h it falls as constant power. Points are (m/s, fraction).
+ */
+const TRACTION: [number, number][] = [[0, 1], [40 / 3.6, 1], [50 / 3.6, 420 / 560], [80 / 3.6, 180 / 560]];
+
 export function tractionAccel(v: number): number {
-  return v < PERF.vBase ? PERF.aMax : (PERF.aMax * PERF.vBase) / v;
+  const last = TRACTION[TRACTION.length - 1];
+  if (v >= last[0]) return PERF.aMax * last[1] * last[0] / Math.max(v, last[0]);
+  let i = 1;
+  while (TRACTION[i][0] < v) i++;
+  const [v0, f0] = TRACTION[i - 1], [v1, f1] = TRACTION[i];
+  return PERF.aMax * (f0 + (f1 - f0) * (v - v0) / (v1 - v0));
+}
+
+/** the acceleration actually reached one step on from `prev` towards `cmd` under the jerk limit */
+export function jerkLimited(prev: number, cmd: number, dt: number): number {
+  const s = PERF.jerk * dt;
+  return Math.max(prev - s, Math.min(prev + s, cmd));
+}
+
+/** the speed a train will have reached once its traction has been shed at the
+ * jerk limit: the controller looks at this, not the present speed, so that it
+ * starts easing off early enough not to overshoot a target. */
+export function speedAfterEasing(v: number, a: number): number {
+  return a > 0 ? v + (a * a) / (2 * PERF.jerk) : v;
 }
 
 /** Speed allowed at the current point given a constraint `d` metres ahead with end speed vEnd. */
@@ -101,6 +127,7 @@ function simulateRun(prof: LimitSeg[], sgn: 1 | -1, start: number, end: number, 
   const dt = 0.1;
   let x = start;
   let v = 0;
+  let a = 0;
   let t = 0;
   const markTimes: number[] = marks.map(() => NaN);
   const totalDist = Math.abs(end - start);
@@ -122,7 +149,7 @@ function simulateRun(prof: LimitSeg[], sgn: 1 | -1, start: number, end: number, 
       stopDist = remaining;
       vT = Math.min(vT, brakingSpeed(remaining - 0.3, 0, PERF.bPlan));
     }
-    const a = controlAccel(v, Math.max(0, vT), stopDist);
+    a = jerkLimited(a, controlAccel(speedAfterEasing(v, a), Math.max(0, vT), stopDist), dt);
     v = Math.max(0, v + a * dt);
     const ds = v * dt;
     travelled += ds;

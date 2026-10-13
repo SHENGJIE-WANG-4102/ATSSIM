@@ -511,6 +511,8 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
     // handed back to automatic driving before the driver opened: open now
     if (tr.doorsAwait && !tr.manual) startDoorCycle(sim, tr, st, p, tr.mode === 'RM');
     if (!tr.manual && tr.doorsOpen) tr.doorSide = '';
+    // 站台折返: alighting done, the train changes ends with its doors open
+    if (tr.doorsOpen && !tr.doorsAwait && platformTurn(tr, st) && sim.t >= tr.dwellUntil - (DOOR_CYCLE - 3)) { turnOnPlatform(sim, tr, st); return; }
     // the driver works the doors (driverDoor) and leaves once they are closed and locked
     if (tr.doorsAwait || tr.doorSide) return;
     const held = tr.hold || ps.hold;
@@ -582,7 +584,7 @@ function arriveAtBerth(sim: Sim, tr: Train, task: Task) {
       sim.metrics.tripDelays.push(task.arr !== null ? sim.t - task.arr : 0);
     }
     recordTrace(sim, tr, true);
-    if (tr.manual && stopNeedsDoors(tr, task)) {
+    if (tr.manual && stopNeedsDoors(tr, task) && !tr.doorsOpen) {
       // the driver opens the doors (driverDoor); until then the countdown shows the plan
       tr.doorsAwait = true;
       tr.dwellUntil = tr.depReadyAt = Math.max(sim.t + (task.minDwell ?? MIN_DWELL), task.dep ?? 0);
@@ -619,6 +621,43 @@ function arriveAtBerth(sim: Sim, tr: Train, task: Task) {
   }
 }
 
+/**
+ * 站台折返: a trip ending where the train changes ends at the platform itself
+ * (广兰路 middle track, 虹桥火车站). The doors stay open: passengers alight,
+ * the driver walks to the other cab, the next trip boards, and the doors close
+ * only for its departure — not before the turnback and open again after it.
+ */
+function platformTurn(tr: Train, st: StopTask): boolean {
+  const rev = tr.tasks[1], next = tr.tasks[2];
+  return st.dep === null && rev?.k === 'reverse' && rev.berths.every((b) => b === st.berth)
+    && next?.k === 'stop' && next.station === st.station;
+}
+
+/** change ends at the platform with the doors open, straight into the next trip's stop */
+function turnOnPlatform(sim: Sim, tr: Train, st: StopTask) {
+  tr.tasks.shift();
+  const rev = tr.tasks.shift();
+  if (rev?.k !== 'reverse') return;
+  if (sim.berthRes.get(st.berth) === tr.id) sim.berthRes.delete(st.berth);
+  if (sim.berthRes.get(rev.chosen) === tr.id) sim.berthRes.delete(rev.chosen);
+  const next = tr.tasks[0];
+  if (next?.k === 'stop') {
+    const berth = departureBerthAfterReverse(sim.topo, rev.chosen, next.berth);
+    if (berth !== next.berth) cowTask(tr, next).berth = berth;
+  }
+  reverseTrain(sim, tr);
+  // the open side, as seen from the new leading cab
+  if (tr.doorSide) tr.doorSide = tr.doorSide === 'L' ? 'R' : 'L';
+  tr.tbStage = tr.level === 'TBTC' ? 'manual' : 'depart';
+  tr.tbExitSig = tr.tbStage === 'manual' ? signalAheadFrom(sim, tr.link, tr.off, tr.dir, 500)?.sig ?? -1 : -1;
+  tr.tbCallAt = 0;
+  dmiNote(sim, tr, 'DMI激活');
+  setTripFromTasks(sim, tr);
+  arriveAtBerth(sim, tr, tr.tasks[0]);
+  // no departure before the driver is in the other cab
+  tr.dwellUntil = Math.max(tr.dwellUntil, sim.t + rev.minTime + (tr.mode === 'DTO' ? 0 : OPERATIONS.atoEndChange));
+}
+
 /** the stop has a door cycle: passengers, or a clear-out (清客) */
 function stopNeedsDoors(tr: Train, task: StopTask): boolean {
   return task.doors || (!task.revenue && tr.load > 0);
@@ -634,7 +673,10 @@ function startDoorCycle(sim: Sim, tr: Train, task: StopTask, p: number, noLink =
   let dwell = 10;
   let doorExtra = 0;
   if (task.doors) {
+    // (already open after a turn on the platform: no second opening)
+    const open = tr.doorsOpen;
     doorExtra = openDoors(sim, tr, p, noLink);
+    if (open) doorExtra = 0;
     const before = tr.load;
     const paxDwell = boardAndAlight(sim, tr, p, task);
     if (tr.delay > 120) sim.metrics.boardedDelayed += Math.max(0, tr.load - before) + Math.round(before * 0.3);
