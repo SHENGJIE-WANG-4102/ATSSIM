@@ -286,8 +286,8 @@ tr.recovered td.txt { color: var(--ok); }
 .pb-to-en { font-size: 1.5cqw; color: #cfe3ff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-height: 1.9cqw; }
 .pb-info { flex: .55 1 0; align-items: center; justify-content: center; text-align: center; gap: .3cqw; }
 .pb-clockrow { display: flex; align-items: baseline; justify-content: center; gap: 1.2cqw; }
-.pb-info .pb-clock { line-height: 1; font: 700 5.2cqw var(--font-mono); color: #19e3ff; text-shadow: 0 0 1cqw rgba(25, 227, 255, .55); }
-.pb-info .pb-date { font-size: 2.4cqw; }
+.pb-info .pb-clock { line-height: 1; white-space: nowrap; font: 700 5.2cqw var(--font-mono); color: #19e3ff; text-shadow: 0 0 1cqw rgba(25, 227, 255, .55); }
+.pb-info .pb-date { font-size: 2.4cqw; white-space: nowrap; }
 .pb-info .pb-st { font-size: 3.2cqw; font-weight: 700; line-height: 1.1; }
 .pb-info .pb-st-en { font-size: 1.8cqw; color: #cfe3ff; padding: 0 .8cqw; }
 @keyframes pis-blink { 50% { opacity: .35; } }

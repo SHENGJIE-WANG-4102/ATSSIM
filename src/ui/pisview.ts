@@ -64,22 +64,34 @@ const SLIDE: KeyframeAnimationOptions = { duration: 520, easing: 'cubic-bezier(.
 
 /**
  * Change the content of `els` (children of one box) with `fill`: a copy of
- * the old content leaves to the left over the new content entering from the right.
+ * the old content leaves to the left over the new content entering from the
+ * right. `fill` returns the new elements when it replaces `els` instead of
+ * updating them in place.
  */
-function slide(els: HTMLElement[], fill: () => void) {
+function slide(els: HTMLElement[], fill: () => HTMLElement[] | void) {
   const ghosts = els.filter((e) => typeof e.animate === 'function' && e.offsetWidth > 0).map((e) => {
     const g = e.cloneNode(true) as HTMLElement;
+    g.classList.add('pis-ghost');
     Object.assign(g.style, {
       position: 'absolute', left: `${e.offsetLeft}px`, top: `${e.offsetTop}px`, width: `${e.offsetWidth}px`, height: `${e.offsetHeight}px`,
       margin: '0', pointerEvents: 'none',
     });
     e.parentElement!.append(g);
-    return { e, g };
+    // measured now: `fill` may take `e` out of the page. Clear of the box: its own right edge past the box's left edge
+    return { g, out: e.offsetLeft + e.offsetWidth + 4 };
   });
-  fill();
-  for (const { e, g } of ghosts) {
-    g.animate([{ transform: 'none' }, { transform: 'translateX(-105%)' }], SLIDE).onfinish = () => g.remove();
-    e.animate([{ transform: 'translateX(105%)' }, { transform: 'none' }], SLIDE);
+  const fresh = fill() ?? els;
+  for (const { g, out } of ghosts) {
+    // held off-box at the end and removed then: on the animation's own clock, so it never vanishes mid-slide
+    const a = g.animate([{ transform: 'none' }, { transform: `translateX(${-out}px)` }], { ...SLIDE, fill: 'forwards' });
+    a.onfinish = a.oncancel = () => g.remove();
+  }
+  if (!ghosts.length) return;
+  for (const e of fresh) {
+    if (typeof e.animate !== 'function') continue;
+    // in from just past the box's right edge (offsets are within the positioned box)
+    const from = (e.offsetParent as HTMLElement | null)?.clientWidth ?? e.offsetWidth;
+    e.animate([{ transform: `translateX(${from - e.offsetLeft + 4}px)` }, { transform: 'none' }], SLIDE);
   }
 }
 
@@ -118,12 +130,17 @@ function update(bd: Board) {
   const showClock = Math.floor(now / 3000) % 2 === 0;
   const want = showClock ? `clock` : `name`;
   if (bd.b3.dataset.mode !== want) {
-    const old = Array.from(bd.b3.children) as HTMLElement[];
+    const old = infoContent(bd);
     bd.b3.dataset.mode = want;
-    if (old.length) { slide(old, () => { for (const e of old) e.remove(); fillInfo(bd, showClock); }); return void fillLoad(bd); }
+    if (old.length) { slide(old, () => { for (const e of old) e.remove(); fillInfo(bd, showClock); return infoContent(bd); }); return void fillLoad(bd); }
   }
   fillInfo(bd, showClock);
   fillLoad(bd);
+}
+
+/** what the info box shows, without the copies still sliding out */
+function infoContent(bd: Board): HTMLElement[] {
+  return (Array.from(bd.b3.children) as HTMLElement[]).filter((e) => !e.classList.contains('pis-ghost'));
 }
 
 /** the clock / station-name box */
@@ -134,11 +151,11 @@ function fillInfo(bd: Board, showClock: boolean) {
     const tod = t % 86400;
     const txt = `${pad(Math.floor(tod / 3600))}:${pad(Math.floor(tod % 3600 / 60))}`;
     // clock and date share a baseline; the row itself is centred in the box
-    if (!bd.b3.firstChild) bd.b3.append(h('div', { class: 'pb-clockrow' }, h('span', { class: 'pb-clock' }), h('span', { class: 'pb-date' })));
-    const row = bd.b3.firstChild as HTMLElement;
+    if (!infoContent(bd).length) bd.b3.append(h('div', { class: 'pb-clockrow' }, h('span', { class: 'pb-clock' }), h('span', { class: 'pb-date' })));
+    const row = infoContent(bd)[0];
     (row.children[0] as HTMLElement).textContent = txt;
     (row.children[1] as HTMLElement).textContent = dateOf(bd.dateLabel, t);
-  } else if (!bd.b3.firstChild) {
+  } else if (!infoContent(bd).length) {
     bd.b3.append(h('div', { class: 'pb-st' }, st.name), h('div', { class: 'pb-st-en' }, STATION_EN[st.id] ?? ''));
   }
 }
