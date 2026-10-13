@@ -3,6 +3,7 @@
  * time step. Runs inside a Web Worker (src/sim/worker.ts) or headless in
  * tests.
  */
+import { energyTick, newEnergy, type EnergyState } from './energy';
 import { gradePermille } from './gradient';
 import { buildTopology, linkChain, type Topology } from './topology';
 import { computeRunTimes, type RunTimes } from './dynamics';
@@ -153,6 +154,9 @@ export class Sim {
   holidayFired = 0;
   /** last-train connections with the other lines tonight (connections.ts) */
   connections: Connection[] = [];
+  /** traction energy (energy.ts) and the line's ATO run level */
+  energy: EnergyState = newEnergy();
+  runLevel = 1;
   /** pending driver resets of cut-out inverters (vehicle.ts) */
   vehicleResets: { train: number; at: number; fault: number }[] = [];
   reportReady: ScenarioReport | null = null;
@@ -378,6 +382,7 @@ export class Sim {
         recordTrace(this, tr, true);
       }
     }
+    energyTick(this, dt);
     indexBodies(this);
     computeOccupancy(this);
     updateInterlocking(this);
@@ -627,6 +632,14 @@ export class Sim {
         return { ok: true, msg: cmd.on ? '通话自动应答（演示）' : '通话需人工应答' };
       case 'env': return setWeather(this, { wind: cmd.wind, rain: cmd.rain, duration: cmd.duration });
       case 'lowAdhesion': return setLowAdhesion(this, cmd.on);
+      case 'runLevel': {
+        const lv = Math.max(1, Math.min(3, Math.round(cmd.level)));
+        if (lv === this.runLevel) return { ok: false, msg: `已是运行等级 ${lv}` };
+        this.runLevel = lv;
+        const msg = `全线 ATO 运行等级 ${lv}${lv === 1 ? '（全性能）' : lv === 2 ? '（惰行节能）' : '（低速惰行，节能最多）'}，晚点列车自动按等级 1 运行`;
+        this.log('C', '调度', msg);
+        return { ok: true, msg };
+      }
       case 'randomFaults': return setRandomFaults(this, cmd.level);
       case 'scenarioEnd': {
         const r = endScenario(this);
@@ -768,6 +781,8 @@ export class Sim {
       autoRadio: this.autoRadio,
       ridership: this.ridership,
       connections: this.t >= 20.5 * 3600 ? this.connections : [],
+      energy: { ...this.energy },
+      runLevel: this.runLevel,
       metrics: this.metrics,
       replay: { from: 0, to: 0, replaying: false, pending: 0 },
       bookmarks: this.bookmarks.slice(-60),
@@ -839,6 +854,7 @@ export function describeCommand(sim: Sim, cmd: Command): string {
     case 'radioAuto': return '通话应答方式';
     case 'env': return '【教员】环境设置';
     case 'lowAdhesion': return `${cmd.on ? '设置' : '取消'}低粘着模式`;
+    case 'runLevel': return `运行等级 ${cmd.level}`;
     case 'randomFaults': return '【教员】随机故障';
     case 'scenarioEnd': return '【教员】结束评估';
     case 'bookmark': return '添加书签';

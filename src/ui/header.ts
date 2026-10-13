@@ -7,7 +7,8 @@
 import { h, clear } from './dom';
 import type { Store } from './store';
 import { fmtTime } from './theme';
-import { UI_SCALES } from './layout';
+import { UI_SCALES, loadPref, savePref } from './layout';
+import { toast } from './confirm';
 import metroLogo from './assets/metro-logo.png';
 import lineBadge from './assets/line2-badge.png';
 
@@ -126,6 +127,9 @@ export class Header {
       sub('走行音', traction ? '开启' : '关闭',
         item('开启', () => { this.hooks.setTraction(true); this.refreshScale(); }, { on: traction }),
         item('关闭', () => { this.hooks.setTraction(false); this.refreshScale(); }, { on: !traction })),
+      sub('能耗与运行等级', this.energy ? '显示' : '隐藏',
+        item('显示', () => this.setEnergy(true), { on: this.energy }),
+        item('隐藏', () => this.setEnergy(false), { on: !this.energy })),
       h('div', { class: 'msep' }),
       item('运营日 / 重新开始…', close(() => this.hooks.restart())),
       item('诊断导出', close(() => this.store.send({ type: 'diagnostics' })), {}),
@@ -184,7 +188,12 @@ export class Header {
     let riders = 0;
     for (const row of s.ridership.boardings) for (const v of row) riders += v;
     const wan = (riders / 1e4).toFixed(1);
-    const key = `${wan}|${st.online}|${st.inService}|${st.late}|${st.punctuality.toFixed(3)}|${st.tripsDone}|${st.tripsPlanned}`;
+    // traction energy (energy.ts), only when asked for
+    const en = s.energy;
+    const perKm = en.km > 1 ? (en.drawn - en.reused) / 3.6e6 / en.km : 0;
+    const reuse = en.regen > 0 ? en.reused / en.regen : 0;
+    const eKey = this.energy ? `${perKm.toFixed(2)}|${Math.round(reuse * 100)}|${s.runLevel}` : '';
+    const key = `${wan}|${st.online}|${st.inService}|${st.late}|${st.punctuality.toFixed(3)}|${st.tripsDone}|${st.tripsPlanned}|${eKey}`;
     if (key === this.lastKpi) return;
     this.lastKpi = key;
     clear(this.kpis);
@@ -196,6 +205,26 @@ export class Header {
       kpi(`${(st.punctuality * 100).toFixed(1)}%`, '正点率', st.punctuality < 0.98 ? 'warn' : ''),
       kpi(`${st.tripsDone}/${st.tripsPlanned}`, '完成车次'),
     );
+    if (this.energy) {
+      const lvl = h('select', { title: '全线 ATO 运行等级：1 全性能；2 惰行节能；3 低速惰行（节能最多，运行时分增加）。晚点超过 20 秒的列车自动按等级 1 运行' },
+        ...[1, 2, 3].map((v) => h('option', { value: v }, `等级 ${v}`))) as HTMLSelectElement;
+      lvl.value = String(s.runLevel);
+      lvl.onchange = async () => { const r = await this.store.command({ c: 'runLevel', level: Number(lvl.value) }); toast(r.msg, r.ok); };
+      this.kpis.append(
+        kpi(perKm ? perKm.toFixed(2) : '—', '牵引 kWh/车公里'),
+        kpi(`${Math.round(reuse * 100)}%`, '再生利用'),
+        h('div', { class: 'kpi' }, h('div', { class: 'v' }, lvl), h('div', { class: 'k' }, '运行等级')),
+      );
+    }
+  }
+
+  /** 设置 › 能耗与运行等级 (D67): off by default, for when the day is not about energy */
+  private energy = loadPref('energy', false);
+  private setEnergy(on: boolean) {
+    this.energy = on;
+    savePref('energy', on);
+    this.lastKpi = '';
+    this.refreshScale();
   }
 
   updateAlarms() {

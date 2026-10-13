@@ -7,6 +7,7 @@ import type { Train, BodySeg } from './model';
 import { nextLink, linkChain, type Dir } from './topology';
 import { profileOf, heightAt, chainSense, gradeAccelAt, brakingSpeedH } from './gradient';
 import { adhesionLimit, LOW_ADH_BPLAN, LOW_ADH_TRACTION } from './adhesion';
+import { levelBand, trainLevel } from './energy';
 import { swPos } from './interlocking';
 import { TRACTION_UNITS } from './vehicle';
 import { PERF, brakingSpeed, controlAccel, jerkLimited, speedAfterEasing, tractionAccel } from './dynamics';
@@ -517,6 +518,27 @@ function spad(sim: Sim, tr: Train, sigId: number) {
   applyEB(sim, tr, `冒进信号 ${name}`, 'spad');
 }
 
+/**
+ * ATO command under the line's run level (energy.ts): level 1 is the plain
+ * controller; at 2 and 3 a cruising train shuts off at its target, coasts
+ * down the band and powers up again (level 3 also cruises lower). Braking
+ * curves are never relaxed: coasting stops as soon as the train is above them.
+ */
+function runLevelAccel(sim: Sim, tr: Train, vT: number, vCruise: number, stopAt: number, regulated: boolean): number {
+  const level = regulated ? trainLevel(sim, tr) : 1;
+  if (level === 1 || tr.v < 5) {
+    tr.coast = false;
+    return controlAccel(speedAfterEasing(tr.v, tr.a), vT, stopAt);
+  }
+  const { band, lower } = levelBand(level);
+  const cruising = vT >= vCruise - 0.1;
+  const vc = cruising ? vT - lower : vT;
+  if (tr.coast && tr.v < vc - band) tr.coast = false;
+  else if (!tr.coast && tr.v >= vc - 0.3) tr.coast = true;
+  if (tr.coast && tr.v <= vc) return -PERF.resist;
+  return controlAccel(speedAfterEasing(tr.v, tr.a), vc, stopAt);
+}
+
 export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   // A withdrawn target may be inside the braking distance. The onboard keeps
   // its last issued authority while braking; after standstill it can accept
@@ -666,11 +688,12 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     if ((standStill || tr.doorSide || tr.doorsOpen) && a > 0) a = 0;
     trackApproach(tr);
   } else {
-    let c = controlAccel(speedAfterEasing(tr.v, tr.a), vT, stopAt);
+    let c = runLevelAccel(sim, tr, vT, scan.vBody - atoMargin, stopAt, regulated);
     // slid past the stopping point on wet rail: brake to a stand (ats.ts then decides)
     if (adh.brake < Infinity && tr.v > 0 && tr.tasks[0]?.k === 'stop' && stopError(sim, tr) < -0.3) c = -PERF.bService;
     // in traction a falling grade is a bonus, not something to brake off
-    a = c > 0 ? Math.max(c - aG, c) : c - aG;
+    // (coasting is motors off: gravity is left to act)
+    a = tr.coast && c === -PERF.resist ? c : c > 0 ? Math.max(c - aG, c) : c - aG;
     // standing with nothing asked for: the brakes hold it against the grade
     if (tr.v === 0 && vT <= 0.01) a = 0;
     a = Math.max(-PERF.bService, Math.min(tractionAccel(tr.v) * (lowAdh ? LOW_ADH_TRACTION : 1), a));

@@ -252,6 +252,8 @@ export interface Train {
   slip: '' | 'slip' | 'slide';
   /** metres past the stopping point after sliding (ATO), 0 none (adhesion.ts) */
   overrun: number;
+  /** ATO coasting in its run-level band (energy.ts) */
+  coast: boolean;
   /** train status flags */
   failed: boolean;
   failRecoverAt: number;
@@ -537,6 +539,7 @@ export type Command =
   | { c: 'radioAuto'; on: boolean }
   | { c: 'env'; wind?: number; rain?: boolean; duration: number }
   | { c: 'lowAdhesion'; on: boolean }
+  | { c: 'runLevel'; level: number }
   | { c: 'randomFaults'; level: number }
   | { c: 'scenarioEnd' }
   | { c: 'bookmark'; label: string };
@@ -782,6 +785,8 @@ export interface Snapshot {
   ridership: Ridership;
   /** tonight's last-train connections, from 20:30 */
   connections: Connection[];
+  energy: import('./energy').EnergyState;
+  runLevel: number;
   stats: {
     online: number;
     inService: number;

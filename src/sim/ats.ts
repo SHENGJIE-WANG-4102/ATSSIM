@@ -326,7 +326,7 @@ export function newTrain(sim: Sim, block: Block | null, link: number, off: numbe
     load: 0, delay: 0, hold: false, skipStations: new Set(), failed: false, failRecoverAt: 0, failRecoverable: true,
     rescueBy: -1, rescuing: -1, coupledLen: 0, inService: true, nextSignal: -1, nextSignalDist: Infinity,
     lastStation: -1, trace: [], lastTraceT: -1e9, lastTraceCh: NaN, stopsMade: 0, overspeedEvents: 0, passedRed: 0,
-    withdrawn: false, extraDwell: 0, tractionCut: 0, doorsCut: 0, vCap: Infinity, vfault: null, withdrawAtEnd: false, slip: '', overrun: 0,
+    withdrawn: false, extraDwell: 0, tractionCut: 0, doorsCut: 0, vCap: Infinity, vfault: null, withdrawAtEnd: false, slip: '', overrun: 0, coast: false,
     manual: false, notch: 0, tgtV: 0, tgtD: Infinity, tgtReason: '', coupledVehicle: '',
     drv: { stops: [], overspeed: 0, spad: 0, since: sim.t, releases: 0, braking: false, restop: false }, stopUntil: 0, stopReason: '', waitSince: 0,
     vEbi: 0, dmiLog: [], dmiPrev: null,

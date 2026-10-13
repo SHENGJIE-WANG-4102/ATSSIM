@@ -264,6 +264,15 @@ A missed connection strands its passengers (shown in 客流 › 末班车接续 
 score). Holding one last train delays the connections further down: our synthetic last
 down train 3011 meets several of them within minutes, which is the classic chain.
 
+### Energy and ATO run levels (能耗与运行等级)
+
+Off by default (设置 › 能耗与运行等级). When shown, the header adds the net traction
+energy per train-km and how much of the braking energy fed back into the third rail was
+used by other trains (it is wasted in the braking resistors otherwise), and a line-wide
+ATO run level: 1 runs at the full performance the timetable is planned with, 2 coasts in
+a 5 km/h band when cruising, 3 cruises 5 km/h lower and coasts in a 10 km/h band.
+Trains more than 20 s late run level 1 to catch up. Figures are assumptions (D67).
+
 ### Weather and night possessions
 
 The elevated east section (广兰路以东—海天三路) and the at-grade airport section are
