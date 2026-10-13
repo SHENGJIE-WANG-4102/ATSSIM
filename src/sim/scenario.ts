@@ -397,7 +397,7 @@ export const SCENARIOS: ScenarioDef[] = [
 export function newMetrics(t: number): Metrics {
   return {
     since: t, tripDelays: [], tripsCompleted: 0, departures: 0, departuresLate: 0, boardedDelayed: 0, stranded: 0, cleared: 0, limited: 0,
-    safety: { spad: 0, overspeed: 0, rmNearMiss: 0, unsafeAuth: 0, espIgnored: 0, overrun: 0 },
+    safety: { spad: 0, overspeed: 0, rmNearMiss: 0, unsafeAuth: 0, espIgnored: 0, overrun: 0, wrongDoor: 0 },
     callsAnswered: 0, callsExpired: 0, faults: 0,
   };
 }
@@ -451,7 +451,7 @@ export function buildReport(sim: Sim, title: string, from: number): ScenarioRepo
   const punctuality = m.departures ? 1 - m.departuresLate / m.departures : 1;
   const affected = Math.round(m.stranded + m.boardedDelayed + m.cleared + m.limited);
   const s = m.safety;
-  const safetyTotal = s.spad + s.overspeed + s.rmNearMiss + s.unsafeAuth + s.espIgnored + s.overrun;
+  const safetyTotal = s.spad + s.overspeed + s.rmNearMiss + s.unsafeAuth + s.espIgnored + s.overrun + s.wrongDoor;
   const stops = sim.drivingStops.filter((x) => x.t >= from);
   const driving = stops.length ? {
     stops: stops.length,
@@ -471,7 +471,7 @@ export function buildReport(sim: Sim, title: string, from: number): ScenarioRepo
   score = Math.max(0, Math.min(100, Math.round(score)));
   const grade = safetyTotal > 0 && score >= 70 ? 'C（存在安全违章）' : score >= 90 ? 'A 优秀' : score >= 80 ? 'B 良好' : score >= 65 ? 'C 合格' : 'D 不合格';
   const notes: string[] = [];
-  if (safetyTotal) notes.push(`安全违章 ${safetyTotal} 起：${[s.spad && `冒进信号 ${s.spad}`, s.overspeed && `超速触发紧急制动 ${s.overspeed}`, s.rmNearMiss && `目视行车未能停车 ${s.rmNearMiss}`, s.unsafeAuth && `不安全授权 ${s.unsafeAuth}`, s.espIgnored && `未及时紧急关闭站台 ${s.espIgnored}`, s.overrun && `对标越站 ${s.overrun}`].filter(Boolean).join('、')}`);
+  if (safetyTotal) notes.push(`安全违章 ${safetyTotal} 起：${[s.spad && `冒进信号 ${s.spad}`, s.overspeed && `超速触发紧急制动 ${s.overspeed}`, s.rmNearMiss && `目视行车未能停车 ${s.rmNearMiss}`, s.unsafeAuth && `不安全授权 ${s.unsafeAuth}`, s.espIgnored && `未及时紧急关闭站台 ${s.espIgnored}`, s.overrun && `对标越站 ${s.overrun}`, s.wrongDoor && `开错侧车门 ${s.wrongDoor}`].filter(Boolean).join('、')}`);
   if (m.callsExpired) notes.push(`有 ${m.callsExpired} 次呼叫未在时限内应答`);
   if (delivery < 0.98) notes.push(`运行图兑现率 ${(delivery * 100).toFixed(1)}%，有车次未开行或被取消`);
   if (m.stranded > 500) notes.push(`站台滞留乘客较多（约 ${Math.round(m.stranded)} 人次），可考虑限流、加开或均衡间隔`);

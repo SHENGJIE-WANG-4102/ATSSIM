@@ -115,6 +115,10 @@ export interface StationData {
   dwell: number;
   /** relative passenger demand weight (approximation, 1 = average) */
   demand: number;
+  /** tracks served by a side platform (outside the track); every other face is
+   *  an island between the two mains. Source: pdf-peixian where the PDF shows
+   *  the platform, island otherwise (approximation) */
+  sidePlatform?: ('DN' | 'UP')[];
 }
 
 /**
@@ -149,15 +153,15 @@ export const STATIONS: StationData[] = [
   { id: 'LYL', name: '龙阳路', interM: 1100, transfers: ['7', '16', '18', '磁浮'], dwell: 25, demand: 1.4 },
   { id: 'ZJG', name: '张江高科', interM: 2940, transfers: [], dwell: 20, demand: 1.2 },
   { id: 'JKL', name: '金科路', interM: 1393, transfers: [], dwell: 20, demand: 0.9 },
-  { id: 'GLL', name: '广兰路', interM: 2055, transfers: [], dwell: 20, demand: 1.0 },
+  { id: 'GLL', name: '广兰路', interM: 2055, transfers: [], dwell: 20, demand: 1.0, sidePlatform: ['DN'] },
   { id: 'TZ', name: '唐镇', interM: 3393, transfers: [], dwell: 20, demand: 0.9 },
-  { id: 'CXZ', name: '创新中路', interM: 1788, transfers: [], dwell: 20, demand: 0.5 },
+  { id: 'CXZ', name: '创新中路', interM: 1788, transfers: [], dwell: 20, demand: 0.5, sidePlatform: ['DN', 'UP'] },
   { id: 'HXD', name: '华夏东路', interM: 2100, transfers: [], dwell: 20, demand: 0.6 },
-  { id: 'CS', name: '川沙', interM: 2756, transfers: [], dwell: 20, demand: 0.8 },
-  { id: 'LKL', name: '凌空路', interM: 2595, transfers: [], dwell: 20, demand: 0.4 },
+  { id: 'CS', name: '川沙', interM: 2756, transfers: [], dwell: 20, demand: 0.8, sidePlatform: ['DN', 'UP'] },
+  { id: 'LKL', name: '凌空路', interM: 2595, transfers: [], dwell: 20, demand: 0.4, sidePlatform: ['DN', 'UP'] },
   { id: 'YDD', name: '远东大道', interM: 3070, transfers: [], dwell: 20, demand: 0.3 },
   { id: 'HTS', name: '海天三路', interM: 5918, transfers: [], dwell: 20, demand: 0.3 },
-  { id: 'PDA', name: '浦东1号2号航站楼', formerName: '浦东国际机场', interM: 2287, transfers: ['磁浮', '机场联络线'], dwell: 20, demand: 0.9 },
+  { id: 'PDA', name: '浦东1号2号航站楼', formerName: '浦东国际机场', interM: 2287, transfers: ['磁浮', '机场联络线'], dwell: 20, demand: 0.9, sidePlatform: ['DN', 'UP'] },
 ];
 
 /** English station names as on the platform screens (Shanghai Metro sign style, approximation) */

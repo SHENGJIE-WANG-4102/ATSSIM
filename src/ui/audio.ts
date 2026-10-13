@@ -11,6 +11,7 @@ export class Audio {
   muted = loadPref('muted', false);
   private ringTimer = 0;
   private alarmTimer = 0;
+  private overTimer = 0;
 
   constructor() {
     const unlock = () => {
@@ -37,7 +38,7 @@ export class Audio {
     this.muted = m;
     savePref('muted', m);
     if (this.master) this.master.gain.value = m ? 0 : 0.35;
-    if (m) { this.stopRing(); this.stopAlarm(); }
+    if (m) { this.stopRing(); this.stopAlarm(); this.setOverspeed(false); }
   }
 
   private tone(freq: number, start: number, dur: number, type: OscillatorType = 'sine', vol = 0.6) {
@@ -115,6 +116,16 @@ export class Audio {
     src.connect(bp).connect(g).connect(this.master);
     src.start();
     this.tone(1200, 0.2, 0.06, 'sine', 0.25);
+  }
+
+  /** overspeed warning in the cab of a manually driven train (above the permitted speed, before the EB) */
+  setOverspeed(on: boolean) {
+    if (on && !this.overTimer) {
+      const beep = () => this.tone(1250, 0, 0.12, 'square', 0.25);
+      this.ensure();
+      beep();
+      this.overTimer = window.setInterval(beep, 450);
+    } else if (!on && this.overTimer) { clearInterval(this.overTimer); this.overTimer = 0; }
   }
 
   click() {

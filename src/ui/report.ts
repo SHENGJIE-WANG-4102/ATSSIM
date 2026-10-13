@@ -4,7 +4,7 @@ import type { ScenarioReport } from '../sim/model';
 import { fmtTime } from './theme';
 
 const SAFETY: Record<keyof ScenarioReport['safety'], string> = {
-  spad: '冒进信号', overspeed: '超速紧急制动', rmNearMiss: 'RM 接近危险', unsafeAuth: '不安全授权', espIgnored: '紧急停车未及时处置', overrun: '对标过标越站',
+  spad: '冒进信号', overspeed: '超速紧急制动', rmNearMiss: 'RM 接近危险', unsafeAuth: '不安全授权', espIgnored: '紧急停车未及时处置', overrun: '对标过标越站', wrongDoor: '开错侧车门',
 };
 
 export function openReport(root: HTMLElement, r: ScenarioReport, onAgain?: () => void) {

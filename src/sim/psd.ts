@@ -42,13 +42,17 @@ export function psdSafe(ps: { psd: PsdState }): boolean {
   return ps.psd === 'closed' || ps.psd === 'bypass';
 }
 
-/** train stopped in the window: open train doors and PSD. Returns extra dwell (s). */
-export function openDoors(sim: Sim, tr: Train, p: number): number {
+/**
+ * Train stopped in the window: open train doors and PSD. Returns extra dwell (s).
+ * `noLink`: the signalling does not work the PSD (RM: no door enable, no
+ * linkage), so station staff open it from the PSL.
+ */
+export function openDoors(sim: Sim, tr: Train, p: number, noLink = false): number {
   const ps = sim.plat[p];
   ps.psdTrain = tr.id;
   tr.doorsOpen = true;
-  if (ps.psd === 'bypass') return ps.psdLinkFault ? PSL_EXTRA : 0;
-  if (ps.psdLinkFault) { go(sim, p, 'pslOpen'); return PSL_EXTRA; }
+  if (ps.psd === 'bypass') return ps.psdLinkFault || noLink ? PSL_EXTRA : 0;
+  if (ps.psdLinkFault || noLink) { go(sim, p, 'pslOpen'); return PSL_EXTRA; }
   go(sim, p, 'open');
   return 0;
 }
@@ -68,6 +72,7 @@ export function closeDoors(sim: Sim, tr: Train, p: number): number {
     return -1;
   }
   tr.doorsOpen = false;
+  tr.doorSide = '';
   ps.psdTrain = -1;
   let extra = 0;
   if (ps.psd === 'bypass') {
@@ -122,7 +127,7 @@ export function psdRepaired(sim: Sim, p: number) {
   if (ps.psd === 'closeFail') {
     // staff close the repaired doors: the waiting train gets its departure authority
     const tr = sim.trains.get(ps.psdTrain);
-    if (tr) tr.doorsOpen = false;
+    if (tr) { tr.doorsOpen = false; tr.doorSide = ''; }
     ps.psdTrain = -1;
     go(sim, p, 'closed');
   }

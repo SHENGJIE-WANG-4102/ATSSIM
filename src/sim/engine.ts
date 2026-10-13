@@ -21,7 +21,7 @@ import { updateTrainMotion, indexBodies, refreshAuthority, withdrawAuthority } f
 import {
   buildRouteTable, type RouteTable, spawnDue, updateTrainTasks, runARS, driverRM, recordTrace,
   cmdTrainHold, cmdSkip, cmdTurnback, cmdWithdraw, cmdRecoverService, cmdExchangeDuty, cmdAuthRM, cmdRescue, trainLabel,
-  extendTrainTasks,
+  extendTrainTasks, driverDoor, platformSide,
 } from './ats';
 import { stopError } from './movement';
 import { initYards, vehicleName } from './yard';
@@ -44,6 +44,8 @@ import { cmdStandbyRelief, standbyTick } from './standby';
 import type { RecordedInput } from './diagnostics';
 
 export const FIXED_DT = 0.1;
+/** acceleration limit while a CM / RM train runs (see Sim.speedCap) */
+export const MANUAL_SPEED_CAP = 5;
 
 export function mulberry32(seed: number) {
   let a = seed >>> 0;
@@ -162,6 +164,14 @@ export class Sim {
   droppedPerSec = 0;
   inputLog: RecordedInput[] = [];
   replaying = false;
+
+  /** highest acceleration while a CM / RM train runs on the line (driven by the
+   *  player or by a degraded-mode driver): speed changes fast, radio calls come
+   *  often and a missed one stops a train; Infinity otherwise */
+  speedCap(): number {
+    for (const tr of this.trains.values()) if ((tr.mode === 'CM' || tr.mode === 'RM') && tr.phase !== 'stabled') return MANUAL_SPEED_CAP;
+    return Infinity;
+  }
 
   drive(train: number, notch: number) {
     const tr = this.trains.get(train);
@@ -527,6 +537,7 @@ export class Sim {
       case 'ebRelease': return this.withTrain(cmd.train, (tr) => authoriseEBRelease(this, tr, '调度'));
       case 'trainLevel': return this.withTrain(cmd.train, (tr) => cmdTrainLevel(this, tr, cmd.level));
       case 'trainDto': return this.withTrain(cmd.train, (tr) => cmdTrainDto(this, tr, cmd.on));
+      case 'door': return this.withTrain(cmd.train, (tr) => driverDoor(this, tr, cmd.side));
       case 'lineAto': return cmdLineAto(this, cmd.on);
       case 'rescue': {
         const f = this.trains.get(cmd.failed);
@@ -693,7 +704,9 @@ export class Sim {
         id: tr.id, dto: tr.dtoInhibit, vehicle: tr.vehicle, svc: tr.svc, trip: tr.tripNo, dest: tr.destText, link: tr.link, off: tr.off, dir: tr.dir,
         body, v: tr.v, level: tr.level, comm: tr.comm, mode: tr.mode, eb: tr.eb, phase: tr.phase, delay: tr.delay,
         tbStage: tr.tbStage, depotStage: tr.depotStage,
-        load: tr.load, hold: tr.hold, failed: tr.failed, doors: tr.doorsOpen, inService: tr.inService, chain: this.trainChain(tr),
+        load: tr.load, hold: tr.hold, failed: tr.failed, doors: tr.doorsOpen, doorSide: tr.doorSide, doorsAwait: tr.doorsAwait,
+        platSide: tr.manual && t0?.k === 'stop' && (tr.phase === 'dwell' || (tr.stopDist >= 0 && tr.stopDist < 400)) ? platformSide(this, tr, this.topo.berths[t0.berth].platform) : '',
+        inService: tr.inService, chain: this.trainChain(tr),
         maReason: tr.maReason, maDist: tr.maDist, vPermit: tr.vPermit, nextSig: tr.nextSignal,
         task: t0 ? describeTask(this, t0) : '—', kind: tr.tripId >= 0 ? this.plan.trips[tr.tripId].kind : '',
         rm: tr.mode === 'RM',
@@ -720,7 +733,7 @@ export class Sim {
       stats: {
         online: this.trainList.length, inService: this.trainList.filter((t) => t.inService).length, late, maxDelay,
         punctuality: this.depTotal ? this.depOnTime / this.depTotal : 1, tripsDone: this.tripsDone, tripsPlanned,
-        passengers: this.passengersServed, stepsPerSec: this.stepsPerSec, speedWanted: this.speedWanted, speedActual: this.stepsPerSec * FIXED_DT, droppedPerSec: this.droppedPerSec,
+        passengers: this.passengersServed, stepsPerSec: this.stepsPerSec, speedWanted: this.speedWanted, speedActual: this.stepsPerSec * FIXED_DT, droppedPerSec: this.droppedPerSec, speedCap: this.speedCap(),
       },
       activeRoutes: Array.from(this.routes.keys()),
       faults: this.faults.filter((f) => !f.repaired || this.t - f.repairAt < 600),
@@ -788,6 +801,7 @@ export function describeCommand(sim: Sim, cmd: Command): string {
     case 'ebRelease': return `授权缓解紧急制动 ${tn(cmd.train)}`;
     case 'trainLevel': return `列车控制级别 ${tn(cmd.train)} → ${cmd.level === 'AUTO' ? '自动' : cmd.level}`;
     case 'trainDto': return `${cmd.on ? '恢复DTO' : '降级ATO'} ${tn(cmd.train)}`;
+    case 'door': return `${tn(cmd.train)} ${cmd.side === 'L' ? '左' : '右'}侧车门`;
     case 'lineAto': return cmd.on ? '全线转ATO运营（DTO兼容模式）' : '全线恢复DTO运营';
     case 'rescue': return `组织救援 ${tn(cmd.rescuer)}→${tn(cmd.failed)}`;
     case 'addTrain': return `加开列车 ${topo.depots[cmd.depot].short}`;

@@ -214,6 +214,10 @@ export interface Train {
   phaseSince: number;
   dwellUntil: number;
   doorsOpen: boolean;
+  /** manual driving: side whose doors the driver has opened ('' all closed) */
+  doorSide: '' | 'L' | 'R';
+  /** manual driving: stopped at the mark, waiting for the driver to open the doors */
+  doorsAwait: boolean;
   arrivedAt: number;
   depReadyAt: number;
   /** Door cycle complete; DEP is recorded only when wheels start. */
@@ -302,7 +306,11 @@ export interface DmiData {
 }
 
 export interface StopScore { t: number; station: number; err: number; score: number; note: string }
-export interface DriveRecord { stops: StopScore[]; overspeed: number; spad: number; since: number }
+export interface DriveRecord {
+  stops: StopScore[]; overspeed: number; spad: number; since: number;
+  /** current station approach: brake releases while moving (0 at the stop = 一把闸), braking now, stopped short once (二次对标) */
+  releases: number; braking: boolean; restop: boolean;
+}
 
 // ---------------------------------------------------------------- infrastructure state
 
@@ -482,6 +490,7 @@ export type Command =
   | { c: 'trainLevel'; train: number; level: ForceLevel }
   /** DTO allowed for the train (on) or degraded to ATO with the driver (off) */
   | { c: 'trainDto'; train: number; on: boolean }
+  | { c: 'door'; train: number; side: 'L' | 'R' }
   /** whole line: ATO with drivers (on) or back to DTO (off) */
   | { c: 'lineAto'; on: boolean }
   | { c: 'rescue'; failed: number; rescuer: number }
@@ -563,6 +572,10 @@ export interface TrainSnap {
   hold: boolean;
   failed: boolean;
   doors: boolean;
+  doorSide: '' | 'L' | 'R';
+  doorsAwait: boolean;
+  /** side of the platform at the stop the train stands at or approaches ('' none) */
+  platSide: '' | 'L' | 'R';
   inService: boolean;
   chain: number;
   maReason: string;
@@ -631,7 +644,7 @@ export interface Metrics {
   stranded: number;
   cleared: number;
   limited: number;
-  safety: { spad: number; overspeed: number; rmNearMiss: number; unsafeAuth: number; espIgnored: number; overrun: number };
+  safety: { spad: number; overspeed: number; rmNearMiss: number; unsafeAuth: number; espIgnored: number; overrun: number; wrongDoor: number };
   callsAnswered: number;
   callsExpired: number;
   faults: number;
@@ -713,6 +726,8 @@ export interface Snapshot {
     speedActual: number;
     /** simulated seconds per wall second dropped: the CPU did not keep up */
     droppedPerSec: number;
+    /** acceleration limit while a CM / RM train runs (Infinity: none) */
+    speedCap: number;
   };
   activeRoutes: number[];
   faults: Fault[];

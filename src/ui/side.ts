@@ -167,6 +167,9 @@ export class SidePanel {
       }
     }
     this.audio.setRinging(ringing.length > 0 && !snap.autoRadio);
+    // the manual cab: warning above the permitted speed (RM 25 km/h), before the EB
+    const cab = snap.trains.find((t) => t.manual);
+    this.audio.setOverspeed(!!cab && cab.phase === 'run' && !cab.eb && cab.v > cab.vPermit + 0.05);
     const key = calls.map((c) => `${c.id}:${c.state}:${Math.ceil((c.deadline - snap.t) / 5)}`).join(',') + snap.autoRadio;
     if (key === this.callsKey) return;
     this.callsKey = key;

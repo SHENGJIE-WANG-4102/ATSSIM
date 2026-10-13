@@ -44,6 +44,8 @@ export interface ScanResult {
   maTrain: number;
   /** nearest physical obstacle (train, buffer, undetected switch) */
   hardDist: number;
+  /** what the nearest physical obstacle is */
+  hardCode: HaltCode;
   stopDist: number;
   constraints: number[]; // flat [d, v, ...]
   vBody: number;
@@ -75,7 +77,7 @@ export function goalBerth(tr: Train): number {
 
 function obstacle(res: ScanResult, d: number, reason: string, code: HaltCode, hard = false, train = -1) {
   if (d < res.maDist) { res.maDist = Math.max(0, d); res.maReason = reason; res.maCode = code; res.maTrain = train; }
-  if (hard && d < res.hardDist) res.hardDist = Math.max(0, d);
+  if (hard && d < res.hardDist) { res.hardDist = Math.max(0, d); res.hardCode = code; }
 }
 
 /** a train (other than self) with its body in the section, -1 none */
@@ -122,7 +124,7 @@ export function rescueRouteReady(sim: Sim, tr: Train, signal: number): boolean {
 
 export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP): ScanResult {
   const { topo } = sim;
-  const res: ScanResult = { maDist: Infinity, maReason: '', maCode: 'NONE', maTrain: -1, hardDist: Infinity, stopDist: Infinity, constraints: [], vBody: Infinity, nextSignal: -1, nextSignalDist: Infinity, maSignals: [] };
+  const res: ScanResult = { maDist: Infinity, maReason: '', maCode: 'NONE', maTrain: -1, hardDist: Infinity, hardCode: 'NONE', stopDist: Infinity, constraints: [], vBody: Infinity, nextSignal: -1, nextSignalDist: Infinity, maSignals: [] };
   const atp = tr.mode !== 'RM';
   // a manually driven RM train is on sight: authority limits are advisory, the scan goes on to find physical obstacles
   const onSight = tr.manual && tr.mode === 'RM';
@@ -638,7 +640,9 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     if (tr.v <= 0.01) tr.v = 0;
   } else if (tr.manual) {
     a = notchAccel(tr.v, tr.notch);
-    if (standStill && a > 0) a = 0;
+    // door-closed loop: no traction with any door open
+    if ((standStill || tr.doorSide || tr.doorsOpen) && a > 0) a = 0;
+    trackApproach(tr);
   } else {
     a = controlAccel(tr.v, vT, stopAt);
   }
@@ -650,9 +654,13 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     // the driver controls the stop; only physical obstacles stop the train regardless
     const hard = Math.max(0, scan.hardDist + 0.3);
     if (ds > hard) {
-      if (tr.v > 0.5) {
+      // coupling up to a failed train: contact at no more than 3 km/h
+      const coupling = scan.hardCode === 'RESCUE';
+      if (tr.v > (coupling ? PERF.vCouple : 0.5)) {
         sim.metrics.safety.rmNearMiss++;
-        sim.log('B', '列车', `列车 ${tr.svc}-${tr.tripNo} 人工驾驶未能在障碍物前停车（${scan.maReason}），紧急停车`);
+        sim.log('B', '列车', coupling
+          ? `列车 ${tr.svc}-${tr.tripNo} 救援连挂速度 ${(tr.v * 3.6).toFixed(1)} km/h，超过 3 km/h`
+          : `列车 ${tr.svc}-${tr.tripNo} 人工驾驶未能在障碍物前停车（${scan.maReason}），紧急停车`);
       }
       ds = hard;
       tr.v = 0;
@@ -688,6 +696,14 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     }
   }
   computeBody(sim, tr);
+}
+
+/** 一把闸: brake releases while moving in the last 200 m before a manual station stop */
+function trackApproach(tr: Train) {
+  const d = tr.drv;
+  if (!(tr.stopDist < 200) || tr.tasks[0]?.k !== 'stop') return;
+  if (tr.notch < 0 && tr.notch > -8) d.braking = true;
+  else if (d.braking && tr.notch >= 0 && tr.v > 0.3) { d.releases++; d.braking = false; }
 }
 
 /** a route the MA relied on was released: recompute the train's authority now */

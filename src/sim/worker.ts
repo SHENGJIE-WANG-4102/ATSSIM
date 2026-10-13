@@ -101,12 +101,17 @@ function stepOnce(keepCheckpoints = true) {
   }
 }
 
-function runUntil(to: number, initial = false) {
+function runUntil(to: number, initial = false, stopOnCap = false) {
   const target = dayTime(to);
   if (!sim || target === null) return;
   jumping = true;
   let lastProgress = performance.now();
   while (sim.t < target) {
+    // a fast-forward stops when a CM / RM train comes onto the line (Sim.speedCap)
+    if (stopOnCap && sim.speedCap() < Infinity) {
+      sim.log('I', '系统', '线上有人工驾驶（CM/RM）列车，快进停止');
+      break;
+    }
     stepOnce();
     if (performance.now() - lastProgress > 200) {
       lastProgress = performance.now();
@@ -188,8 +193,10 @@ function tick() {
   const dtWall = Math.min(0.25, (now - lastWall) / 1000);
   lastWall = now;
   if (!paused) {
-    acc += dtWall * speed;
-    wantWindow += dtWall * speed;
+    // CM / RM trains on the line hold the acceleration down (Sim.speedCap)
+    const run = Math.min(speed, sim.speedCap());
+    acc += dtWall * run;
+    wantWindow += dtWall * run;
     const t0 = performance.now();
     let steps = 0;
     while (acc >= FIXED_DT) {
@@ -244,7 +251,7 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       paused = m.paused;
       break;
     case 'jump':
-      if (sim && Number.isFinite(m.to) && m.to > sim.t) runUntil(m.to);
+      if (sim && Number.isFinite(m.to) && m.to > sim.t) runUntil(m.to, false, true);
       break;
     case 'cmd': {
       if (!sim) return;

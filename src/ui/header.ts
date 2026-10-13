@@ -149,10 +149,12 @@ export class Header {
     // the worker drops the backlog it cannot compute: say how fast it really runs
     const got = s.stats.speedActual;
     const short = s.stats.speedWanted > 1 && got < s.stats.speedWanted * 0.9;
-    const txt = short ? `实际 ${Math.round(got)}×` : '';
+    const capped = s.stats.speedCap < this.speed;
+    const txt = capped ? `人工驾驶 限${s.stats.speedCap}×` : short ? `实际 ${Math.round(got)}×` : '';
     if (this.actual.textContent !== txt) {
       this.actual.textContent = txt;
-      this.actual.title = short ? `所选 ${Math.round(s.stats.speedWanted)}×，实际 ${got.toFixed(0)}×（${s.stats.stepsPerSec} 步/秒）；计算跟不上，每秒约 ${s.stats.droppedPerSec.toFixed(0)} 秒仿真时间的积压被舍弃（列车位置不受影响，只是推演变慢）` : '';
+      this.actual.title = capped ? `线上有CM/RM列车（人工驾驶或降级），仿真速率暂限 ${s.stats.speedCap}×；恢复自动驾驶后回到所选 ${this.speed}×`
+        : short ? `所选 ${Math.round(s.stats.speedWanted)}×，实际 ${got.toFixed(0)}×（${s.stats.stepsPerSec} 步/秒）；计算跟不上，每秒约 ${s.stats.droppedPerSec.toFixed(0)} 秒仿真时间的积压被舍弃（列车位置不受影响，只是推演变慢）` : '';
     }
     const dt = s.dayType === 'weekday' ? '工作日图' : '双休日/节假日图';
     this.date.textContent = `${s.dateLabel} · ${dt}`;

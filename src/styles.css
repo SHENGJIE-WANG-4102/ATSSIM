@@ -239,6 +239,7 @@ tr.recovered td.txt { color: var(--ok); }
 /* DMI */
 .dmi-wrap { display: flex; flex-direction: column; gap: 10px; align-items: stretch; max-width: 780px; }
 .dmi { width: 100%; height: auto; box-sizing: border-box; background: #161d49; border: 10px solid #1d2026; border-radius: 10px; box-shadow: 0 0 0 1px var(--border-strong); }
+.stopview { width: 100%; height: auto; box-sizing: border-box; border: 1px solid var(--border); border-radius: 6px; background: #0b0f16; }
 .lever { display: flex; flex-direction: row; align-items: stretch; gap: 2px; background: #08111a; border: 1px solid var(--border); border-radius: 6px; padding: 6px; box-sizing: border-box; }
 .lever .notch { flex: 1; min-width: 0; height: 60px; display: flex; align-items: center; justify-content: center; font: 600 20px var(--font-mono); color: var(--text-dim); border-radius: 3px; cursor: pointer; border: 1px solid transparent; }
 .lever .notch.t { color: #9fe0b5; }

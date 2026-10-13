@@ -133,16 +133,27 @@ It shows:
 * the target and movement-authority readout.
 
 **人工驾驶 CM** (supervised) or **RM** (restricted, ≤ 25 km/h, on sight; ★, train must be
-at a stand) hands the train to you. The lever has traction P1–P4, coast, brake B1–B7
-and emergency:
+at a stand) hands the train to you. The single master controller (JRETS layout) has
+traction P1–P4, N, brake B1–B7 and emergency; the doors follow TSW:
 
 | Input | Effect |
 |---|---|
-| ↑ / W | more traction |
-| ↓ / S | more brake |
-| X | coast |
+| Z / ↑ | more traction / release brake |
+| Q / ↓ | more brake / less traction |
+| S | handle to N |
 | E | emergency brake |
+| Y / U | right / left doors (again: close) |
 | mouse | click a notch, or scroll on the lever |
+
+Only one train can be driven at a time. While any CM / RM train runs (yours or a
+degraded one) the simulation runs at most 5× and a fast-forward stops.
+
+At a stop you open and close the doors yourself; no traction with a door open. In CM
+the ATP enables only the platform side (green arrow by the DMI door icon); in RM
+there is no door enable — the wrong side opens and is an A-level incident — and the
+PSD is worked from the PSL by station staff (+15 s each way). Within 300 m of the
+stop a close-up under the DMI shows the platform doors, the last PSD pillar and your
+cab window: stopped right, the window stands at that pillar (D55).
 
 ATP supervises all the time:
 
@@ -492,7 +503,7 @@ No vendor logo or bezel is drawn.
   * the stopping error when stopped off the mark.
 
   It replaces an ETCS-style target distance bar, which none of the references has.
-* **Status line** under the door mode: 紧急制动 (red), 超速 / 扣车 (yellow), 人工驾驶 (white).
+* **Status line** under the door mode: 紧急制动 (red), 超速 / 扣车 (yellow), 非站台侧车门开启 (red), 停稳，待开门 / 人工驾驶 (white).
 * **Overspeed** turns the hub digits yellow; an emergency brake turns them red.
 * **Log messages taken from the photos:** `DMI激活`, `连接丢失`, `ATO/ATP模式可用`, `CM/AM模式可用`.
 * **Log messages added in the same style:**
@@ -619,7 +630,12 @@ Everything below is plausible but **not** taken from a public source.
     brake (B1–B7 = 1/7–7/7 of 1.0 m/s²) linearly; emergency is 1.25 m/s²;
   * the ATP permitted speed is the curve to the end of authority at a guaranteed
     0.95 m/s² plus 0.15 m/s tolerance (the ATO drives the 0.75 m/s² planning curve);
-  * stop scoring thresholds are 0.3 / 0.5 / 0.75 / 1.0 m;
+  * stop scoring: accuracy (0.3 / 0.5 / 0.75 / 1.0 m) 80 points, one continuous
+    brake application in the last 200 m (一把闸) 20 points less 10 per release, a
+    second approach after stopping short −30;
+  * platform sides: island unless the track-layout PDF shows a side platform
+    (创新中路, 川沙, 凌空路, 浦东1号2号航站楼, 广兰路 DN); PSD and car door geometry of
+    the close-up is approximate;
   * overruns of up to 15 m are backed up automatically (in reality only with
     dispatcher permission).
 * Scenario scoring weights (delay, affected passengers, delivery, calls, safety) are our

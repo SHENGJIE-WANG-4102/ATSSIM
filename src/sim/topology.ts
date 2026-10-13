@@ -104,6 +104,8 @@ export interface TPlatform {
   name: string;
   /** platform whose waiting passengers this one shares (广兰路 middle-track face of the UP island) */
   pool?: number;
+  /** side of the track the platform edge lies on (north = UP main side) */
+  face: 'N' | 'S';
 }
 
 export type BerthKind = 'platform' | 'tail' | 'siding' | 'depot';
@@ -869,6 +871,8 @@ export function buildTopology(): Topology {
       const p: TPlatform = {
         id: platforms.length, station: i, track: t, link: lid, section: links[lid].section,
         name: `${STATIONS[i].name} ${t === 'DN' ? '下行' : '上行'}站台`,
+        // UP runs north of DN: an island lies between them, a side platform outside
+        face: (STATIONS[i].sidePlatform?.includes(t) ?? false) === (t === 'UP') ? 'N' : 'S',
       };
       links[lid].platform = p.id;
       platforms.push(p);
@@ -882,7 +886,7 @@ export function buildTopology(): Topology {
     const i = lb.def.station;
     const p: TPlatform = {
       id: platforms.length, station: i, track: 'UP', link: lb.platLink, section: links[lb.platLink].section,
-      name: `${STATIONS[i].name} 中间线站台`, pool: stationPlat[i].UP,
+      name: `${STATIONS[i].name} 中间线站台`, pool: stationPlat[i].UP, face: 'N',
     };
     links[lb.platLink].platform = p.id;
     platforms.push(p);

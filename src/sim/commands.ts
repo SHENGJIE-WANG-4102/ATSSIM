@@ -6,7 +6,7 @@ import { FAULT_LABELS, SURGE_MAX } from './faults';
 const COMMANDS = new Set([
   'setRoute', 'cancelRoute', 'guideRoute', 'autoPass', 'ars', 'switchMove', 'switchLock', 'switchFieldLock',
   'axleReset', 'sectionUnlock', 'setTsr', 'cancelTsr', 'platformHold', 'platformSkip', 'platformEsp', 'psdBypass',
-  'trainHold', 'trainSkip', 'turnback', 'withdraw', 'recoverService', 'exchangeDuty', 'standby', 'authRM', 'ebRelease', 'trainLevel', 'trainDto', 'lineAto', 'rescue', 'addTrain',
+  'trainHold', 'trainSkip', 'turnback', 'withdraw', 'recoverService', 'exchangeDuty', 'standby', 'authRM', 'ebRelease', 'trainLevel', 'trainDto', 'lineAto', 'door', 'rescue', 'addTrain',
   'overlay', 'zoneLevel', 'ack', 'fault', 'repair', 'trainMaintenance', 'sectionBlock', 'switchBlock', 'manual', 'radio', 'radioAuto',
   'env', 'randomFaults', 'scenarioEnd', 'bookmark',
 ]);
@@ -20,7 +20,7 @@ export function validateCommand(sim: Sim, cmd: Command): string | null {
     setTsr: ['sections', 'kmh'], cancelTsr: ['sections'], platformHold: ['platform', 'on'], platformSkip: ['platform', 'on'],
     platformEsp: ['platform', 'on'], psdBypass: ['platform', 'on'], trainHold: ['train', 'on'], trainSkip: ['train', 'station', 'on'],
     turnback: ['train', 'station'], withdraw: ['train'], recoverService: ['train'], exchangeDuty: ['train', 'with'], standby: ['train'], authRM: ['train'], ebRelease: ['train'], trainLevel: ['train', 'level'],
-    trainDto: ['train', 'on'], lineAto: ['on'],
+    trainDto: ['train', 'on'], lineAto: ['on'], door: ['train', 'side'],
     rescue: ['failed', 'rescuer'], addTrain: ['depot', 'dir', 'to', 'time'], overlay: ['id', 'from', 'to', 'headway'],
     zoneLevel: ['zones', 'level'], ack: ['ids'], fault: ['kind', 'target', 'duration'], repair: ['fault'], trainMaintenance: ['fault'],
     sectionBlock: ['sections', 'on'], switchBlock: ['sw', 'on'], manual: ['train', 'mode'], radio: ['call', 'option'],
@@ -59,6 +59,7 @@ export function validateCommand(sim: Sim, cmd: Command): string | null {
   }
   if (cmd.c === 'sectionBlock' && !cmd.on && cmd.sections.some(s => sim.sec[s].poss >= 0)) return '施工封锁须施工销点后解封';
   if (cmd.c === 'manual' && !['CM', 'RM', 'AUTO'].includes(cmd.mode)) return '无效驾驶模式';
+  if (cmd.c === 'door' && !['L', 'R'].includes(cmd.side)) return '无效车门侧';
   if (cmd.c === 'randomFaults' && ![0, 1, 2, 3].includes(cmd.level)) return '故障等级须为0–3';
   if (cmd.c === 'env' && cmd.wind !== undefined && ![0, 1, 2, 3].includes(cmd.wind)) return '大风等级须为0–3';
   if (cmd.c === 'addTrain' && !['DN', 'UP'].includes(cmd.dir)) return '无效行车方向';

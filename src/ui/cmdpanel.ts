@@ -11,6 +11,7 @@ import { STATIONS, LINE_INFO } from '../data/line2';
 import { SEC, SW, SIGF, PLT, SIG_ASPECT, type TrackDir, type TrainSnap } from '../sim/model';
 import { turnbackAt, exitStation, OVERLAY_PRESETS } from '../sim/timetable';
 import { fmtTime, fmtDelay } from './theme';
+import { StopView } from './stopview';
 import { Dmi } from './dmi';
 import { renderPis } from './pisview';
 
@@ -34,6 +35,7 @@ export class CommandPanel {
   private key = '';
   private live: (() => void) | null = null;
   dmi: Dmi;
+  stopView: StopView;
   /** train whose DMI data the worker is sending, -1 none */
   private dmiTrain = -1;
 
@@ -41,6 +43,7 @@ export class CommandPanel {
     this.store = store;
     this.hooks = hooks;
     this.dmi = new Dmi(() => hooks.resolution());
+    this.stopView = new StopView(() => hooks.resolution());
     this.dmi.onNotch = (n) => {
       const sel = this.store.selection;
       if (sel?.kind === 'train') this.store.send({ type: 'drive', train: sel.id, notch: n });
@@ -51,6 +54,7 @@ export class CommandPanel {
 
   refreshResolution() {
     this.dmi.setResolution(this.hooks.resolution());
+    this.stopView.setResolution(this.hooks.resolution());
   }
 
   private render(force: boolean) {
@@ -336,7 +340,7 @@ export class CommandPanel {
       ...(t0.manual
         ? [this.btn('恢复自动驾驶', { title: `列车 ${t0.svc}-${t0.trip} 恢复自动驾驶（CBTC级 DTO 或降级ATO时 AM，TBTC级 AM）`, cmd: { c: 'manual', train: id, mode: 'AUTO' } }, 'primary')]
         : [
-          this.btn('人工驾驶 CM', { title: `接管列车 ${t0.svc}-${t0.trip}：人工驾驶 CM（ATP 防护）`, cmd: { c: 'manual', train: id, mode: 'CM' }, detail: '由你操纵牵引/制动手柄驾驶列车（↑/W 牵引、↓/S 制动、X 惰行、E 紧急制动）。ATP 监督速度与移动授权，超速将触发紧急制动并计入安全违章。停站对标将评分。建议仿真速率 1×。' }, 'warn'),
+          this.btn('人工驾驶 CM', { title: `接管列车 ${t0.svc}-${t0.trip}：人工驾驶 CM（ATP 防护）`, cmd: { c: 'manual', train: id, mode: 'CM' }, detail: '由你操纵牵引/制动手柄驾驶列车（Z 牵引、Q 制动、S 中立位、E 紧急制动；Y/U 右/左侧车门）。到站停准后由你开关门，车门关好才能牵引。ATP 监督速度与移动授权，超速将触发紧急制动并计入安全违章。停站对标将评分。人工驾驶期间仿真速率最高 5×。' }, 'warn'),
           this.btn('人工驾驶 RM', { title: `接管列车 ${t0.svc}-${t0.trip}：限制人工驾驶 RM（≤25km/h）`, cmd: { c: 'manual', train: id, mode: 'RM' }, critical: true, detail: 'RM 模式无移动授权防护，司机目视行车，限速25km/h。越过红灯将记为冒进信号。须先停车。' }, 'danger'),
         ]),
     );
@@ -345,7 +349,8 @@ export class CommandPanel {
     this.store.send({ type: 'dmi', train: id });
     this.dmi.showLever(t0.manual);
     this.el.append(this.dmi.el);
-    if (t0.manual) this.el.append(h('div', { class: 'keys' }, '手柄：', h('b', {}, '↑ W'), ' 加牵引 · ', h('b', {}, '↓ S'), ' 加制动 · ', h('b', {}, 'X'), ' 惰行 · ', h('b', {}, 'E'), ' 紧急制动 · 鼠标滚轮/点击手柄档位'));
+    if (t0.manual) this.el.append(this.stopView.el);
+    if (t0.manual) this.el.append(h('div', { class: 'keys' }, '手柄：', h('b', {}, 'Z ↑'), ' 加牵引 · ', h('b', {}, 'Q ↓'), ' 加制动 · ', h('b', {}, 'S'), ' 中立位 · ', h('b', {}, 'E'), ' 紧急制动 · ', h('b', {}, 'Y'), ' 右门 · ', h('b', {}, 'U'), ' 左门 · 鼠标滚轮/点击手柄档位'));
     const scores = h('div', { class: 'scores' });
     if (t0.drv || t0.manual) this.el.append(h('div', { class: 'sect-title' }, '人工驾驶记录（对标误差 / 得分）'), scores);
     this.el.append(this.liveKv(() => {
@@ -365,6 +370,7 @@ export class CommandPanel {
       if (!t) return;
       const snap = this.store.snap!;
       this.dmi.draw(t, snap.dmi?.train === id ? snap.dmi : null, snap.t);
+      if (t.manual) this.stopView.draw(t);
       if (t.drv) {
         clear(scores);
         const st = t.drv.stops.slice(-8);

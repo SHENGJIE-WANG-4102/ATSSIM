@@ -15,10 +15,39 @@ import { scanAhead, goalBerth, refreshAuthority, MA_NEAR } from '../src/sim/move
 import { dmiTrainNo } from '../src/sim/dmi';
 import { PERF } from '../src/sim/dynamics';
 import { platformBerth } from '../src/sim/timetable';
+import { platformSide } from '../src/sim/ats';
+import type { Train } from '../src/sim/model';
 
 const H = 8 * 3600;
 const st = (sim: Sim, name: string) => sim.topo.stations.find((s) => s.name === name)!;
 const check = (sim: Sim) => { assertNoCollision(sim); assertIntegrity(sim); };
+/** the platform side of the stop a train stands at */
+const platSideOf = (sim: Sim, tr: Train) => platformSide(sim, tr, sim.topo.berths[(tr.tasks[0] as { berth: number }).berth].platform);
+/** a driver at a stop: opens the platform-side doors, closes them when the countdown runs out */
+const workDoors = (sim: Sim, tr: Train) => {
+  if (tr.phase !== 'dwell' || tr.tasks[0]?.k !== 'stop') return;
+  if (tr.doorsAwait || (tr.doorsOpen && sim.t >= tr.dwellUntil - 2)) sim.command({ c: 'door', train: tr.id, side: platSideOf(sim, tr) });
+};
+/** a simple driver: traction to ~55 km/h, brake on a 0.7 m/s² curve to the stopping point */
+const driveToNextStop = (sim: Sim, tr: Train, guardSteps = 6000) => {
+  const startStops = tr.stopsMade;
+  let guard = 0;
+  while (tr.stopsMade === startStops && guard++ < guardSteps) {
+    workDoors(sim, tr);
+    if (tr.phase === 'run') {
+      const err = Number.isFinite(tr.stopDist) ? tr.stopDist : Infinity;
+      const need = err < Infinity ? (tr.v * tr.v) / (2 * Math.max(0.1, err - 0.1)) : 0;
+      const vCap = Math.min(55 / 3.6, tr.vPermit - 2);
+      if (need > 0.75 || (err < 1.5 && tr.v > 0.2)) tr.notch = Math.max(-7, -Math.ceil((need / PERF.bService) * 7));
+      else if (err < 0.6) tr.notch = -7;
+      else if (tr.v < vCap - 1) tr.notch = 4;
+      else if (tr.v > vCap) tr.notch = -2;
+      else tr.notch = 0;
+    }
+    sim.step();
+    check(sim);
+  }
+};
 
 describe('blocking (封锁)', () => {
   it('a blocked section refuses routes and stops trains before it; unblocking restores service', () => {
@@ -62,22 +91,7 @@ describe('manual driving', () => {
     expect(sim.command({ c: 'manual', train: tr.id, mode: 'CM' }).ok).toBe(true);
     expect(tr.manual).toBe(true);
     const startStops = tr.stopsMade;
-    // a simple driver: traction to ~55 km/h, brake on a 0.7 m/s² curve to the stopping point
-    let guard = 0;
-    while (tr.stopsMade === startStops && guard++ < 6000) {
-      if (tr.phase === 'run') {
-        const err = Number.isFinite(tr.stopDist) ? tr.stopDist : Infinity;
-        const need = err < Infinity ? (tr.v * tr.v) / (2 * Math.max(0.1, err - 0.1)) : 0;
-        const vCap = Math.min(55 / 3.6, tr.vPermit - 2);
-        if (need > 0.75 || (err < 1.5 && tr.v > 0.2)) tr.notch = Math.max(-7, -Math.ceil((need / PERF.bService) * 7));
-        else if (err < 0.6) tr.notch = -7;
-        else if (tr.v < vCap - 1) tr.notch = 4;
-        else if (tr.v > vCap) tr.notch = -2;
-        else tr.notch = 0;
-      }
-      sim.step();
-      check(sim);
-    }
+    driveToNextStop(sim, tr);
     expect(tr.stopsMade).toBe(startStops + 1);
     expect(tr.drv.stops.length).toBe(1);
     expect(Math.abs(tr.drv.stops[0].err)).toBeLessThanOrEqual(1);
@@ -108,11 +122,92 @@ describe('manual driving', () => {
     tr.notch = 4;
     let maxV = 0;
     for (let i = 0; i < 3000; i++) {
+      workDoors(sim, tr);
       sim.step();
       check(sim);
       maxV = Math.max(maxV, tr.v);
     }
     expect(maxV).toBeLessThan(PERF.vRM + PERF.atpTolerance + 0.2);
+  });
+});
+
+describe('driver doors and the acceleration limit', () => {
+  const dwellingDN = (sim: Sim) => {
+    const find = () => sim.trainList.find((t) => t.phase === 'dwell' && t.inService && t.doorsOpen && dirOf(sim, t) === 'DN' && sim.trainChain(t) > 9000 && sim.trainChain(t) < 20000);
+    let tr = find();
+    while (!tr) { runFor(sim, 5); tr = find(); }
+    return tr;
+  };
+
+  it('CM: the ATP enables only the platform side of a train at its mark; no traction with doors open', () => {
+    const sim = makeSim('weekday', H);
+    expect(sim.speedCap()).toBe(Infinity);
+    const tr = dwellingDN(sim);
+    expect(sim.command({ c: 'manual', train: tr.id, mode: 'CM' }).ok).toBe(true);
+    expect(sim.speedCap()).toBe(5);
+    // one cab at a time
+    const other = sim.trainList.find((t) => t !== tr && t.inService && t.phase === 'dwell')!;
+    expect(sim.command({ c: 'manual', train: other.id, mode: 'CM' }).ok).toBe(false);
+    // the doors the signalling opened stay open until the driver closes them
+    runFor(sim, 120, check);
+    expect(tr.phase).toBe('dwell');
+    expect(tr.doorsOpen).toBe(true);
+    driveToNextStop(sim, tr);
+    expect(tr.phase).toBe('dwell');
+    expect(tr.doorsAwait).toBe(true);
+    expect(tr.doorsOpen).toBe(false);
+    const side = platSideOf(sim, tr);
+    // 2号线 islands: the platform is on the left of a DN train at an ordinary station
+    expect(side).toBe('L');
+    const wrong = sim.command({ c: 'door', train: tr.id, side: 'R' });
+    expect(wrong.ok).toBe(false);
+    expect(wrong.msg).toContain('门使能');
+    expect(tr.doorSide).toBe('');
+    expect(sim.command({ c: 'door', train: tr.id, side }).ok).toBe(true);
+    expect(tr.doorsOpen).toBe(true);
+    const p = sim.topo.berths[(tr.tasks[0] as { berth: number }).berth].platform;
+    expect(sim.plat[p].psd).toBe('open');
+    tr.notch = 4;
+    runFor(sim, 30, check);
+    expect(tr.v).toBe(0);
+    expect(tr.phase).toBe('dwell');
+    tr.notch = 0;
+    expect(sim.command({ c: 'door', train: tr.id, side }).ok).toBe(true);
+    expect(tr.doorsOpen).toBe(false);
+    expect(sim.plat[p].psd).toBe('closed');
+    runFor(sim, 10, check);
+    expect(tr.phase).toBe('run');
+    expect(sim.command({ c: 'manual', train: tr.id, mode: 'AUTO' }).ok).toBe(true);
+    expect(sim.speedCap()).toBe(Infinity);
+  });
+
+  it('RM: no door enable — the wrong side opens and is an incident; the PSD is worked from the PSL', () => {
+    const sim = makeSim('weekday', H);
+    const tr = dwellingDN(sim);
+    expect(sim.command({ c: 'manual', train: tr.id, mode: 'RM' }).ok).toBe(true);
+    driveToNextStop(sim, tr, 12000);
+    expect(tr.doorsAwait).toBe(true);
+    const side = platSideOf(sim, tr);
+    const other = side === 'L' ? 'R' : 'L';
+    const r = sim.command({ c: 'door', train: tr.id, side: other });
+    expect(r.ok).toBe(true);
+    expect(tr.doorSide).toBe(other);
+    expect(sim.metrics.safety.wrongDoor).toBe(1);
+    expect(sim.events.some((e) => e.level === 'A' && e.text.includes('开错侧车门'))).toBe(true);
+    // the other side stays shut while these are open; they close with the same button
+    expect(sim.command({ c: 'door', train: tr.id, side }).ok).toBe(false);
+    expect(sim.command({ c: 'manual', train: tr.id, mode: 'AUTO' }).ok).toBe(false);
+    expect(sim.command({ c: 'door', train: tr.id, side: other }).ok).toBe(true);
+    expect(tr.doorSide).toBe('');
+    expect(sim.command({ c: 'door', train: tr.id, side }).ok).toBe(true);
+    const p = sim.topo.berths[(tr.tasks[0] as { berth: number }).berth].platform;
+    expect(sim.plat[p].psd).toBe('pslOpen');
+    // handing back to automatic driving: the signalling closes the doors and the train leaves
+    const stops = tr.stopsMade;
+    expect(sim.command({ c: 'manual', train: tr.id, mode: 'AUTO' }).ok).toBe(true);
+    runFor(sim, 240, check);
+    expect(tr.doorsOpen).toBe(false);
+    expect(tr.phase === 'run' || tr.stopsMade > stops).toBe(true);
   });
 });
 

@@ -42,7 +42,7 @@ const C = {
 
 export const NOTCHES: { v: number; label: string; cls: string }[] = [
   { v: 4, label: 'P4', cls: 't' }, { v: 3, label: 'P3', cls: 't' }, { v: 2, label: 'P2', cls: 't' }, { v: 1, label: 'P1', cls: 't' },
-  { v: 0, label: '惰行', cls: '' },
+  { v: 0, label: 'N', cls: '' },
   { v: -1, label: 'B1', cls: 'b' }, { v: -2, label: 'B2', cls: 'b' }, { v: -3, label: 'B3', cls: 'b' }, { v: -4, label: 'B4', cls: 'b' },
   { v: -5, label: 'B5', cls: 'b' }, { v: -6, label: 'B6', cls: 'b' }, { v: -7, label: 'B7', cls: 'b' }, { v: -8, label: '紧急', cls: 'eb' },
 ];
@@ -77,7 +77,7 @@ export class Dmi {
     this.canvas = h('canvas', { class: 'dmi' }) as HTMLCanvasElement;
     this.ctx = this.canvas.getContext('2d')!;
     this.canvas.addEventListener('click', (e) => this.click(e));
-    this.lever = h('div', { class: 'lever', title: '牵引/制动手柄：↑/W 加牵引 · ↓/S 加制动 · X 惰行 · E 紧急制动' });
+    this.lever = h('div', { class: 'lever', title: '牵引/制动手柄：Z/↑ 加牵引 · Q/↓ 加制动 · S 中立位 · E 紧急制动' });
     for (const n of NOTCHES) {
       const e = h('div', { class: `notch ${n.cls}`, onclick: () => this.onNotch(n.v) }, n.label);
       this.notchEls.push(e);
@@ -282,12 +282,22 @@ export class Dmi {
     roundRect(c, 418, 330, 9, 40, 2); c.fill();
     c.font = `bold 40px ${FONT}`;
     c.fillText(t.mode === 'DTO' || t.mode === 'AM' ? 'AA' : 'MM', 434, 368);
-    const dc = t.doors ? C.yellow : C.green;
+    const open = t.doors || !!t.doorSide;
+    const dc = t.doorSide && !t.doors ? C.red : open ? C.yellow : C.green;
     for (const x of [598, 624]) {
       c.fillStyle = dc;
-      roundRect(c, x + (t.doors ? (x === 598 ? -4 : 4) : 0), 330, 20, 40, 3); c.fill();
+      roundRect(c, x + (open ? (x === 598 ? -4 : 4) : 0), 330, 20, 40, 3); c.fill();
       c.fillStyle = 'rgba(0,0,0,0.35)';
-      c.fillRect(x + (t.doors ? (x === 598 ? -4 : 4) : 0) + 7, 336, 6, 28);
+      c.fillRect(x + (open ? (x === 598 ? -4 : 4) : 0) + 7, 336, 6, 28);
+    }
+    // door enable (CM: the ATP enables the platform side of a train stopped at
+    // its mark; RM has none) — a green arrow on that side of the door icon
+    if (t.manual && t.mode === 'CM' && t.platSide && (t.doorsAwait || t.doors)) {
+      const left = t.platSide === 'L';
+      const ax = left ? 584 : 660;
+      c.fillStyle = C.green;
+      c.beginPath();
+      c.moveTo(ax + (left ? -12 : 12), 350); c.lineTo(ax, 336); c.lineTo(ax, 364); c.closePath(); c.fill();
     }
     // supervision status line (extrapolated: the photos show no such state)
     let msg = '';
@@ -295,6 +305,8 @@ export class Dmi {
     if (eb) { msg = '紧急制动'; col = C.red; }
     else if (t.v * 3.6 > t.vPermit * 3.6 + 0.5) { msg = '超速'; col = C.yellow; }
     else if (t.hold) { msg = '扣车'; col = C.yellow; }
+    else if (t.manual && t.doorSide && !t.doors) { msg = '非站台侧车门开启'; col = C.red; }
+    else if (t.manual && t.doorsAwait) { msg = '停稳，待开门'; col = C.white; }
     else if (t.manual) { msg = '人工驾驶'; col = C.white; }
     if (msg) {
       c.font = `bold 26px ${FONT}`;

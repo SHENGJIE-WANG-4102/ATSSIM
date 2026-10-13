@@ -274,6 +274,7 @@ export function setManual(sim: Sim, tr: Train, mode: 'CM' | 'RM' | 'AUTO'): { ok
   if (mode === 'AUTO') {
     if (!tr.manual) return { ok: false, msg: '列车未处于人工驾驶' };
     if (tr.v > 0.1 && tr.mode === 'RM') return { ok: false, msg: 'RM 转自动驾驶须停车后进行' };
+    if (tr.doorSide && !tr.doorsOpen) return { ok: false, msg: '非站台侧车门未关闭' };
     const level: Level = cbtcAvailable(sim, tr) ? 'CBTC' : tr.level === 'CBTC' && !tr.comm ? 'CBTC' : 'TBTC';
     if (level === 'CBTC' && !tr.comm) return { ok: false, msg: '车地通信中断，不能以CBTC自动驾驶' };
     if (!setMode(sim, tr, autoMode(sim, tr, level), level, '恢复自动驾驶')) return { ok: false, msg: '当前条件下不能转换（见状态机条件）' };
@@ -281,6 +282,9 @@ export function setManual(sim: Sim, tr: Train, mode: 'CM' | 'RM' | 'AUTO'): { ok
     tr.notch = 0;
     return { ok: true, msg: `列车 ${trainLabel(tr)} 恢复 ${modeLabel(tr.mode, tr.level)} 自动驾驶` };
   }
+  // one cab at a time: a second manual train would run on with its handle left where it was
+  const other = !tr.manual && [...sim.trains.values()].find((o) => o.manual);
+  if (other) return { ok: false, msg: `列车 ${trainLabel(other)} 正在人工驾驶，请先将其恢复自动驾驶` };
   if (mode === 'RM' && tr.v > 0.1) return { ok: false, msg: '转RM模式须先停车' };
   if (mode === 'CM' && tr.level === 'CBTC' && !tr.comm) return { ok: false, msg: '车地通信中断，无ATP防护，只能以RM模式驾驶' };
   if (mode === 'CM' && sim.zoneState[sim.topo.links[tr.link].zone] === 'ZCFAIL' && tr.level === 'CBTC') return { ok: false, msg: 'ZC故障区域无移动授权，只能以RM模式驾驶' };
@@ -291,7 +295,7 @@ export function setManual(sim: Sim, tr: Train, mode: 'CM' | 'RM' | 'AUTO'): { ok
   } else if (!setMode(sim, tr, 'CM', tr.level, '转人工驾驶')) return { ok: false, msg: '当前条件下不能转CM' };
   tr.manual = true;
   tr.notch = tr.v > 0.1 ? 0 : -7;
-  tr.drv = { stops: [], overspeed: 0, spad: 0, since: sim.t };
+  tr.drv = { stops: [], overspeed: 0, spad: 0, since: sim.t, releases: 0, braking: false, restop: false };
   return { ok: true, msg: `列车 ${trainLabel(tr)} 转人工驾驶 ${mode}${mode === 'RM' ? '（≤25km/h，目视行车；越过关闭的信号机须调度逐架授权）' : '（ATP防护）'}` };
 }
 

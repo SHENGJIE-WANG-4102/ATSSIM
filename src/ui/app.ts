@@ -531,13 +531,23 @@ export class App {
     if (tr?.manual) {
       let n: number | null = null;
       const k = e.key.toLowerCase();
-      if (e.key === 'ArrowUp' || k === 'w') n = Math.min(4, tr.notch + 1);
-      else if (e.key === 'ArrowDown' || k === 's') n = Math.max(-7, tr.notch - 1);
-      else if (k === 'x') n = 0;
+      // single master controller, JRETS layout: Z power / release, Q brake, S neutral, E emergency
+      const up = e.key === 'ArrowUp' || k === 'z';
+      if (up) n = Math.min(4, tr.notch + 1);
+      else if (e.key === 'ArrowDown' || k === 'q') n = Math.max(-7, tr.notch - 1);
+      else if (k === 's') n = 0;
       else if (k === 'e') n = -8;
+      // door buttons, TSW layout: Y right, U left; the same side again closes
+      if ((k === 'y' || k === 'u') && !e.repeat) {
+        e.preventDefault();
+        this.store.command({ c: 'door', train: tr.id, side: k === 'y' ? 'R' : 'L' }).then((r) => toast(r.msg, r.ok));
+        return;
+      }
       if (n !== null) {
         e.preventDefault();
-        if (tr.notch === -8 && n > -8 && k !== 'x' && e.key !== 'ArrowUp' && k !== 'w') return;
+        if (e.repeat && k !== 'z' && k !== 'q' && !e.key.startsWith('Arrow')) return;
+        // out of EB only by moving the handle towards release or straight to N
+        if (tr.notch === -8 && n > -8 && k !== 's' && !up) return;
         this.store.send({ type: 'drive', train: tr.id, notch: n });
         return;
       }
