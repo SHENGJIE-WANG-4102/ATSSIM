@@ -73,6 +73,12 @@ html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
 select, input[type=number], input[type=text], input[type=time] {
   height: var(--ctl); background: #0d1622; border: 1px solid var(--border-strong); color: #fff; font: 24px var(--font-cn); padding: 0 12px; border-radius: 4px;
 }
+/* drop-down pickers (timepick.ts) and the simulation rate */
+.tpick { display: inline-flex; align-items: center; gap: 4px; }
+select.tp { padding: 0 6px; }
+.tp-sep { color: var(--text-dim); font-size: 24px; }
+select.speed-sel { min-width: 96px; padding: 0 8px; }
+option { background: #0d1622; color: #fff; }
 input[type=checkbox] { width: 32px; height: 32px; accent-color: var(--line); }
 input[type=range] { accent-color: var(--line); height: var(--ctl); }
 
@@ -82,7 +88,11 @@ input[type=range] { accent-color: var(--line); height: var(--ctl); }
   background: linear-gradient(#0b121b, #070c12); border-bottom: 2px solid var(--border-strong); overflow: hidden;
 }
 .hdr > div { display: flex; align-items: center; gap: 12px; padding: 0 16px; height: 110px; border-right: 1px solid var(--border); white-space: nowrap; }
-.hdr > .hdr-brand { flex: 1 0 auto; justify-content: center; gap: 16px; }
+.hdr > .hdr-brand { flex: 1 1 0; min-width: 0; overflow: hidden; justify-content: center; gap: 16px; container: brand / inline-size; }
+/* the name gives way first, so the status and KPIs stay on the first row:
+   the title, then the Metro logo; the line badge stays */
+@container brand (max-width: 560px) { .hdr-brand > div { display: none; } }
+@container brand (max-width: 250px) { .hdr-brand .metro-logo { display: none; } }
 .metro-logo { width: 68px; height: 68px; flex: none; }
 .line-badge { height: 68px; width: auto; flex: none; }
 .hdr-title { font-size: 32px; color: #fff; letter-spacing: 2px; font-weight: 700; }
@@ -105,6 +115,8 @@ input[type=range] { accent-color: var(--line); height: var(--ctl); }
 .kpi .v { font: 600 32px/1 var(--font-mono); color: #fff; }
 .kpi .k { font-size: 20px; color: var(--text-dim); margin-top: 6px; }
 .kpi.warn .v { color: var(--warn); }
+/* a drop-down in place of a KPI value: the same height as the figures beside it */
+.kpi .v select { height: 32px; padding: 0 4px; font: 600 26px/1 var(--font-mono); background: transparent; border-color: var(--border); }
 .kpi.late .v { color: var(--late); }
 .alarm-counter { display: flex; gap: 6px; }
 .alarm-counter span { min-width: 60px; height: 60px; display: flex; align-items: center; justify-content: center; font: 700 28px var(--font-mono); border-radius: 4px; background: var(--panel-2); color: var(--text-muted); border: 1px solid var(--border); }

@@ -40,9 +40,9 @@ is cut off at any scale.
 
 ## Layout
 
-* **Header**: clock, operating day and timetable period, simulation speed (pause,
-  1×–120×, fast-forward to a time, new operating day; when the computer cannot keep up,
-  `实际 N×` next to the buttons shows the speed actually reached), ZC area levels (CBTC / TBTC /
+* **Header**: clock, operating day and timetable period, simulation rate (pause,
+  a 1×–120× drop-down, fast-forward to a time picked by hour and minute, new operating day;
+  when the computer cannot keep up, `实际 N×` next to it shows the rate actually reached), ZC area levels (CBTC / TBTC /
   ZC故障), KPIs (trains in service/on line, late > 2 min, punctuality, completed trips),
   A/B/C alarm counters, UI scale, sound on/off, help.
 * **Line overview** (≥ 55 % of the screen height): the line folded into as many rows as

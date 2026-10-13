@@ -9,6 +9,7 @@ import type { Store } from './store';
 import { fmtTime } from './theme';
 import { UI_SCALES, loadPref, savePref } from './layout';
 import { toast } from './confirm';
+import { timePick } from './timepick';
 import metroLogo from './assets/metro-logo.png';
 import lineBadge from './assets/line2-badge.png';
 
@@ -31,7 +32,7 @@ export class Header {
   private clock = h('div', { class: 'clock' }, '--:--:--');
   private date = h('div', {});
   private period = h('div', { class: 'period' });
-  private speedBtns: HTMLButtonElement[] = [];
+  private speedSel: HTMLSelectElement;
   private pauseBtn: HTMLButtonElement;
   private zones = h('div', { style: 'display:flex;gap:8px' });
   private kpis = h('div', { style: 'display:flex;gap:22px;align-items:center' });
@@ -50,18 +51,15 @@ export class Header {
     this.store = store;
     this.hooks = hooks;
     this.pauseBtn = h('button', { class: 'btn icon', title: '暂停/继续（空格）', onclick: () => this.setPaused(!this.paused) }, '❚❚');
-    for (const s of SPEEDS) {
-      const b = h('button', { class: `btn ${s === 1 ? 'on' : ''}`, title: `仿真速率 ${s}×`, onclick: () => this.setSpeed(s) }, `${s}×`);
-      this.speedBtns.push(b);
-    }
-    const jumpInput = h('input', { type: 'text', maxlength: 5, value: '17:30', style: 'width:118px', title: '目标时刻 HH:MM' }) as HTMLInputElement;
+    this.speedSel = h('select', { class: 'speed-sel', title: '模拟速率（数字键切换）' }, ...SPEEDS.map((s) => h('option', { value: s }, `${s}×`))) as HTMLSelectElement;
+    this.speedSel.onchange = () => this.setSpeed(Number(this.speedSel.value));
+    const jumpAt = timePick(17.5 * 3600);
+    jumpAt.el.title = '快进目标时刻';
     const jumpBtn = h('button', {
       class: 'btn', title: '以最高速度推演到指定时刻',
       onclick: () => {
-        const [hh, mm] = jumpInput.value.split(':').map(Number);
-        let target = (hh || 0) * 3600 + (mm || 0) * 60;
+        let target = jumpAt.sec();
         const now = this.store.snap?.t ?? 0;
-        if (target < 4 * 3600) target += 86400;
         while (target < now) target += 86400;
         if (target > 27.7 * 3600) return;
         this.store.send({ type: 'jump', to: target });
@@ -71,7 +69,7 @@ export class Header {
     this.menu = h('div', { class: 'hdr-menu', hidden: true });
     this.el = h('div', { class: 'hdr' },
       h('div', { class: 'hdr-clock' }, this.clock, h('div', { class: 'clock-meta' }, this.date, this.period)),
-      h('div', { class: 'hdr-speed' }, h('span', { class: 'lbl' }, '速率'), this.pauseBtn, ...this.speedBtns, this.actual, jumpInput, jumpBtn),
+      h('div', { class: 'hdr-speed' }, h('span', { class: 'lbl' }, '模拟速率'), this.pauseBtn, this.speedSel, this.actual, jumpAt.el, jumpBtn),
       h('div', { class: 'hdr-brand' },
         h('img', { class: 'metro-logo', src: metroLogo, alt: '上海地铁' }),
         h('img', { class: 'line-badge', src: lineBadge, alt: '2号线 Line 2' }),
@@ -140,7 +138,7 @@ export class Header {
   setSpeed(s: number) {
     this.speed = s;
     this.store.send({ type: 'speed', speed: s });
-    this.speedBtns.forEach((b, i) => b.classList.toggle('on', SPEEDS[i] === s));
+    this.speedSel.value = String(s);
   }
   setPaused(p: boolean) {
     this.paused = p;
@@ -207,12 +205,11 @@ export class Header {
     );
     if (this.energy) {
       const lvl = h('select', { title: '全线 ATO 运行等级：1 全性能；2 惰行节能；3 低速惰行（节能最多，运行时分增加）。晚点超过 20 秒的列车自动按等级 1 运行' },
-        ...[1, 2, 3].map((v) => h('option', { value: v }, `等级 ${v}`))) as HTMLSelectElement;
+        ...[1, 2, 3].map((v) => h('option', { value: v }, String(v)))) as HTMLSelectElement;
       lvl.value = String(s.runLevel);
       lvl.onchange = async () => { const r = await this.store.command({ c: 'runLevel', level: Number(lvl.value) }); toast(r.msg, r.ok); };
       this.kpis.append(
-        kpi(perKm ? perKm.toFixed(2) : '—', '牵引 kWh/车公里'),
-        kpi(`${Math.round(reuse * 100)}%`, '再生利用'),
+        kpi(perKm ? perKm.toFixed(2) : '—', `kWh/车公里·再生${Math.round(reuse * 100)}%`),
         h('div', { class: 'kpi' }, h('div', { class: 'v' }, lvl), h('div', { class: 'k' }, '运行等级')),
       );
     }

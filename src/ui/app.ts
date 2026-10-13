@@ -3,6 +3,7 @@
  * overview schematic / station view switching, the train graph strip,
  * DOM panels, pointer & keyboard input, banners and modal dialogs.
  */
+import { datePick } from './timepick';
 import { Container, type Application, type Text } from 'pixi.js';
 import type { Topology } from '../sim/topology';
 import type { SimConfig } from '../sim/model';
@@ -676,7 +677,7 @@ export class App {
   showDayDialog() {
     const d = new Date();
     while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
-    const dateIn = h('input', { type: 'text', value: isoDate(d), style: 'width:220px' }) as HTMLInputElement;
+    const dateIn = datePick(d, () => showHol());
     const hol = h('input', { type: 'checkbox' }) as HTMLInputElement;
     const st = h('select', {}, ...[['04:30', '首班车前 04:30'], ['06:30', '早高峰前 06:30'], ['07:40', '早高峰 07:40'], ['12:00', '平峰 12:00'], ['17:40', '晚高峰 17:40'], ['21:30', '末班前 21:30'], ['23:50', '收车 23:50']].map(([v, t]) => h('option', { value: v }, t))) as HTMLSelectElement;
     st.value = '07:40';
@@ -685,17 +686,16 @@ export class App {
     // the holiday programme of the date (holiday.ts) is shown as soon as the date is typed
     const holHint = h('div', { class: 'hint', style: 'margin-top:10px;color:var(--warn, #d9a400)' });
     const showHol = () => {
-      const hd = holidayOf(dateIn.value.trim());
+      const hd = holidayOf(dateIn.iso());
       holHint.textContent = !hd ? ''
         : hd.day === 0 ? '国庆前夜：20:00 起南京东路站封站跳停至运营结束，人民广场、陆家嘴客流增加。'
         : `国庆第${hd.day}天（节假日运行图）：16:00 起南京东路站封站跳停至运营结束，人民广场、陆家嘴、南京东路、上海科技馆客流增加${hd.day >= hd.days - 1 ? '；返程日晚间虹桥枢纽、浦东机场到达客流集中，虹桥火车站往龙阳路定点加班车至 00:30' : ''}。全天按计划自动执行，故障按随机故障设置。`;
     };
-    dateIn.addEventListener('input', showHol);
     showHol();
     const back = h('div', { class: 'modal-back' });
     const close = () => back.remove();
     const go = () => {
-      const [y, m, dd] = dateIn.value.split('-').map(Number);
+      const [y, m, dd] = dateIn.iso().split('-').map(Number);
       const nd = new Date(y, (m || 1) - 1, dd || 1);
       if (Number.isNaN(nd.getTime())) { toast('日期格式应为 YYYY-MM-DD', false); return; }
       const c: SimConfig = { dayType: dayTypeOf(nd, hol.checked), dateLabel: dateLabel(nd, hol.checked), date: isoDate(nd), startTime: parseTime(st.value), seed: 20251101 + nd.getDate(), autoRadio: auto.checked,
@@ -709,7 +709,7 @@ export class App {
     back.append(h('div', { class: 'modal' },
       h('div', { class: 'modal-h' }, '运营日设置'),
       h('div', { class: 'modal-b' },
-        h('div', { class: 'form' }, h('label', {}, '运营日期'), dateIn, h('label', {}, '节假日'), hol),
+        h('div', { class: 'form' }, h('label', {}, '运营日期'), dateIn.el, h('label', {}, '节假日'), hol),
         holHint,
         h('div', { class: 'form', style: 'margin-top:14px' }, h('label', {}, '开始时刻'), st),
         h('div', { class: 'form', style: 'margin-top:14px' }, h('label', {}, '来电自动应答（观摩模式）'), auto),

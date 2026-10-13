@@ -4,6 +4,7 @@
  * stations get the PIS preview and the station (interlocking) view; depots
  * the yard summary.
  */
+import { timePick } from './timepick';
 import { h, clear } from './dom';
 import type { Store } from './store';
 import { confirmAndSend, type CmdSpec } from './confirm';
@@ -441,16 +442,15 @@ export class CommandPanel {
     this.addTrainForm();
     // overlays
     this.el.append(h('div', { class: 'sect-title' }, '加开运行图模板'));
-    const toSec = (v: string) => { const [a, b] = v.split(':').map(Number); let s = (a || 0) * 3600 + (b || 0) * 60; if (s < 4 * 3600) s += 86400; return s; };
     for (const p of OVERLAY_PRESETS) {
-      const a = h('input', { type: 'text', maxlength: 5, style: 'width:110px', value: fmtTime(Math.max(p.from, snap.t + 1200), false) }) as HTMLInputElement;
-      const b = h('input', { type: 'text', maxlength: 5, style: 'width:110px', value: fmtTime(Math.max(p.to, snap.t + 3600 * 2), false) }) as HTMLInputElement;
+      const a = timePick(Math.max(p.from, snap.t + 1200));
+      const b = timePick(Math.max(p.to, snap.t + 3600 * 2));
       const hw = h('select', {}, ...[600, 720, 900, 1200].map((v) => h('option', { value: v }, `${v / 60}分`))) as HTMLSelectElement;
       hw.value = String(p.headway);
-      this.el.append(h('div', { class: 'form' }, h('span', { style: 'color:#fff;min-width:240px' }, p.label), a, h('span', {}, '至'), b, hw,
+      this.el.append(h('div', { class: 'form' }, h('span', { style: 'color:#fff;min-width:240px' }, p.label), a.el, h('span', {}, '至'), b.el, hw,
         this.btn('套用', () => void confirmAndSend(this.store, {
-          title: `${p.label} ${a.value}—${b.value}，间隔 ${Number(hw.value) / 60} 分钟`,
-          cmd: { c: 'overlay', id: p.id, from: toSec(a.value), to: toSec(b.value), headway: Number(hw.value) },
+          title: `${p.label} ${a.text()}—${b.text()}，间隔 ${Number(hw.value) / 60} 分钟`,
+          cmd: { c: 'overlay', id: p.id, from: a.sec(), to: b.sec(), headway: Number(hw.value) },
           detail: p.desc,
         }), 'primary')));
     }
@@ -477,13 +477,13 @@ export class CommandPanel {
     depSel.onchange = fill;
     dirSel.onchange = fill;
     fill();
-    const tIn = h('input', { type: 'text', maxlength: 5, style: 'width:110px', value: fmtTime(snap.t + 900, false) }) as HTMLInputElement;
-    const toSec = (v: string) => { const [a, b] = v.split(':').map(Number); let s = (a || 0) * 3600 + (b || 0) * 60; if (s < 4 * 3600) s += 86400; return s; };
+    // departures on the minute (the planned times are whole minutes)
+    const tIn = timePick(snap.t + 900, 1);
     this.el.append(h('div', { class: 'sect-title' }, '加开列车（出段 → 折返站 → 回段）'));
-    this.el.append(h('div', { class: 'form' }, depSel, dirSel, h('label', {}, '折返'), toSel, h('label', {}, '发车'), tIn,
+    this.el.append(h('div', { class: 'form' }, depSel, dirSel, h('label', {}, '折返'), toSel, h('label', {}, '发车'), tIn.el,
       this.btn('加开', () => void confirmAndSend(this.store, {
-        title: `加开列车：${topo.depots[Number(depSel.value)].name} 出段 → ${STATIONS[Number(toSel.value)]?.name ?? '?'} 折返 → 回段，${tIn.value} 发车`,
-        cmd: { c: 'addTrain', depot: Number(depSel.value), dir: dirSel.value as TrackDir, to: Number(toSel.value), time: toSec(tIn.value) },
+        title: `加开列车：${topo.depots[Number(depSel.value)].name} 出段 → ${STATIONS[Number(toSel.value)]?.name ?? '?'} 折返 → 回段，${tIn.text()} 发车`,
+        cmd: { c: 'addTrain', depot: Number(depSel.value), dir: dirSel.value as TrackDir, to: Number(toSel.value), time: tIn.sec() },
       }), 'primary')));
   }
 }
