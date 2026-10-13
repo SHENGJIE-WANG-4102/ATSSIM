@@ -128,6 +128,13 @@ export class Audio {
     } else if (!on && this.overTimer) { clearInterval(this.overTimer); this.overTimer = 0; }
   }
 
+  /** two-tone chime in the cab: a lower limit or the end of authority is announced */
+  chime() {
+    this.ensure();
+    this.tone(880, 0, 0.16, 'sine', 0.45);
+    this.tone(660, 0.2, 0.3, 'sine', 0.45);
+  }
+
   click() {
     this.ensure();
     this.tone(1400, 0, 0.03, 'square', 0.12);

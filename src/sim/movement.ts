@@ -587,15 +587,14 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     const d = scan.constraints[i];
     const v = scan.constraints[i + 1];
     vT = Math.min(vT, brakingSpeed(d - 3, v - (rm ? 0.2 : atoMargin), PERF.bPlan));
-    const c = brakingSpeed(d, v, PERF.bEbGuaranteed);
-    vPerm = Math.min(vPerm, c);
-    vEbi = Math.min(vEbi, c + PERF.atpTolerance);
+    vPerm = Math.min(vPerm, brakingSpeed(d, v, PERF.bPermit));
+    vEbi = Math.min(vEbi, brakingSpeed(d, v, PERF.bEbGuaranteed) + PERF.atpTolerance);
     if (v < scan.vBody - 0.1) consider(d, v, '限速');
   }
   vT = Math.min(vT, brakingSpeed(scan.maDist - 1, 0, PERF.bPlan));
   if (scan.stopDist !== Infinity) vT = Math.min(vT, brakingSpeed(scan.stopDist - 0.2, 0, PERF.bPlan));
   if (!(tr.manual && rm)) {
-    vPerm = Math.min(vPerm, brakingSpeed(scan.maDist, 0, PERF.bEbGuaranteed));
+    vPerm = Math.min(vPerm, brakingSpeed(scan.maDist, 0, PERF.bPermit));
     // the EB intervention curve ends at the EOA itself: at / past it any motion trips the EB
     vEbi = Math.min(vEbi, scan.maDist > 0 ? brakingSpeed(scan.maDist, 0, PERF.bEbGuaranteed) + 0.3 : 0);
   }
@@ -747,8 +746,8 @@ export function refreshAuthority(sim: Sim) {
     tr.nextSignalDist = s.nextSignalDist;
     tr.stopDist = s.stopDist;
     // standing: the permitted speed still follows the current movement authority
-    tr.vPermit = tr.mode === 'RM' ? s.vBody : Math.max(0, Math.min(s.vBody, brakingSpeed(s.maDist, 0, PERF.bEbGuaranteed)));
-    tr.vEbi = tr.vPermit + PERF.atpTolerance;
+    tr.vPermit = tr.mode === 'RM' ? s.vBody : Math.max(0, Math.min(s.vBody, brakingSpeed(s.maDist, 0, PERF.bPermit)));
+    tr.vEbi = (tr.mode === 'RM' ? s.vBody : Math.max(0, Math.min(s.vBody, brakingSpeed(s.maDist, 0, PERF.bEbGuaranteed)))) + PERF.atpTolerance;
   }
 }
 

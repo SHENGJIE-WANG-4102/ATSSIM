@@ -13,6 +13,7 @@ import { SCENARIOS, RANDOM_LEVELS } from '../sim/scenario';
 import { STATIONS, LINE_INFO, WEATHER_RULES } from '../data/line2';
 import type { FaultKind, RadioCall, SimEvent } from '../sim/model';
 import type { Audio } from './audio';
+import { speedIndication } from './dmi';
 
 const CAT_FILTERS = ['全部', '报警', '调度', '通话', '信号', '列车', '车站', '客流', '施工', '教员'];
 
@@ -55,6 +56,8 @@ export class SidePanel {
   private replayBox = h('div', { style: 'display:flex;flex-direction:column;gap:10px' });
   private seenAlarms = new Set<number>();
   private seenCalls = new Set<number>();
+  /** the restriction last announced in the manual cab (chime once per restriction) */
+  private indication = '';
   private hooks: PanelHooks & { rewind(t: number, replay: boolean): void; locateSel(sel: Selection): void };
 
   constructor(store: Store, audio: Audio, hooks: PanelHooks & { rewind(t: number, replay: boolean): void; locateSel(sel: Selection): void }) {
@@ -170,6 +173,10 @@ export class SidePanel {
     // the manual cab: warning above the permitted speed (RM 25 km/h), before the EB
     const cab = snap.trains.find((t) => t.manual);
     this.audio.setOverspeed(!!cab && cab.phase === 'run' && !cab.eb && cab.v > cab.vPermit + 0.05);
+    // and a chime once for each coming restriction announced on its DMI
+    const ind = cab && speedIndication(cab) ? `${cab.id}|${Math.round(cab.tgtV * 3.6)}|${cab.tgtReason}` : '';
+    if (ind && ind !== this.indication) this.audio.chime();
+    this.indication = ind;
     const key = calls.map((c) => `${c.id}:${c.state}:${Math.ceil((c.deadline - snap.t) / 5)}`).join(',') + snap.autoRadio;
     if (key === this.callsKey) return;
     this.callsKey = key;

@@ -17,6 +17,10 @@ export const PERF = {
   bPlan: 0.75,
   /** guaranteed emergency brake used by ATP curves */
   bEbGuaranteed: 0.95,
+  /** the permitted-speed curve shown to the driver (overspeed warning): below
+   *  the EB intervention curve so that a driver following it with the service
+   *  brake has room before the EB 【假设】 */
+  bPermit: 0.8,
   /** actual emergency brake */
   bEb: 1.25,
   /** line / train ceiling: 02A05 design speed and the Line 2 line speed (80 km/h) */

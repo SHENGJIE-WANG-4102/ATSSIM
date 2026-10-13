@@ -504,7 +504,8 @@ No vendor logo or bezel is drawn.
   * the stopping error when stopped off the mark.
 
   It replaces an ETCS-style target distance bar, which none of the references has.
-* **Status line** under the door mode: 紧急制动 (red), 超速 / 扣车 (yellow), 非站台侧车门开启 (red), 停稳，待开门 / 人工驾驶 (white).
+* **Status line** under the door mode: 紧急制动 (red), 超速 / 前方限速 XX · NNN m / 前方停车 · NNN m / 扣车 (yellow), 非站台侧车门开启 (red), 停稳，待开门 / 人工驾驶 (white).
+* **Restriction pre-indication** (manual cab only, 【假设】 after the ETCS indication status): about 6 s before the permitted-speed curve towards a lower limit or the end of authority meets the present speed, the status line announces it, a yellow marker shows the target speed on the rim, and a two-tone chime sounds once. The platform stopping point is not announced. The permitted speed (red, overspeed warning) follows a 0.8 m/s² curve; the EB intervenes 5 km/h above the 0.95 m/s² guaranteed-EB curve.
 * **Overspeed** turns the hub digits yellow; an emergency brake turns them red.
 * **Log messages taken from the photos:** `DMI激活`, `连接丢失`, `ATO/ATP模式可用`, `CM/AM模式可用`.
 * **Log messages added in the same style:**
