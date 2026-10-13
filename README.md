@@ -210,7 +210,8 @@ show a load bar (blue → yellow → orange). Crowding raises alarms, lengthens 
 fills trains. Selecting a station or platform shows a **PIS preview** laid out like the
 Line 2 platform screens: on the right the first train's countdown (mm:ss) and destination,
 then the second and third trains in turn every 20 s, then the clock/date and the station
-name (Chinese and English) in turn every 3 s; on the left the station, direction, the
+name (Chinese and English) in turn every 3 s — each change slides the old content out to
+the left and the new one in from the right; on the left the station, direction, the
 stations ahead and the next train's load, with the notice ticker beneath (skip, hold,
 delays, weather). The header shows the day's ridership (今日客流, boardings so far)
 next to the other KPIs.

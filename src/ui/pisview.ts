@@ -6,7 +6,10 @@
  * clock/date and the station name in turn every 3 s.
  *
  * The board is updated in place: rebuilding it on every snapshot restarted
- * the notice ticker, which then only ever showed its first half glyph.
+ * the notice ticker, which then only ever showed its first half glyph. A box
+ * whose content turns to another train (the first one left, the 2nd / 3rd
+ * rotation) or to the other info page pushes the old content out to the left
+ * while the new one comes in from the right.
  */
 import { h, clear } from './dom';
 import type { PisData, PisRow, TrackDir } from '../sim/model';
@@ -40,7 +43,7 @@ function dateOf(label: string, t: number): string {
   return `${d.getUTCMonth() + 1}月${d.getUTCDate()}日`;
 }
 
-interface Box { el: HTMLElement; title: HTMLElement; digits: HTMLElement; to: HTMLElement; toEn: HTMLElement }
+interface Box { el: HTMLElement; title: HTMLElement; digits: HTMLElement; dest: HTMLElement; to: HTMLElement; toEn: HTMLElement; key: string }
 interface Board {
   station: number; track: TrackDir; root: HTMLElement;
   load: HTMLElement; ticker: HTMLElement; tickerText: string;
@@ -53,7 +56,31 @@ function mkBox(): Box {
   const digits = h('div', { class: 'pb-digits' });
   const to = h('div', { class: 'pb-to' });
   const toEn = h('div', { class: 'pb-to-en' });
-  return { el: h('div', { class: 'pb' }, title, digits, h('div', { class: 'pb-dest' }, to, toEn)), title, digits, to, toEn };
+  const dest = h('div', { class: 'pb-dest' }, to, toEn);
+  return { el: h('div', { class: 'pb' }, title, digits, dest), title, digits, dest, to, toEn, key: '' };
+}
+
+const SLIDE: KeyframeAnimationOptions = { duration: 520, easing: 'cubic-bezier(.45,0,.25,1)' };
+
+/**
+ * Change the content of `els` (children of one box) with `fill`: a copy of
+ * the old content leaves to the left over the new content entering from the right.
+ */
+function slide(els: HTMLElement[], fill: () => void) {
+  const ghosts = els.filter((e) => typeof e.animate === 'function' && e.offsetWidth > 0).map((e) => {
+    const g = e.cloneNode(true) as HTMLElement;
+    Object.assign(g.style, {
+      position: 'absolute', left: `${e.offsetLeft}px`, top: `${e.offsetTop}px`, width: `${e.offsetWidth}px`, height: `${e.offsetHeight}px`,
+      margin: '0', pointerEvents: 'none',
+    });
+    e.parentElement!.append(g);
+    return { e, g };
+  });
+  fill();
+  for (const { e, g } of ghosts) {
+    g.animate([{ transform: 'none' }, { transform: 'translateX(-105%)' }], SLIDE).onfinish = () => g.remove();
+    e.animate([{ transform: 'translateX(105%)' }, { transform: 'none' }], SLIDE);
+  }
 }
 
 function emptyText(t: number): string {
@@ -62,6 +89,14 @@ function emptyText(t: number): string {
 }
 
 function fillBox(b: Box, k: number, r: PisRow | undefined, t: number) {
+  const key = `${k}|${r?.trip ?? ''}|${r?.dest ?? ''}`;
+  if (b.key && key !== b.key) {
+    const els = [...(b.key.startsWith(`${k}|`) ? [] : [b.title]), b.digits, b.dest];
+    b.key = key;
+    slide(els, () => fillBox(b, k, r, t));
+    return;
+  }
+  b.key = key;
   b.title.textContent = `${ORD_CN[k]}(${ORD[k]})`;
   b.digits.textContent = countdown(r);
   b.el.classList.toggle('arr', !!r && r.status !== 'eta');
@@ -81,19 +116,35 @@ function update(bd: Board) {
   fillBox(bd.b2, k, rows[k], t);
   // clock / station name, 3 s each
   const showClock = Math.floor(now / 3000) % 2 === 0;
-  const st = STATIONS[bd.station];
   const want = showClock ? `clock` : `name`;
-  if (bd.b3.dataset.mode !== want) { bd.b3.dataset.mode = want; clear(bd.b3); }
+  if (bd.b3.dataset.mode !== want) {
+    const old = Array.from(bd.b3.children) as HTMLElement[];
+    bd.b3.dataset.mode = want;
+    if (old.length) { slide(old, () => { for (const e of old) e.remove(); fillInfo(bd, showClock); }); return void fillLoad(bd); }
+  }
+  fillInfo(bd, showClock);
+  fillLoad(bd);
+}
+
+/** the clock / station-name box */
+function fillInfo(bd: Board, showClock: boolean) {
+  const { t } = bd;
+  const st = STATIONS[bd.station];
   if (showClock) {
     const tod = t % 86400;
     const txt = `${pad(Math.floor(tod / 3600))}:${pad(Math.floor(tod % 3600 / 60))}`;
-    if (!bd.b3.firstChild) bd.b3.append(h('span', { class: 'pb-clock' }), h('span', { class: 'pb-date' }));
-    (bd.b3.children[0] as HTMLElement).textContent = txt;
-    (bd.b3.children[1] as HTMLElement).textContent = dateOf(bd.dateLabel, t);
+    // clock and date share a baseline; the row itself is centred in the box
+    if (!bd.b3.firstChild) bd.b3.append(h('div', { class: 'pb-clockrow' }, h('span', { class: 'pb-clock' }), h('span', { class: 'pb-date' })));
+    const row = bd.b3.firstChild as HTMLElement;
+    (row.children[0] as HTMLElement).textContent = txt;
+    (row.children[1] as HTMLElement).textContent = dateOf(bd.dateLabel, t);
   } else if (!bd.b3.firstChild) {
     bd.b3.append(h('div', { class: 'pb-st' }, st.name), h('div', { class: 'pb-st-en' }, STATION_EN[st.id] ?? ''));
   }
-  const r = rows[0];
+}
+
+function fillLoad(bd: Board) {
+  const r = bd.rows[0];
   bd.load.textContent = r && r.dest !== '本站终到' ? `下一班列车 车厢${loadText(r.load)}` : '';
 }
 
