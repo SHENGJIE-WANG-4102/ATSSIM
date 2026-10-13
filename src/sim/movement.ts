@@ -517,7 +517,9 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   // its last issued authority while braking; after standstill it can accept
   // the shorter replacement. This is not permission to overrun an issued MA.
   if (tr.maCut && tr.v <= 0.01) tr.maCut = false;
-  const moving = tr.phase === 'run' && !tr.failed;
+  // a train failing on the move keeps braking under its EB until it stands
+  if (tr.failed && tr.phase === 'run' && tr.v <= 0.01) tr.phase = 'failed';
+  const moving = tr.phase === 'run';
   if (!moving) {
     tr.lastDs = 0;
     // standing (dwell, turnback, stabled, failed): authority, next signal and the
@@ -713,7 +715,7 @@ export function refreshAuthority(sim: Sim) {
     tr.maFarCode = s.maCode;
     tr.maFarTrain = s.maTrain;
     tr.maSigs = s.maSignals;
-    const moving = tr.phase === 'run' && !tr.failed;
+    const moving = tr.phase === 'run';
     // a moving train keeps this step's near scan; only the far end is taken over
     if (moving && tr.maReason !== MA_CAP_REASON) continue;
     tr.maDist = s.maDist;

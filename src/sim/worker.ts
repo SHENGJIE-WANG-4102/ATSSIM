@@ -28,6 +28,12 @@ let windowStart = performance.now();
 let jumping = false;
 
 const SNAP_INTERVAL = 50; // ms (20 Hz)
+/** an operating day runs from 04:00 to the 03:45 rollover: every run-up stays inside it */
+const DAY_FIRST = 4 * 3600;
+const DAY_LAST = 27.75 * 3600;
+const MAX_SPEED = 1000;
+/** a time from a message, or null: never trust it to end a synchronous run-up */
+const dayTime = (t: unknown): number | null => (typeof t === 'number' && Number.isFinite(t) ? Math.min(DAY_LAST, Math.max(DAY_FIRST, t)) : null);
 const STEP_BUDGET = 9; // ms of simulation work per tick
 const CP_INTERVAL = 60; // s of sim time between checkpoints
 
@@ -45,7 +51,8 @@ function post(msg: FromWorker, transfer: Transferable[] = []) {
 let wantPis = -1;
 let wantDmi = -1;
 
-function start(config: SimConfig) {
+function start(raw: SimConfig) {
+  const config: SimConfig = { ...raw, startTime: dayTime(raw.startTime) ?? DAY_FIRST, seed: Number.isFinite(raw.seed) ? raw.seed : 1 };
   sim = new Sim(config);
   sim.pisStation = wantPis;
   sim.dmiTrain = wantDmi;
@@ -94,8 +101,9 @@ function stepOnce(keepCheckpoints = true) {
   }
 }
 
-function runUntil(target: number, initial = false) {
-  if (!sim) return;
+function runUntil(to: number, initial = false) {
+  const target = dayTime(to);
+  if (!sim || target === null) return;
   jumping = true;
   let lastProgress = performance.now();
   while (sim.t < target) {
@@ -230,13 +238,13 @@ self.onmessage = (e: MessageEvent<ToWorker>) => {
       start(m.config);
       break;
     case 'speed':
-      speed = m.speed;
+      if (Number.isFinite(m.speed) && m.speed >= 0) speed = Math.min(MAX_SPEED, m.speed);
       break;
     case 'pause':
       paused = m.paused;
       break;
     case 'jump':
-      if (sim && m.to > sim.t) runUntil(m.to);
+      if (sim && Number.isFinite(m.to) && m.to > sim.t) runUntil(m.to);
       break;
     case 'cmd': {
       if (!sim) return;

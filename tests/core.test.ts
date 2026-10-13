@@ -7,7 +7,8 @@ import { MACHINES, MODE, EB, allowed } from '../src/sim/fsm';
 import type { Command, Task, Train, Trip } from '../src/sim/model';
 import { openCall, answerCall, unsafeAhead, rescuerFor, callRescue, radioTick } from '../src/sim/radio';
 import { trySetRoute, cancelRoute, committedTrain, bindRouteApproach, updateInterlocking, releaseRoute, computeOccupancy } from '../src/sim/interlocking';
-import { setMode, grantRM, updateOnboard, applyEB, ebCauseCleared, answerEbRelease } from '../src/sim/onboard';
+import { setMode, grantRM, updateOnboard, applyEB, ebCauseCleared, answerEbRelease, authoriseEBRelease } from '../src/sim/onboard';
+import { parseTime } from '../src/sim/calendar';
 import { computeBody, indexBodies, rescueRouteReady, scanAhead } from '../src/sim/movement';
 import { distanceToBerth, updateTrainTasks, rescueApproach, trainDesire, runARS, spawnDue, setTripFromTasks } from '../src/sim/ats';
 import { dispatcherTick } from '../src/sim/dispatcher';
@@ -1234,5 +1235,65 @@ describe('ATO with a driver under CBTC (D52)', () => {
     advance(ato, 3600);
     expect(ato.trainList.filter(t => t.level === 'CBTC').every(t => t.mode === 'AM')).toBe(true);
     expect(MODE.states).toContain('AM-C');
+  });
+});
+
+describe('audit hardening (D54)', () => {
+  it('section fault unlock never releases a lock that still protects a train', () => {
+    const sim = make(); advance(sim, 9000);
+    // a section a train stands on or occupies
+    const occ = sim.sec.findIndex(x => x.trainOcc && x.lockRoute >= 0);
+    if (occ >= 0) expect(sim.command({ c: 'sectionUnlock', section: occ }).ok).toBe(false);
+    // the route ahead of a running train (authority issued over it)
+    const tr = sim.trainList.find(t => t.phase === 'run' && t.v > 5 && t.maSigs.some(sg => sim.sig[sg].route >= 0))!;
+    const route = sim.topo.routes[sim.sig[tr.maSigs.find(sg => sim.sig[sg].route >= 0)!].route];
+    const free = route.sections.find(x => !sim.sec[x].trainOcc && sim.sec[x].lockRoute === route.id)!;
+    expect(sim.command({ c: 'sectionUnlock', section: free }).ok).toBe(false);
+    expect(sim.sec[free].lockRoute).toBe(route.id);
+    // a residual lock with no train anywhere near is released, and logged
+    for (const t of [...sim.trainList]) sim.removeTrain(t);
+    for (const id of [...sim.routes.keys()]) releaseRoute(sim, id);
+    for (const x of sim.sec) { x.occ = false; x.trainOcc = false; }
+    const r = sim.topo.routes.find(x => !x.fleeting && x.sections.length > 1)!;
+    expect(trySetRoute(sim, r.id).ok).toBe(true);
+    const last = r.sections.at(-1)!;
+    expect(sim.command({ c: 'sectionUnlock', section: last }).ok).toBe(true);
+    expect(sim.sec[last].lockRoute).toBe(-1);
+    expect(sim.events.some(e => e.text.includes('区段故障解锁'))).toBe(true);
+  });
+  it('a train failing on the move brakes to a stand under its EB', () => {
+    const sim = make(); advance(sim, 9000);
+    const tr = sim.trainList.find(t => t.phase === 'run' && t.v > 15 && !t.failed)!;
+    const v0 = tr.v;
+    expect(sim.command({ c: 'fault', kind: 'trainFail', target: tr.id, duration: 0, recoverable: false }).ok).toBe(true);
+    expect([tr.failed, tr.eb, tr.phase]).toEqual([true, true, 'run']);
+    expect(tr.v).toBe(v0);
+    const t0 = sim.t;
+    for (let i = 0; i < 600 && tr.phase === 'run'; i++) sim.step();
+    expect(tr.phase).toBe('failed');
+    expect(tr.v).toBe(0);
+    expect(sim.t - t0).toBeGreaterThan(v0 / 2);
+    expect(sim.integrity.violations).toHaveLength(0);
+  });
+  it('an EB from a ZC failure is released only after the ZC recovers or the train degrades to TBTC', () => {
+    const sim = make(); advance(sim, 9000);
+    const tr = sim.trainList.find(t => t.phase === 'run' && t.v > 5 && t.level === 'CBTC')!;
+    const zone = sim.topo.links[tr.link].zone;
+    expect(sim.command({ c: 'fault', kind: 'zcFail', target: zone, duration: 0 }).ok).toBe(true);
+    for (let i = 0; i < 600 && !(tr.eb && tr.v <= 0.01); i++) sim.step();
+    expect(tr.ebCause).toBe('zc');
+    expect(ebCauseCleared(sim, tr)).toBe(false);
+    expect(authoriseEBRelease(sim, tr, '调度').ok).toBe(false);
+    expect(tr.eb).toBe(true);
+    expect(answerEbRelease(sim, tr, 'degrade').ok).toBe(true);
+    expect(tr.eb).toBe(false);
+    advance(sim, 15);
+    expect(tr.level).toBe('TBTC');
+  });
+  it('reads only real operating-day times', () => {
+    expect(parseTime('07:40')).toBe(27600);
+    expect(parseTime('7')).toBe(25200);
+    expect(parseTime('01:00')).toBe(90000);
+    for (const bad of ['Infinity', 'Infinity:00', '1e9', '30:00', '07:75', '', 'NaN']) expect(parseTime(bad)).toBeNaN();
   });
 });

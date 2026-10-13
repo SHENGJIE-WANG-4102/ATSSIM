@@ -89,7 +89,7 @@ buttons swapped.
 |---|---|
 | Signal | 办理进路 (route list with preview), 取消进路 (30 s delayed release when approach-locked), 引导进路 ★, 自动通过 on/off, 自动排列(ARS) on/off |
 | Switch | 单操定位/反位, 单锁/单解, 封锁/解封 ★, 钩锁确认 ★, 取消钩锁 |
-| Section | 计轴预复位 ★, 区段故障解锁 ★, 封锁/解封 ★, 设置/取消临时限速 ★ (one section or the whole station interval) |
+| Section | 计轴预复位 ★, 区段故障解锁 ★ (refused while the section is occupied, the route is approach-locked or has issued an authority, or a train on the route is heading for the section), 封锁/解封 ★, 设置/取消临时限速 ★ (one section or the whole station interval) |
 | Platform | 扣车/取消扣车, 跳停/取消跳停, 紧急关闭/取消 ★, 站台门互锁解除 ★, PIS preview |
 | Train | 跟踪列车, 人工驾驶 CM / RM ★, 恢复 AM, 扣车/放行, 跳停, 人工折返, 退出服务, 授权RM ★, 组织救援 ★ (failed train only) |
 | Station | 打开车站图 (interlocking view), PIS preview |
@@ -308,12 +308,12 @@ Alarm and call tones (Web Audio, no files). Toggle with the speaker button or **
 |---|---|---|
 | 列车车地通信中断 | ZC loses the train; its sections become non-communicating occupancy, followers stop at the section boundary; the train's MA expires → EB | Driver switches to TBTC/ATO after 30 s and runs under section-occupancy protection; upgrades to CBTC/DTO when communication and localization recover |
 | 车载DTO功能故障 | The train cannot run DTO; at its next stop the driver takes the cab and it runs CBTC AM (slower turnbacks and departures) | Repair, then DTO returns at a stop; or withdraw the train to the depot |
-| ZC 故障 (one area or whole line) | CBTC trains in the area lose MA and stop; trains outside cannot enter | 切换TBTC (★) → trains run under TBTC fixed block; after repair 恢复CBTC (★); restoring before repair is refused |
+| ZC 故障 (one area or whole line) | CBTC trains in the area lose MA and stop (moving trains under EB); trains outside cannot enter | The EB is released only with a degrade to TBTC (the driver's call) or after the ZC recovers; 切换TBTC (★) → trains run under TBTC fixed block; after repair 恢复CBTC (★); restoring before repair is refused |
 | 计轴区段故障占用 | Section shows fault occupancy; CBTC trains stop before it | Reset is refused until maintenance is done; then 计轴预复位 (★); the first train sweeps it in RM and the section clears. Before that, 授权RM / 引导进路 can pass trains |
 | 道岔失表 | Routes over the switch cannot be set; trains stop at the protecting signal | 单操 attempts fail until repaired; 钩锁确认 (★) then 引导进路 (★) → RM ≤25 km/h; after repair 单操 restores detection, 取消钩锁 |
 | 信号机故障 | Signal cannot clear; approach/occupied route locking is retained until safe release; other trains stop at it | 引导进路 (★) per train, RM passage; repair restores automatic routes |
 | 站台门故障 | At the next door close the PSD cannot lock: the train cannot leave and the next train cannot enter | 站台门互锁解除 (★); every train then loses ~25 s for manual confirmation until repaired |
-| 列车故障 | Train stops (EB); followers queue behind it. "Recoverable" clears after driver troubleshooting | Non-recoverable: 组织救援 (★) with the following train → it clears passengers, approaches in RM, couples (≤3 km/h, 60 s), pushes to the next station, clears passengers, returns to depot; remaining trips of both trains are cancelled on the graph |
+| 列车故障 | Train brakes to a stand under EB; followers queue behind it. "Recoverable" clears after driver troubleshooting | Non-recoverable: 组织救援 (★) with the following train → it clears passengers, approaches in RM, couples (≤3 km/h, 60 s), pushes to the next station, clears passengers, returns to depot; remaining trips of both trains are cancelled on the graph |
 | 车站大客流 | Arrival rate ×N at a station: crowding alarm, longer dwells, full trains, delays | Holding, skip-stop, added trains / added-service templates |
 | PECU / 人员侵入 / ESP | Train held at the platform / platform closed until cleared | Answer the call; cancel 紧急关闭 after the line is clear |
 | 大风 / 暴雨 | Speed restriction on the exposed sections (table above) | Ends with the weather; regulate with holds and turnbacks |

@@ -50,7 +50,9 @@ async function main() {
   while (d.getDay() === 0 || d.getDay() === 6) d.setDate(d.getDate() + 1);
   const params = new URLSearchParams(location.search);
   const startParam = params.get('t');
-  const start = startParam ? parseTime(startParam) : 7 * 3600 + 40 * 60;
+  const parsed = startParam ? parseTime(startParam) : NaN;
+  // an unreadable or out-of-day ?t= falls back to the default start
+  const start = Number.isFinite(parsed) && parsed <= 27.7 * 3600 ? parsed : 7 * 3600 + 40 * 60;
   const holiday = params.get('holiday') === '1';
   const cfg: SimConfig = { dayType: dayTypeOf(d, holiday), dateLabel: dateLabel(d, holiday), date: isoDate(d), startTime: start, seed: 20251101 };
   bootMsg.textContent = `生成 ${cfg.dateLabel} 运行图并推演至 ${fmtTime(start)}…`;

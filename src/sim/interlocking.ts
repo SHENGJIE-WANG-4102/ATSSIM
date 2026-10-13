@@ -259,6 +259,20 @@ export function sectionUnlock(sim: Sim, sec: number): CmdResult {
   if (!ar) { sim.sec[sec].lockRoute = -1; return { ok: true, msg: `区段 ${name} 已解锁` }; }
   const r = sim.topo.routes[rid];
   const i = r.sections.indexOf(sec);
+  // The interlocking, not the operator's confirmation, decides: a lock still
+  // protecting a train is never released. Occupied sections are cleared by
+  // 计轴预复位 first; a route a train is approaching, holds an authority over
+  // or is running on towards this section stays locked. An automatic route is
+  // released as a whole, so the whole of it must be free.
+  const span = ar.fleeting ? r.sections : [sec];
+  const occupied = span.find((x) => sim.sec[x].trainOcc || sim.sec[x].occ);
+  if (occupied !== undefined) return { ok: false, msg: `区段 ${sim.topo.sections[occupied].name} 有车占用，不能故障解锁（计轴故障占用须先预复位）` };
+  if (approachLocked(sim, r.start) || sim.trainList.some((tr) => tr.maSigs.includes(r.start)))
+    return { ok: false, msg: `进路 ${r.name} 接近锁闭或已向列车发出移动授权，不能故障解锁` };
+  const behind = ar.fleeting ? r.sections : r.sections.slice(0, i);
+  if (behind.some((x) => sim.sec[x].trainOcc)) return { ok: false, msg: `进路 ${r.name} 上有列车驶向区段 ${name}，不能故障解锁` };
+  // a dangerous operation: always in the log, whoever ordered it
+  sim.log('B', '联锁', `区段故障解锁（人工解除进路锁闭）：区段 ${name}，进路 ${r.name}${ar.fleeting ? '（自动通过进路整体取消）' : ''}`, { code: 'SECTION_UNLOCK' });
   if (ar.fleeting) { releaseRoute(sim, rid); return { ok: true, msg: `区段 ${name} 故障解锁，自动通过进路已取消` }; }
   releaseSection(sim, ar, i);
   if (ar.released.every((x) => x)) releaseRoute(sim, rid);

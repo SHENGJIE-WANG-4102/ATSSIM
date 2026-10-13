@@ -95,14 +95,20 @@ export function applyEB(sim: Sim, tr: Train, reason: string, cause: EbCause) {
 }
 
 /** the EB cause no longer holds (release can be authorised without further measures) */
-export function ebCauseCleared(_sim: Sim, tr: Train): boolean {
+export function ebCauseCleared(sim: Sim, tr: Train): boolean {
   switch (tr.ebCause) {
     // a SPAD is never "cleared": only the SPAD procedure releases it
     case 'spad': return false;
     case 'comm': return tr.comm || tr.level === 'TBTC';
+    // the ZC gives authorities again, or the train has left CBTC
+    case 'zc': return tr.level === 'TBTC' || sim.zoneState[sim.topo.links[tr.link].zone] === 'CBTC';
+    // ATP / overspeed / RM / driver EBs end with the train at a stand
     default: return true;
   }
 }
+
+/** an EB whose cause is the loss of CBTC (radio or ZC): released only by degrading to TBTC */
+const needsDegrade = (sim: Sim, tr: Train) => (tr.ebCause === 'comm' || tr.ebCause === 'zc') && tr.level === 'CBTC' && !ebCauseCleared(sim, tr);
 
 /** how a release is authorised: plain release, the SPAD procedure (route
  * verified, RM to the next signal) or the comm-loss degrade to TBTC */
@@ -114,9 +120,9 @@ export function authoriseEBRelease(sim: Sim, tr: Train, by: string, procedure: E
   if (tr.v > 0.01) return { ok: false, msg: '列车未停稳，不能缓解紧急制动' };
   if (tr.ebCause === 'spad' && procedure !== 'spad')
     return { ok: false, msg: '冒进信号紧急制动须按冒进处置程序办理（无线电：核实进路后RM运行至前方信号机）' };
-  const viaDegrade = procedure === 'degrade' && tr.ebCause === 'comm';
+  const viaDegrade = procedure === 'degrade' && needsDegrade(sim, tr);
   if (tr.ebCause !== 'spad' && !viaDegrade && !ebCauseCleared(sim, tr))
-    return { ok: false, msg: `紧急制动原因未消除（${tr.ebReason}）` };
+    return { ok: false, msg: `紧急制动原因未消除（${tr.ebReason}）${needsDegrade(sim, tr) ? '：须同意缓解并降级TBTC后备运行（司机来电选项）' : ''}` };
   tr.ebAuth = true;
   releaseEB(sim, tr, by);
   return { ok: true, msg: `列车 ${trainLabel(tr)} 紧急制动缓解` };
@@ -133,7 +139,7 @@ function releaseEB(sim: Sim, tr: Train, by: string) {
 function callEbRelease(sim: Sim, tr: Train) {
   tr.ebCallAt = sim.t;
   const spad = tr.ebCause === 'spad';
-  const comm = tr.ebCause === 'comm' && !tr.comm && tr.level === 'CBTC';
+  const comm = needsDegrade(sim, tr);
   const options = spad
     ? [{ key: 'rm', label: '核实进路后缓解，RM运行至前方信号机', critical: true }, { key: 'wait', label: '原地待命（调查）' }]
     : comm
@@ -153,7 +159,7 @@ export function answerEbRelease(sim: Sim, tr: Train, option: string): { ok: bool
   if (option === 'wait') return { ok: true, msg: '司机原地等待' };
   if (option === 'degrade') {
     const r = authoriseEBRelease(sim, tr, '调度授权', 'degrade');
-    if (r.ok && !tr.comm && tr.level === 'CBTC') requestMode(sim, tr, tr.manual ? 'CM' : 'AM', 'TBTC');
+    if (r.ok && tr.level === 'CBTC') requestMode(sim, tr, tr.manual ? 'CM' : 'AM', 'TBTC');
     return { ok: r.ok, msg: r.ok ? `缓解后${MODE_CHANGE_TIME}秒转TBTC后备ATO` : r.msg };
   }
   if (option === 'rm') {

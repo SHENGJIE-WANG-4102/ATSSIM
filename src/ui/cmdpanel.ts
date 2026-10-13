@@ -211,7 +211,7 @@ export class CommandPanel {
     this.el.append(h('div', { class: 'form' }, h('label', {}, '作用范围'), extent));
     this.el.append(h('div', { class: 'cmdgrid' },
       this.btn('计轴预复位', { title: `计轴预复位 ${s.name}`, cmd: { c: 'axleReset', section: id }, critical: true, detail: '预复位后区段显示黄色，首列车以RM模式压道出清后恢复空闲。设备故障未修复时复位将失败。' }),
-      this.btn('区段故障解锁', { title: `区段故障解锁 ${s.name}`, cmd: { c: 'sectionUnlock', section: id }, critical: true, detail: '强制解除该区段的进路锁闭，须确认区段内无列车运行。' }),
+      this.btn('区段故障解锁', { title: `区段故障解锁 ${s.name}`, cmd: { c: 'sectionUnlock', section: id }, critical: true, detail: '解除故障后残留的进路锁闭。联锁拒绝：区段占用（含计轴故障占用，须先预复位）、进路接近锁闭或已发出移动授权、进路上有列车驶向该区段。办理记入事件日志。' }),
       this.btn(f0 & SEC.BLOCK && !(f0 & SEC.POSS) ? '区段解封' : '区段封锁', () => {
         const on = !(f0 & SEC.BLOCK);
         void confirmAndSend(this.store, { title: `区段${on ? '封锁' : '解封'}：${names()}`, cmd: { c: 'sectionBlock', sections: pick(), on }, critical: true, detail: on ? '封锁后不能办理经过该区段的进路，列车不能进入。' : undefined });

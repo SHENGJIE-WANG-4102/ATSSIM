@@ -1949,8 +1949,13 @@ export function failTrain(sim: Sim, tr: Train, recoverable: boolean, recoverAfte
   tr.failed = true;
   tr.failRecoverable = recoverable;
   tr.failRecoverAt = sim.t + recoverAfter;
+  if (tr.phase === 'run' && tr.v > 0.01) {
+    // a moving train brakes to a stand under the EB (movement.ts goes on
+    // integrating it); it becomes a standing failed train once stopped
+    applyEB(sim, tr, '列车牵引/制动故障', 'driver');
+    return;
+  }
   tr.phase = tr.phase === 'dwell' ? 'dwell' : 'failed';
-  if (tr.v > 0.1) applyEB(sim, tr, '列车牵引/制动故障', 'driver');
   tr.v = 0;
 }
 

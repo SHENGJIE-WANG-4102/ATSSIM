@@ -22,7 +22,8 @@ import { openHelp, helpSeen } from './help';
 import { openReport } from './report';
 import { h, clear } from './dom';
 import { fmtTime, hex, C } from './theme';
-import { isoDate } from '../sim/calendar';
+import { isoDate, parseTime } from '../sim/calendar';
+export { parseTime };
 import { SCENARIOS } from '../sim/scenario';
 import { WEATHER_RULES } from '../data/line2';
 
@@ -695,8 +696,4 @@ export class App {
   }
 }
 
-export function parseTime(v: string): number {
-  const [hh, mm] = v.split(':').map(Number);
-  return (hh || 0) * 3600 + (mm || 0) * 60;
-}
 
