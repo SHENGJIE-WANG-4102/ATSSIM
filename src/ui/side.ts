@@ -183,9 +183,12 @@ export class SidePanel {
     const heard = sel?.kind === 'train' ? snap.trains.find((t) => t.id === sel.id) : undefined;
     let mode: VvvfMode = 'off', level = 0;
     if (heard && !snap.paused && snap.speed <= VVVF_MAX_RATE && heard.phase === 'run' && !heard.eb && !heard.failed) {
-      if (heard.a > 0.03) { mode = 'power'; level = heard.a / tractionAccel(heard.v); }
-      // the electric brake fades out over the last few km/h; the friction brake stops the train
-      else if (heard.a < -0.05 && heard.v > 5 / 3.6) { mode = 'brake'; level = -heard.a / PERF.bService; }
+      // ATO holding its target speed keeps the inverter on at low torque, through its small pulses of power
+      if (!heard.manual && heard.v > 1 && heard.v >= heard.vTarget - 0.4 && heard.a > -0.05) {
+        mode = 'cruise'; level = 0.45 + 0.55 * Math.max(0, heard.a) / tractionAccel(heard.v);
+      } else if (heard.a > 0.03) { mode = 'power'; level = heard.a / tractionAccel(heard.v); }
+      // the electric brake holds down to a stand (the stop recording runs to 0 Hz)
+      else if (heard.a < -0.05 && heard.v > 0) { mode = 'brake'; level = -heard.a / PERF.bService; }
     }
     this.audio.setTraction(mode, heard?.v ?? 0, level);
     // and a chime once for each coming restriction announced on its DMI

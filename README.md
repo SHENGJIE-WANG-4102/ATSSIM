@@ -307,8 +307,9 @@ Alarm and call tones (Web Audio, no files). Toggle with the speaker button or **
 **Traction sound** of the selected train (02A05, TKQ506B-2000 IGBT-VVVF), played from
 recordings by speed: grains are read from where the recording runs at the train's stator
 frequency, so the pitch and the PWM mode changes follow the train. Power uses a recorded
-start, electric braking a recorded stop; coasting, a stand, the EB and the last 5 km/h are
-silent. Up to 5× only. The recordings are third-party (Bilibili BV1VGZiBPEjt) and not in
+start, electric braking a recorded stop down to a stand, ATO speed holding the recorded steady
+running before the brake (resampled to the speed); coasting, a stand and the EB are silent.
+Up to 5× only; switch it off in 设置 › 走行音. The recordings are third-party (Bilibili BV1VGZiBPEjt) and not in
 the repository: cut them from p02.wav with `scripts/vvvf-clips.sh path/to/p02.wav` into
 `public/sounds/vvvf/` (git-ignored); without them the sound stays off (D61).
 

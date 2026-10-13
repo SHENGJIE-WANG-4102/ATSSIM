@@ -20,7 +20,7 @@
  * f₁ ≈ 4.77 Hz per m/s (106 Hz at 80 km/h), slip ignored. Consistent with the
  * recordings: their slopes are 0.84 m/s² under power and 0.78 m/s² braking,
  * an ATO start and a service brake. The recordings reach ~94 Hz (≈70 km/h);
- * above that the end of the run is held.
+ * above that the steady end of the run is resampled (src/ui/vvvf.ts).
  */
 export const VVVF_HZ_PER_MS = 4.77;
 

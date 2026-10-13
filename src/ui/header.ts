@@ -2,7 +2,7 @@
  * Top status bar: clock, simulation speed, the system title with the
  * Shanghai Metro and Line 2 logos, system level per ZC zone, KPIs (incl.
  * the day's ridership), alarm counters, and a 设置 menu with second-level
- * entries (UI scale, sound) plus 运营日 / 诊断导出 / 帮助.
+ * entries (UI scale, sound, the selected train's traction sound) plus 运营日 / 诊断导出 / 帮助.
  */
 import { h, clear } from './dom';
 import type { Store } from './store';
@@ -20,6 +20,8 @@ export interface HeaderHooks {
   setScale(v: number): void;
   muted(): boolean;
   setMuted(m: boolean): void;
+  traction(): boolean;
+  setTraction(on: boolean): void;
   help(): void;
 }
 
@@ -112,7 +114,7 @@ export class Header {
       el.addEventListener('click', (e) => { if (e.target === el || (e.target as HTMLElement).parentElement === el) el.classList.toggle('open'); });
       return el;
     };
-    const scale = this.hooks.scale(), muted = this.hooks.muted();
+    const scale = this.hooks.scale(), muted = this.hooks.muted(), traction = this.hooks.traction();
     clear(this.menu);
     this.menu.append(
       sub('界面缩放', `${Math.round(scale * 100)}%`,
@@ -121,6 +123,9 @@ export class Header {
         item('放大', () => this.stepScale(1), { key: 'Ctrl +' }), item('缩小', () => this.stepScale(-1), { key: 'Ctrl −' })),
       sub('声音', muted ? '静音' : '开启',
         item('开启', () => this.hooks.setMuted(false), { on: !muted, key: 'M' }), item('静音', () => this.hooks.setMuted(true), { on: muted, key: 'M' })),
+      sub('走行音', traction ? '开启' : '关闭',
+        item('开启', () => { this.hooks.setTraction(true); this.refreshScale(); }, { on: traction }),
+        item('关闭', () => { this.hooks.setTraction(false); this.refreshScale(); }, { on: !traction })),
       h('div', { class: 'msep' }),
       item('运营日 / 重新开始…', close(() => this.hooks.restart())),
       item('诊断导出', close(() => this.store.send({ type: 'diagnostics' })), {}),

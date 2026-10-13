@@ -11,6 +11,8 @@ export class Audio {
   private ctx: AudioContext | null = null;
   private master: GainNode | null = null;
   muted = loadPref('muted', false);
+  /** the inverter sound of the selected train, switched on and off in 设置 › 走行音 */
+  traction = loadPref('traction', true);
   private ringTimer = 0;
   private alarmTimer = 0;
   private overTimer = 0;
@@ -139,9 +141,14 @@ export class Audio {
     this.tone(660, 0.2, 0.3, 'sine', 0.45);
   }
 
+  setTractionOn(on: boolean) {
+    this.traction = on;
+    savePref('traction', on);
+  }
+
   /** the inverter sound of the train listened to (see vvvf.ts) */
   setTraction(mode: VvvfMode, v: number, level: number) {
-    this.vvvf?.set(this.muted ? 'off' : mode, v, level);
+    this.vvvf?.set(this.muted || !this.traction ? 'off' : mode, v, level);
   }
 
   click() {

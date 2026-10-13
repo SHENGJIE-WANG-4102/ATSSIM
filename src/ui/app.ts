@@ -132,6 +132,8 @@ export class App {
       setScale: (v) => this.setScale(v),
       muted: () => this.audio.muted,
       setMuted: (m) => { this.audio.setMuted(m); this.header.refreshScale(); },
+      traction: () => this.audio.traction,
+      setTraction: (on) => this.audio.setTractionOn(on),
       help: () => openHelp(this.overlay),
     });
     this.side = new SidePanel(store, this.audio, panelHooks);
