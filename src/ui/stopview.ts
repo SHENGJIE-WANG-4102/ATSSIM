@@ -36,6 +36,10 @@ const XE_NEAR = 600;
 const XE_FAR = 176;
 /** screen x kept for the end of the view ahead: the end door and a little beyond */
 const X_AHEAD = W - 24;
+/** across the track the picture shrinks with the scale (true proportions), down to this */
+const K_MIN = 0.3;
+/** the line it shrinks towards: the middle of the view */
+const Y0 = 95;
 /** metres shown beyond the stopping point (pillar): the end door and some wall */
 const BEYOND = 3.5;
 const EYE = 1.8;
@@ -142,12 +146,18 @@ export class StopView {
     const { px: PX, xe: XE } = stopViewScale(rem);
     // drawn for a platform on top (driver's left); mirrored otherwise
     const top = t.platSide === 'L';
-    const yOf = (y: number, hh = 0) => (top ? y : H - y - hh);
+    // across the track: true proportions with the scale (26 px/m is 3 m of car = 78 px), not below K_MIN
+    const k = Math.max(K_MIN, Math.min(1, PX / PX_NEAR));
+    const Y = (y: number) => Y0 + (y - Y0) * k;
+    /** screen y of a point drawn at y (design units) */
+    const P = (y: number) => (top ? Y(y) : H - Y(y));
+    /** screen top of a band drawn from y, hh high */
+    const yOf = (y: number, hh = 0) => (top ? Y(y) : H - Y(y) - hh * k);
     const rect = (x: number, y: number, w: number, hh: number, col: string) => {
       const a = Math.max(-2, x), b = Math.min(W + 2, x + w);
       if (b <= a) return;
       c.fillStyle = col;
-      c.fillRect(a, yOf(y, hh), b - a, hh);
+      c.fillRect(a, yOf(y, hh), b - a, hh * k);
     };
     /** screen x of a lineside position p (m from the stop mark, + = beyond) */
     const sx = (p: number) => XE + (p + rem) * PX;
@@ -181,7 +191,9 @@ export class StopView {
       const mw = Math.min(4, Math.max(1, 0.15 * PX));
       // door numbers: every door while there is room for them, else the first door of each car
       const everyDoor = DOOR_PITCH * PX >= 30;
-      c.font = `bold ${everyDoor ? 13 : 12}px ${FONT}`;
+      const small = k < 0.55;
+      c.font = `bold ${small ? 10 : everyDoor ? 13 : 12}px ${FONT}`;
+      const ph = small ? 12 : 15;
       c.textAlign = 'center';
       c.textBaseline = 'middle';
       for (let car = 0; car < CARS; car++) {
@@ -198,11 +210,13 @@ export class StopView {
           if (!everyDoor && k > 0) return;
           // number plate on the door header, read from the platform
           const label = `${car + 1}-${k + 1}`;
-          const lw = c.measureText(label).width + 6;
+          const lw = c.measureText(label).width + (small ? 4 : 6);
           const cx = sx(dc);
-          rect(cx - lw / 2, 38, lw, 15, C.sign);
+          // (plates and the stop board keep their size at every scale)
+          c.fillStyle = C.sign;
+          c.fillRect(cx - lw / 2, P(45) - ph / 2, lw, ph);
           c.fillStyle = C.number;
-          c.fillText(label, cx, yOf(38, 15) + 8);
+          c.fillText(label, cx, P(45) + 0.5);
         });
       }
       // the last pillar, the end door (端门, swinging) and the stop board 8
@@ -210,7 +224,8 @@ export class StopView {
       rect(sx(0) + 4, 72, Math.max(2, END_DOOR * PX - 6), 6, C.endDoor);
       if (sx(0) > -30 && sx(0) < W + 30) {
         c.fillStyle = C.sign;
-        const bx = sx(0) - 13, by = yOf(10, 26);
+        // just clear of the door plates, on the wall side
+        const bx = sx(0) - 13, by = (top ? Y(45) - 22.5 : H - Y(45) + 22.5) - 13;
         c.fillRect(bx, by, 26, 26);
         c.strokeStyle = '#000';
         c.lineWidth = 2;
@@ -258,7 +273,7 @@ export class StopView {
     }
     // nose and windscreen
     c.fillStyle = C.body;
-    const yT = yOf(90), yB = yOf(168), xn = xOf(-NOSE);
+    const yT = P(90), yB = P(168), xn = xOf(-NOSE);
     c.beginPath();
     c.moveTo(xn, yT); c.quadraticCurveTo(xNose + Math.max(1, 0.15 * PX), (yT + yB) / 2, xn, yB); c.closePath();
     c.fill();
@@ -267,7 +282,7 @@ export class StopView {
     rect(XE - Math.min(7, 0.27 * PX), 98, Math.min(14, 0.54 * PX), 16, C.windscreen);
     c.fillStyle = C.eye;
     c.beginPath();
-    const ey = yOf(88), tip = yOf(80);
+    const ey = P(88), tip = ey + (top ? -8 : 8);
     c.moveTo(XE - 7, ey); c.lineTo(XE + 7, ey); c.lineTo(XE, tip);
     c.closePath();
     c.fill();
