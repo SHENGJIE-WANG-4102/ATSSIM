@@ -6,6 +6,7 @@ import type { Sim } from './engine';
 import type { Train, BodySeg } from './model';
 import { nextLink, linkChain, type Dir } from './topology';
 import { profileOf, heightAt, chainSense, gradeAccelAt, brakingSpeedH } from './gradient';
+import { adhesionLimit, LOW_ADH_BPLAN, LOW_ADH_TRACTION } from './adhesion';
 import { swPos } from './interlocking';
 import { TRACTION_UNITS } from './vehicle';
 import { PERF, brakingSpeed, controlAccel, jerkLimited, speedAfterEasing, tractionAccel } from './dynamics';
@@ -581,6 +582,10 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   const aG = gradeAccelAt(prof, head, sense);
   const h0 = heightAt(prof, head);
   const rise = (d: number) => sense ? heightAt(prof, head + sense * d) - h0 : 0;
+  // wet rail (adhesion.ts); in low-adhesion mode ATO brakes earlier and softer on the exposed section
+  const adh = adhesionLimit(sim, tr);
+  const lowAdh = sim.env.lowAdh && adh.exposed && !tr.manual;
+  const bPlan = lowAdh ? LOW_ADH_BPLAN : PERF.bPlan;
   let vT = scan.vBody - (rm ? 0.3 : atoMargin);
   let vPerm = scan.vBody;
   let vEbi = scan.vBody + PERF.atpTolerance;
@@ -596,14 +601,14 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   for (let i = 0; i < scan.constraints.length; i += 2) {
     const d = scan.constraints[i];
     const v = scan.constraints[i + 1];
-    vT = Math.min(vT, brakingSpeed(d - 3, v - (rm ? 0.2 : atoMargin), PERF.bPlan));
+    vT = Math.min(vT, brakingSpeed(d - 3, v - (rm ? 0.2 : atoMargin), bPlan));
     const dh = rise(d);
     vPerm = Math.min(vPerm, brakingSpeedH(d, v, PERF.bPermit, dh));
     vEbi = Math.min(vEbi, brakingSpeedH(d, v, PERF.bEbGuaranteed, dh) + PERF.atpTolerance);
     if (v < scan.vBody - 0.1) consider(d, v, '限速');
   }
-  vT = Math.min(vT, brakingSpeed(scan.maDist - 1, 0, PERF.bPlan));
-  if (scan.stopDist !== Infinity) vT = Math.min(vT, brakingSpeed(scan.stopDist - 0.2, 0, PERF.bPlan));
+  vT = Math.min(vT, brakingSpeed(scan.maDist - 1, 0, bPlan));
+  if (scan.stopDist !== Infinity) vT = Math.min(vT, brakingSpeed(scan.stopDist - 0.2, 0, bPlan));
   if (!(tr.manual && rm)) {
     const dh = rise(scan.maDist);
     vPerm = Math.min(vPerm, brakingSpeedH(scan.maDist, 0, PERF.bPermit, dh));
@@ -622,6 +627,9 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     }
   }
   vT = Math.min(vT, vPerm, tr.vCap);
+  // standing a few metres short of a signal at stop: ATO does not start into
+  // so short an authority (it could not ease off in time under the jerk limit)
+  if (!rm && !tr.manual && tr.v < 0.05 && scan.maCode === 'ROUTE_WAIT' && scan.maDist < 15) vT = 0;
   if (tr.mode === 'CM') vT *= 0.96;
   if (tr.hold && tr.v < 0.1) vT = 0;
   if (standStill) vT = 0;
@@ -658,17 +666,24 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     if ((standStill || tr.doorSide || tr.doorsOpen) && a > 0) a = 0;
     trackApproach(tr);
   } else {
-    const c = controlAccel(speedAfterEasing(tr.v, tr.a), vT, stopAt);
+    let c = controlAccel(speedAfterEasing(tr.v, tr.a), vT, stopAt);
+    // slid past the stopping point on wet rail: brake to a stand (ats.ts then decides)
+    if (adh.brake < Infinity && tr.v > 0 && tr.tasks[0]?.k === 'stop' && stopError(sim, tr) < -0.3) c = -PERF.bService;
     // in traction a falling grade is a bonus, not something to brake off
     a = c > 0 ? Math.max(c - aG, c) : c - aG;
     // standing with nothing asked for: the brakes hold it against the grade
     if (tr.v === 0 && vT <= 0.01) a = 0;
-    a = Math.max(-PERF.bService, Math.min(tractionAccel(tr.v), a));
+    a = Math.max(-PERF.bService, Math.min(tractionAccel(tr.v) * (lowAdh ? LOW_ADH_TRACTION : 1), a));
   }
   // inverters cut out (vehicle.ts): less traction, braking blended out by the friction brake
   if (tr.tractionCut > 0 && a > 0) a = Math.min(a, tractionAccel(tr.v) * (1 - tr.tractionCut / TRACTION_UNITS));
   // traction and service braking build up and ease off at the jerk limit; the EB does not
   if (!tr.eb) a = jerkLimited(tr.a, a, dt);
+  // no more than the wheels can transmit: anti-slip in traction, WSP in braking;
+  // the emergency brake sands the rail and is not limited
+  tr.slip = '';
+  if (!tr.eb && a > adh.trac) { a = adh.trac; tr.slip = 'slip'; }
+  else if (!tr.eb && a < -adh.brake) { a = -adh.brake; tr.slip = 'slide'; }
   tr.a = a;
   const v0 = tr.v;
   // at a stand the holding brake keeps it there until traction beats the grade (no roll-back)
@@ -692,7 +707,8 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
     }
   } else {
     // never pass the stopping point / MA end
-    const hard = tr.eb ? Infinity : Math.max(0, stopAt + 0.3);
+    // (a sliding train can go past it)
+    const hard = tr.eb || tr.slip === 'slide' ? Infinity : Math.max(0, stopAt + 0.3);
     if (ds > hard) { ds = hard; tr.v = Math.min(tr.v, 0.3); }
     if (stopAt < 0.4 && tr.v < 0.35 && !tr.eb) tr.v = 0;
   }

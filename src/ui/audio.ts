@@ -141,6 +141,21 @@ export class Audio {
     this.tone(660, 0.2, 0.3, 'sine', 0.45);
   }
 
+  /**
+   * Door warning of the train listened to (synthesised 【假设】: the 02A05 tone is
+   * not recorded): a few short beeps as the doors open, a beep train while they
+   * close. Goes with the traction sound setting (the sounds on board).
+   */
+  doorChime(closing: boolean) {
+    if (!this.traction) return;
+    this.ensure();
+    const n = closing ? 12 : 3;
+    for (let i = 0; i < n; i++) {
+      this.tone(2300, i * 0.25, 0.13, 'triangle', 0.22);
+      this.tone(4600, i * 0.25, 0.13, 'sine', 0.05);
+    }
+  }
+
   setTractionOn(on: boolean) {
     this.traction = on;
     savePref('traction', on);

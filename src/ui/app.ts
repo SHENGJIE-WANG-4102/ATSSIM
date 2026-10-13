@@ -441,7 +441,7 @@ export class App {
     const ft = fol >= 0 ? s.trains.find((t) => t.id === fol) : undefined;
     if (fol >= 0 && !ft && this.overview) this.overview.follow = -1;
     const sc = s.scenario && !s.scenario.ended ? s.scenario : null;
-    const key = `${ft ? `${ft.svc}-${ft.trip}` : ''}|${s.replay.replaying}|${Math.floor(s.replay.to / 60)}|${s.env.wind}|${s.env.rain}|${sc ? Math.floor((sc.end - s.t) / 30) : ''}|${s.paused}|${this.mode}`;
+    const key = `${ft ? `${ft.svc}-${ft.trip}` : ''}|${s.replay.replaying}|${Math.floor(s.replay.to / 60)}|${s.env.wind}|${s.env.rain}|${s.env.rain || s.t < s.env.dryAt}|${s.env.lowAdh}|${sc ? Math.floor((sc.end - s.t) / 30) : ''}|${s.paused}|${this.mode}`;
     if (key === this.statusKey) return;
     this.statusKey = key;
     clear(this.status);
@@ -460,6 +460,13 @@ export class App {
       if (w) parts.push(`${w.label} 高架 ${w.kmh ? `≤${w.kmh}` : '停运'}`);
       if (s.env.rain) parts.push(`暴雨 露天段 ≤${WEATHER_RULES.rain.kmh}`);
       this.status.append(h('span', { class: 'banner weather' }, h('b', {}, '气象限速'), parts.join(' · ')));
+    }
+    // wet rail on the exposed section (adhesion.ts): the dispatcher's low-adhesion mode
+    if (s.env.rain || s.t < s.env.dryAt || s.env.lowAdh) {
+      const on = s.env.lowAdh;
+      this.status.append(h('span', { class: 'banner weather' }, h('b', {}, s.env.rain || s.t < s.env.dryAt ? '轨面湿滑' : '轨面已干'),
+        h('button', { class: on ? 'btn warn' : 'btn', title: '露天段列车降低牵引、提前以较小减速度制动，减少空转滑行和过标，运行时分增加',
+          onclick: async () => { const r = await this.store.command({ c: 'lowAdhesion', on: !on }); toast(r.msg, r.ok); } }, on ? '取消低粘着模式' : '低粘着模式')));
     }
     if (sc) {
       const left = Math.max(0, sc.end - s.t);

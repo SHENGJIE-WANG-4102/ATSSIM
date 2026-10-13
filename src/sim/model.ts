@@ -248,6 +248,10 @@ export interface Train {
   vfault: VehicleFault | null;
   /** withdraw at the end of the current trip (终点站下线) */
   withdrawAtEnd: boolean;
+  /** wheels at the adhesion limit this step: spinning in traction, sliding under braking */
+  slip: '' | 'slip' | 'slide';
+  /** metres past the stopping point after sliding (ATO), 0 none (adhesion.ts) */
+  overrun: number;
   /** train status flags */
   failed: boolean;
   failRecoverAt: number;
@@ -532,6 +536,7 @@ export type Command =
   | { c: 'radio'; call: number; option: string }
   | { c: 'radioAuto'; on: boolean }
   | { c: 'env'; wind?: number; rain?: boolean; duration: number }
+  | { c: 'lowAdhesion'; on: boolean }
   | { c: 'randomFaults'; level: number }
   | { c: 'scenarioEnd' }
   | { c: 'bookmark'; label: string };
@@ -620,6 +625,7 @@ export interface TrainSnap {
   tgtReason: string;
   /** grade under the head in the direction of travel (‰, + = climbing) */
   grade: number;
+  slip: '' | 'slip' | 'slide';
   stopDist: number;
   a: number;
   manual: boolean;
@@ -683,7 +689,15 @@ export interface RadioCall {
 
 export interface Possession { id: number; name: string; sections: number[]; from: number; to: number; state: 'planned' | 'requested' | 'active' | 'releasing' | 'done' | 'cancelled' }
 
-export interface EnvState { wind: number; rain: boolean; windUntil: number; rainUntil: number }
+export interface EnvState {
+  wind: number; rain: boolean; windUntil: number; rainUntil: number;
+  /** the exposed rail stays wet until then after the rain (adhesion.ts) */
+  dryAt: number;
+  /** slippery spots of the current wet spell, by main track and chainage */
+  slick: { track: string; from: number; to: number }[];
+  /** low-adhesion mode set by the dispatcher (低粘着模式) */
+  lowAdh: boolean;
+}
 
 export interface YardState { tracks: string[][]; perTrack: number }
 

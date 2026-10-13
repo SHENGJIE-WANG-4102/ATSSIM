@@ -278,7 +278,23 @@ exposed:
 | 暴雨 | elevated and at grade ≤ 60 km/h |
 
 Restricted stretches are shown with blue dashes and badges, and a banner shows the
-current weather. Night possessions (施工封锁) are requested and released by phone. The
+current weather.
+
+Rain also wets the exposed rail (it stays wet for 20 min after the rain) and the
+adhesion drops, more so at speed and on a few slippery spots (D66, figures assumed):
+trains spin their wheels starting and slide braking (DMI 空转/滑行, the inverter sound
+jumps), and an ATO train can slide past its stopping point. It then stands with its doors
+off the platform doors and the driver calls: back up to the mark (≤ 15 m) or pass the
+station. The **低粘着模式** button on the 轨面湿滑 banner makes ATO on the exposed
+section pull less and brake earlier and softer (0.55 instead of 0.75 m/s²): few slides,
+longer running times.
+
+The line has a vertical profile (D65, synthesized, no profile is public): energy-saving
+dips between the underground stations, the dive under the 黄浦江 and the 30‰ climb onto
+the viaduct. Gravity acts on the train, the ATP curves allow for the height to the target,
+and the cab DMI shows the grade.
+
+Night possessions (施工封锁) are requested and released by phone. The
 morning possessions must be released (销点) before the first trains can run.
 
 ### Instructor tab (教员), scenarios and scoring

@@ -28,7 +28,7 @@ import { stopError } from './movement';
 import { initYards, vehicleName } from './yard';
 import { radioTick, answerCall, type CallSpec } from './radio';
 import { dispatcherTick, newDispatcher, type DispatcherState } from './dispatcher';
-import { exposureOf, envTick, initPossessions, setWeather } from './env';
+import { exposureOf, envTick, initPossessions, setWeather, setLowAdhesion } from './env';
 import { holidayOf, holidayFixedRuns, holidayTick, type HolidayDay } from './holiday';
 import { vehicleTick, vehicleNote } from './vehicle';
 import { initConnections, connectionsTick, connectionDeparture, type Connection } from './connections';
@@ -142,7 +142,7 @@ export class Sim {
   integrity: IntegrityState = newIntegrity();
   /** run the invariant checks (on by default; the perf budget includes them) */
   checkIntegrity = true;
-  env: EnvState = { wind: 0, rain: false, windUntil: 0, rainUntil: 0 };
+  env: EnvState = { wind: 0, rain: false, windUntil: 0, rainUntil: 0, dryAt: 0, slick: [], lowAdh: false };
   exposure: Uint8Array;
   possessions: Possession[] = [];
   metrics: Metrics;
@@ -626,6 +626,7 @@ export class Sim {
         this.autoRadio = cmd.on;
         return { ok: true, msg: cmd.on ? '通话自动应答（演示）' : '通话需人工应答' };
       case 'env': return setWeather(this, { wind: cmd.wind, rain: cmd.rain, duration: cmd.duration });
+      case 'lowAdhesion': return setLowAdhesion(this, cmd.on);
       case 'randomFaults': return setRandomFaults(this, cmd.level);
       case 'scenarioEnd': {
         const r = endScenario(this);
@@ -729,7 +730,7 @@ export class Sim {
         task: t0 ? describeTask(this, t0) : '—', kind: tr.tripId >= 0 ? this.plan.trips[tr.tripId].kind : '',
         rm: tr.mode === 'RM',
         vTarget: tr.vTarget, tgtV: tr.tgtV, tgtD: Number.isFinite(tr.tgtD) ? tr.tgtD : -1, tgtReason: tr.tgtReason,
-        grade: gradePermille(this.topo, tr.link, tr.off, tr.dir),
+        grade: gradePermille(this.topo, tr.link, tr.off, tr.dir), slip: tr.slip,
         stopDist: Number.isFinite(tr.stopDist) ? tr.stopDist : -1, a: tr.a, manual: tr.manual, notch: tr.notch,
         dwellLeft: tr.phase === 'dwell' || tr.phase === 'reversing' ? Math.max(0, tr.dwellUntil - this.t) : 0,
         nextStation: nextStopStation(tr), ebReason: tr.eb ? tr.ebReason : tr.stopUntil > this.t ? tr.stopReason : '',
@@ -837,6 +838,7 @@ export function describeCommand(sim: Sim, cmd: Command): string {
     case 'radio': return '通话应答';
     case 'radioAuto': return '通话应答方式';
     case 'env': return '【教员】环境设置';
+    case 'lowAdhesion': return `${cmd.on ? '设置' : '取消'}低粘着模式`;
     case 'randomFaults': return '【教员】随机故障';
     case 'scenarioEnd': return '【教员】结束评估';
     case 'bookmark': return '添加书签';

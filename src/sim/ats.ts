@@ -12,7 +12,7 @@ import { nextLink } from './topology';
 import { cancelRoute, swPos, trySetRoute, releaseRoute, approachLocked, bindRouteApproach, committedTrain, relockRescueApproach } from './interlocking';
 import { computeBody, reverseTrain, goalBerth, stopError, moveBack, rescueRouteReady } from './movement';
 import { takeVehicle, putVehicle } from './yard';
-import { callRmPreset, unsafeAhead } from './radio';
+import { callRmPreset, unsafeAhead, openCall } from './radio';
 import { applyEB, grantRM, setMode, distToNextSignal } from './onboard';
 import { openDoors, closeDoors } from './psd';
 import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation, departureBerthAfterReverse } from './timetable';
@@ -326,7 +326,7 @@ export function newTrain(sim: Sim, block: Block | null, link: number, off: numbe
     load: 0, delay: 0, hold: false, skipStations: new Set(), failed: false, failRecoverAt: 0, failRecoverable: true,
     rescueBy: -1, rescuing: -1, coupledLen: 0, inService: true, nextSignal: -1, nextSignalDist: Infinity,
     lastStation: -1, trace: [], lastTraceT: -1e9, lastTraceCh: NaN, stopsMade: 0, overspeedEvents: 0, passedRed: 0,
-    withdrawn: false, extraDwell: 0, tractionCut: 0, doorsCut: 0, vCap: Infinity, vfault: null, withdrawAtEnd: false,
+    withdrawn: false, extraDwell: 0, tractionCut: 0, doorsCut: 0, vCap: Infinity, vfault: null, withdrawAtEnd: false, slip: '', overrun: 0,
     manual: false, notch: 0, tgtV: 0, tgtD: Infinity, tgtReason: '', coupledVehicle: '',
     drv: { stops: [], overspeed: 0, spad: 0, since: sim.t, releases: 0, braking: false, restop: false }, stopUntil: 0, stopReason: '', waitSince: 0,
     vEbi: 0, dmiLog: [], dmiPrev: null,
@@ -494,6 +494,9 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
       if (goal >= 0 && tr.v < 0.05) manualArrival(sim, tr, cur);
     } else if (goal >= 0 && tr.v < 0.05 && tr.stopDist < 0.8) {
       arriveAtBerth(sim, tr, cur);
+    } else if (cur.k === 'stop' && tr.v < 0.05 && !tr.overrun) {
+      const err = stopError(sim, tr);
+      if (err < -0.8) atoOverrun(sim, tr, cur, err);
     }
     if (cur.k === 'depot') {
       const b = topo.berths[topo.depots[cur.depot].berth];
@@ -775,6 +778,53 @@ export function stopScore(err: number): number {
   if (a <= 0.75) return 75;
   if (a <= 1.0) return 60;
   return 0;
+}
+
+/** beyond this an overrun ATO train passes the station instead of backing up (m) 【假设】 */
+const OVERRUN_BACK_MAX = 15;
+
+/** an ATO train slid past its stopping point on wet rail (adhesion.ts): it stands until the dispatcher decides */
+function atoOverrun(sim: Sim, tr: Train, task: StopTask, err: number) {
+  tr.overrun = -err;
+  tr.stopUntil = sim.t + 86400;
+  tr.stopReason = '过标停车';
+  const st = STATIONS[task.station].name;
+  const m = (-err).toFixed(1);
+  sim.log('B', '列车', `列车 ${trainLabel(tr)} ${st} 轨面湿滑制动滑行，过标 ${m} m`, { key: `overrun-${tr.id}`, train: tr.id });
+  const far = -err > OVERRUN_BACK_MAX;
+  const end = task.dep === null;
+  openCall(sim, {
+    kind: 'overrun', from: `列车 ${trainLabel(tr)} 司机`, train: tr.id,
+    text: `${st}进站滑行过标 ${m} m，车门与站台门未对齐，请求${far ? '指示' : '退行对标'}`,
+    options: [
+      { key: 'back', label: '同意退行对标' },
+      ...(end ? [] : [{ key: 'skip', label: '越站，不办理客运' }]),
+    ],
+    auto: far && !end ? 'skip' : 'back', timeout: 60,
+  });
+}
+
+export function answerOverrun(sim: Sim, tr: Train | undefined, option: string): { ok: boolean; msg: string } {
+  if (!tr || !tr.overrun) return { ok: false, msg: '情况已变化' };
+  const task = tr.tasks[0];
+  const d = tr.overrun;
+  tr.overrun = 0;
+  tr.stopUntil = 0;
+  tr.stopReason = '';
+  sim.clearAlarm(`overrun-${tr.id}`);
+  if (d > 5) sim.metrics.safety.overrun++;
+  if (task?.k !== 'stop') return { ok: true, msg: '' };
+  if (option === 'skip') {
+    sim.log('B', '列车', `列车 ${trainLabel(tr)} ${STATIONS[task.station].name} 过标 ${d.toFixed(0)} m，越站（未办理客运）`);
+    tr.tasks.shift();
+    return { ok: true, msg: '越站运行，前方站广播' };
+  }
+  // backing up under the dispatcher's permission takes its time
+  moveBack(sim, tr, d);
+  arriveAtBerth(sim, tr, task);
+  if (tr.doorsAwait) tr.extraDwell += 30;
+  else { tr.dwellUntil += 30; tr.depReadyAt += 30; }
+  return { ok: true, msg: `退行 ${d.toFixed(1)} m 对标` };
 }
 
 /** a manually driven train has come to a stand: check the stopping position */

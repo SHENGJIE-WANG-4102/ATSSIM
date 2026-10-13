@@ -12,7 +12,7 @@
 import type { Sim } from './engine';
 import type { RadioCall, Train } from './model';
 import { STATIONS } from '../data/line2';
-import { cmdAuthRM, cmdRescue, rescueApproach, trainLabel } from './ats';
+import { cmdAuthRM, cmdRescue, rescueApproach, trainLabel, answerOverrun } from './ats';
 import { grantRM, answerDegrade, answerEbRelease } from './onboard';
 import { setBypass } from './psd';
 import { HALT, type HaltCode } from './halt';
@@ -102,6 +102,8 @@ function applyAnswer(sim: Sim, call: RadioCall, option: string): { ok: boolean; 
     case 'vDoorStuck':
     case 'vBrake':
       return answerVehicle(sim, call.kind, tr, option);
+    case 'overrun':
+      return answerOverrun(sim, tr, option);
     case 'degrade':
       if (!tr) return { ok: false, msg: '列车已不在线' };
       return answerDegrade(sim, tr, option);
@@ -382,6 +384,9 @@ function expire(sim: Sim, c: RadioCall) {
     case 'connFeed':
     case 'connOnward':
       expireConnection(sim, c.target!);
+      break;
+    case 'overrun':
+      if (tr?.overrun) again(30);
       break;
     case 'vDoorStuck':
       // the train cannot move until somebody decides

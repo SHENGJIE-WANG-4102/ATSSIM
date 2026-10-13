@@ -66,6 +66,7 @@ export class SidePanel {
   private seenCalls = new Set<number>();
   /** the restriction last announced in the manual cab (chime once per restriction) */
   private indication = '';
+  private doorKey = '';
   private hooks: PanelHooks & { rewind(t: number, replay: boolean): void; locateSel(sel: Selection): void };
 
   constructor(store: Store, audio: Audio, hooks: PanelHooks & { rewind(t: number, replay: boolean): void; locateSel(sel: Selection): void }) {
@@ -193,7 +194,15 @@ export class SidePanel {
       // the electric brake holds down to a stand (the stop recording runs to 0 Hz)
       else if (heard.a < -0.05 && heard.v > 0) { mode = 'brake'; level = -heard.a / PERF.bService; }
     }
-    this.audio.setTraction(mode, heard?.v ?? 0, level);
+    // the inverter follows the wheels: spinning they run ahead of the train, sliding they fall behind,
+    // and the anti-slip / WSP control makes the pitch hunt as it cycles
+    const hunt = Math.sin(performance.now() / 120);
+    const wheel = heard?.slip === 'slip' ? 1.12 + 0.06 * hunt : heard?.slip === 'slide' ? 0.85 + 0.05 * hunt : 1;
+    this.audio.setTraction(mode, (heard?.v ?? 0) * wheel, level);
+    // its door warning, once per opening and closing
+    const doorKey = heard && !snap.paused && snap.speed <= VVVF_MAX_RATE ? `${heard.id}|${heard.doors}` : '';
+    if (doorKey && this.doorKey && doorKey !== this.doorKey && doorKey.split('|')[0] === this.doorKey.split('|')[0]) this.audio.doorChime(!heard!.doors);
+    this.doorKey = doorKey;
     // and a chime once for each coming restriction announced on its DMI
     const ind = cab && speedIndication(cab) ? `${cab.id}|${Math.round(cab.tgtV * 3.6)}|${cab.tgtReason}` : '';
     if (ind && ind !== this.indication) this.audio.chime();

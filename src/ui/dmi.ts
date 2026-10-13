@@ -333,6 +333,7 @@ export class Dmi {
     if (eb) { msg = '紧急制动'; col = C.red; }
     else if (t.v * 3.6 > t.vPermit * 3.6 + 0.5) { msg = '超速'; col = C.yellow; }
     else if (speedIndication(t)) { msg = `${speedIndication(t)} · ${Math.round(t.tgtD)} m`; col = C.yellow; }
+    else if (t.slip) { msg = t.slip === 'slip' ? '空转' : '滑行'; col = C.yellow; }
     else if (t.hold) { msg = '扣车'; col = C.yellow; }
     else if (t.manual && t.doorSide && !t.doors) { msg = '非站台侧车门开启'; col = C.red; }
     else if (t.manual && t.doorsAwait) { msg = '停稳，待开门'; col = C.white; }

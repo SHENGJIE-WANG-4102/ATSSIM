@@ -6,6 +6,7 @@ import type { Sim } from './engine';
 import type { Possession } from './model';
 import { EXPOSED, WEATHER_RULES, POSSESSIONS, STATIONS } from '../data/line2';
 import { openCall, possReqSpec, possRelSpec } from './radio';
+import { DRY_AFTER, railWet, scatterSlick } from './adhesion';
 
 /** per section: 0 = tunnel, 1 = elevated, 2 = at grade */
 export function exposureOf(sim: Sim): Uint8Array {
@@ -26,6 +27,8 @@ export function setWeather(sim: Sim, opts: { wind?: number; rain?: boolean; dura
     parts.push(sim.env.wind > 0 ? WEATHER_RULES.wind[sim.env.wind - 1].label : '大风解除');
   }
   if (opts.rain !== undefined) {
+    if (opts.rain && !railWet(sim)) scatterSlick(sim);
+    if (!opts.rain && sim.env.rain) sim.env.dryAt = sim.t + DRY_AFTER;
     sim.env.rain = opts.rain;
     sim.env.rainUntil = opts.rain ? until : 0;
     parts.push(opts.rain ? WEATHER_RULES.rain.label : '暴雨解除');
@@ -72,9 +75,32 @@ function applyWeather(sim: Sim) {
 export function envTick(sim: Sim) {
   let changed = false;
   if (sim.env.wind > 0 && sim.t >= sim.env.windUntil) { sim.env.wind = 0; changed = true; }
-  if (sim.env.rain && sim.t >= sim.env.rainUntil) { sim.env.rain = false; changed = true; }
+  if (sim.env.rain && sim.t >= sim.env.rainUntil) { sim.env.rain = false; sim.env.dryAt = sim.t + DRY_AFTER; changed = true; }
   if (changed) applyWeather(sim);
+  adhesionAlarm(sim);
   possessionTick(sim);
+}
+
+/** wet rail on the exposed section: an alarm while it lasts (adhesion.ts) */
+function adhesionAlarm(sim: Sim) {
+  const wet = railWet(sim);
+  if (wet && !sim.alarms.has('adhesion')) {
+    sim.log('B', '环境', `高架/地面段轨面湿滑，粘着降低：列车牵引、制动可能空转/滑行，进站可能过标${sim.env.lowAdh ? '' : '（可设置低粘着模式）'}`, { key: 'adhesion' });
+  } else if (!wet && sim.alarms.has('adhesion')) {
+    sim.clearAlarm('adhesion');
+    sim.env.slick = [];
+    sim.log('I', '环境', '高架/地面段轨面已干燥，粘着恢复');
+  }
+}
+
+export function setLowAdhesion(sim: Sim, on: boolean): { ok: boolean; msg: string } {
+  if (sim.env.lowAdh === on) return { ok: false, msg: on ? '已处于低粘着模式' : '未设置低粘着模式' };
+  sim.env.lowAdh = on;
+  const msg = on
+    ? '低粘着模式：露天段列车降低牵引、提前以较小减速度制动（运行时分增加）'
+    : '取消低粘着模式，恢复正常牵引制动';
+  sim.log('C', '调度', msg);
+  return { ok: true, msg };
 }
 
 // ---------------------------------------------------------------- possessions
