@@ -351,16 +351,18 @@ export function radioTick(sim: Sim) {
     const waiting = tr.phase === 'run' && tr.v < 0.05 && !tr.failed && !tr.hold && tr.stopUntil <= sim.t && !tr.pendingMode && !tr.manual
       && tr.maDist < 40 && tr.stopDist > 1.5 && tr.maReason !== '' && tr.tasks[0]?.k !== 'rescue';
     if (!waiting) { tr.waitSince = 0; continue; }
+    const code = tr.halt.code;
+    // RM is offered only for an equipment / signalling failure at the signal ahead
+    const equip = EQUIPMENT_CODES.includes(code);
+    // a train held by another train just waits; preset sections and comm loss have their own calls;
+    // a planned / ordered wait (departure order, hold, layover…) is no reason to call. None of these
+    // count towards the 3 minutes either: a train released from a 90-minute departure-order hold
+    // whose route is still being set is not "stuck"
+    if (tr.halt.train >= 0 || code === 'TRAIN_AHEAD' || code === 'AXLE_PRESET' || code === 'COMM_LOSS'
+      || (HALT[code].exempt && !equip)) { tr.waitSince = 0; continue; }
     if (!tr.waitSince) tr.waitSince = sim.t;
     if (sim.t - tr.waitSince >= 180) {
       const r = tr.maReason;
-      const code = tr.halt.code;
-      // a train held by another train just waits; preset sections and comm loss have their own calls
-      if (tr.halt.train >= 0 || code === 'TRAIN_AHEAD' || code === 'AXLE_PRESET' || code === 'COMM_LOSS') continue;
-      // RM is offered only for an equipment / signalling failure at the signal ahead
-      const equip = EQUIPMENT_CODES.includes(code);
-      // a planned / ordered wait (departure order, hold, layover…) is no reason to call
-      if (HALT[code].exempt && !equip) continue;
       const c = openCall(sim, {
         kind: 'stuck', from: driverOf(tr), train: tr.id,
         text: `在${nearStationName(sim, tr)}因“${r}”停车已超过${Math.floor((sim.t - tr.waitSince) / 60)}分钟，请求指示`,

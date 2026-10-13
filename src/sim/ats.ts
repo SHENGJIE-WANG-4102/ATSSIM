@@ -17,7 +17,7 @@ import { applyEB, grantRM, setMode, distToNextSignal } from './onboard';
 import { openDoors, closeDoors } from './psd';
 import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation, departureBerthAfterReverse } from './timetable';
 import { STATIONS, LINE_INFO, OPERATIONS } from '../data/line2';
-import { boardAndAlight } from './passengers';
+import { boardAndAlight, boardWhileOpen } from './passengers';
 import { dmiNote } from './dmi';
 import { DOOR_CYCLE, MIN_DWELL, regulatedDwell } from './calibration';
 import { BYPASS_EXTRA, PSL_EXTRA } from './psd';
@@ -461,7 +461,7 @@ export function setTripFromTasks(sim: Sim, tr: Train) {
 
 // ---------------------------------------------------------------- per-step task logic
 
-export function updateTrainTasks(sim: Sim, tr: Train) {
+export function updateTrainTasks(sim: Sim, tr: Train, dt = 0.1) {
   const { topo } = sim;
   const task = tr.tasks[0];
   if (tr.tbStage === 'manual' && tr.level === 'CBTC') { tr.tbStage = 'depart'; tr.tbExitSig = -1; }
@@ -515,6 +515,8 @@ export function updateTrainTasks(sim: Sim, tr: Train) {
     // handed back to automatic driving before the driver opened: open now
     if (tr.doorsAwait && !tr.manual) startDoorCycle(sim, tr, st, p, tr.mode === 'RM');
     if (!tr.manual && tr.doorsOpen) tr.doorSide = '';
+    // doors open (closeDoors clears doorsOpen once closing starts): late arrivals keep boarding
+    if (tr.doorsOpen && !tr.doorsAwait) boardWhileOpen(sim, tr, p, st, dt);
     // 站台折返: alighting done, the train changes ends with its doors open
     if (tr.doorsOpen && !tr.doorsAwait && platformTurn(tr, st) && sim.t >= tr.dwellUntil - (DOOR_CYCLE - 3)) { turnOnPlatform(sim, tr, st); return; }
     // the driver works the doors (driverDoor) and leaves once they are closed and locked

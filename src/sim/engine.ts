@@ -388,7 +388,7 @@ export class Sim {
     updateInterlocking(this);
     for (const tr of this.trainList.slice()) {
       const phase = tr.phase;
-      updateTrainTasks(this, tr);
+      updateTrainTasks(this, tr, dt);
       // A departure may occur between ZC refreshes. Do not carry a dwell-time
       // authority into running after the task (and therefore its route) changed.
       if (phase !== 'run' && tr.phase === 'run') withdrawAuthority(this, tr);

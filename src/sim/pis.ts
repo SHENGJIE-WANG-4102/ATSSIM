@@ -23,8 +23,10 @@ export function computePis(sim: Sim, station: number): PisData {
       else eta = Math.max(prevEta + 45, (t.arr ?? t.dep ?? sim.t) + late);
       prevEta = eta;
       if (t.station !== station) continue;
-      if (!t.revenue || !t.doors) break;
       const p = topo.berths[t.berth].platform;
+      // an empty move ending here (it may start in service from here next), or a
+      // call the train will pass (skip-stop, 跳停 / 封站): no train for this board yet
+      if (!t.revenue || !t.doors || sim.plat[p].skip || tr.skipStations.has(station)) continue;
       const track = topo.platforms[p].track;
       let status: PisRow['status'] = 'eta';
       if (i === 0 && tr.phase === 'dwell') status = tr.doorsOpen ? 'at' : 'departing';
@@ -38,6 +40,22 @@ export function computePis(sim: Sim, station: number): PisData {
     }
   }
   for (const k of ['DN', 'UP'] as const) out[k] = out[k].sort((a, b) => a.eta - b.eta).slice(0, 3);
+  // per platform: passed by every train (跳停 / 封站), and the next and the last
+  // planned departure with boarding — what an empty board says
+  const sp = topo.stations[station].platforms;
+  out.skip = { DN: sim.plat[sp.DN].skip, UP: sim.plat[sp.UP].skip };
+  const next: PisData['next'] = {}, done: PisData['done'] = {}, ahead: PisData['ahead'] = {};
+  for (const trip of sim.plan.trips) {
+    if (!trip.revenue || trip.cancelled) continue;
+    for (let i = 0; i < trip.stops.length - 1; i++) {
+      const x = trip.stops[i];
+      if (x.st !== station || !x.stop || x.noBoard) continue;
+      const k = trip.dir as 'DN' | 'UP';
+      if (x.dep >= sim.t) { next[k] = Math.min(next[k] ?? Infinity, x.dep); ahead[k] = (ahead[k] ?? 0) + 1; }
+      else done[k] = true;
+    }
+  }
+  out.next = next; out.done = done; out.ahead = ahead;
   // notices
   const notes: string[] = [];
   const s = topo.stations[station];

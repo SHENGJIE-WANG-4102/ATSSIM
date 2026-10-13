@@ -169,7 +169,15 @@ export class Header {
     if (plan) {
       const p = plan.periods.find((x) => s.t >= x.from && s.t < x.to);
       const ov = plan.overlays.filter((o) => s.t >= o.from && s.t <= o.to).map((o) => o.label);
-      const txt = `${p?.label ?? '—'}${ov.length ? ' + ' + ov.join('、') : ''}${s.scenario && !s.scenario.ended ? ` · 场景：${s.scenario.name}` : ''}`;
+      // after the last regular train, the fixed-time late trains (虹桥 → 龙阳路, more on the
+      // holiday return nights) still run: not 收车 yet
+      let label = p?.label ?? '—';
+      if (label === '末班/收车') {
+        const end = (x: (typeof plan.trips)[number]) => x.stops[x.stops.length - 1].arr ?? 0;
+        const live = plan.trips.filter((x) => x.revenue && !x.cancelled && end(x) > s.t);
+        if (live.length && live.every((x) => x.kind === 'extra')) label = `延时运营（${live.length}班）`;
+      }
+      const txt = `${label}${ov.length ? ' + ' + ov.join('、') : ''}${s.scenario && !s.scenario.ended ? ` · 场景：${s.scenario.name}` : ''}`;
       if (this.period.textContent !== txt) this.period.textContent = txt;
     }
     const zk = s.zones.join(',');

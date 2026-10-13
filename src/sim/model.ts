@@ -669,7 +669,17 @@ export interface Connection {
 
 export interface PisRow {
   dwellRemaining?: number; dest: string; /** destination station index (-1 unknown) */ destSt: number; /** set-down only here */ noBoard?: boolean; eta: number; status: 'eta' | 'arriving' | 'at' | 'departing'; trip: string; load: number }
-export interface PisData { station: number; DN: PisRow[]; UP: PisRow[]; notice: string }
+export interface PisData {
+  station: number; DN: PisRow[]; UP: PisRow[]; notice: string;
+  /** the platform is passed by every train (跳停 / 封站) */
+  skip?: Partial<Record<'DN' | 'UP', boolean>>;
+  /** next planned departure with boarding (s), none: no more today */
+  next?: Partial<Record<'DN' | 'UP', number>>;
+  /** a planned departure with boarding already went today */
+  done?: Partial<Record<'DN' | 'UP', boolean>>;
+  /** planned departures with boarding still to come */
+  ahead?: Partial<Record<'DN' | 'UP', number>>;
+}
 
 export interface RadioCall {
   id: number;

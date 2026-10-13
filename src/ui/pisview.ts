@@ -49,6 +49,8 @@ interface Board {
   load: HTMLElement; ticker: HTMLElement; tickerText: string;
   b1: Box; b2: Box; b3: HTMLElement;
   rows: PisRow[]; t: number; dateLabel: string;
+  /** passed by every train; next planned departure; a departure already went */
+  skip: boolean; next?: number; done: boolean; ahead: number;
 }
 
 function mkBox(): Box {
@@ -95,24 +97,30 @@ function slide(els: HTMLElement[], fill: () => HTMLElement[] | void) {
   }
 }
 
-function emptyText(t: number): string {
-  const tod = t % 86400;
-  return tod >= 4 * 3600 && tod < 6 * 3600 ? '首班车尚未到达' : tod >= 21 * 3600 || tod < 4 * 3600 ? '今日运营已结束' : '暂无列车信息';
+const hhmm = (t: number) => { const d = ((t % 86400) + 86400) % 86400; return `${pad(Math.floor(d / 3600))}:${pad(Math.floor(d % 3600 / 60))}`; };
+
+/** what box `k` of an empty board says, from the plan: passed by every train,
+ *  the next (or first) planned departure, or the last one gone */
+function emptyText(bd: Board, k: number): [string, string] {
+  if (bd.skip) return ['本站列车通过不停车', 'Trains will not stop at this station'];
+  if (k > 0) return bd.ahead <= k ? ['今日无后续列车', 'No further trains today'] : ['暂无列车信息', ''];
+  if (bd.next !== undefined) return bd.done ? [`下一班列车 ${hhmm(bd.next)}`, `Next train ${hhmm(bd.next)}`] : [`首班车 ${hhmm(bd.next)}`, `First train ${hhmm(bd.next)}`];
+  return bd.done ? ['今日末班车已开出', 'The last train has left'] : ['暂无列车信息', ''];
 }
 
-function fillBox(b: Box, k: number, r: PisRow | undefined, t: number) {
-  const key = `${k}|${r?.trip ?? ''}|${r?.dest ?? ''}`;
+function fillBox(b: Box, k: number, r: PisRow | undefined, empty: [string, string]) {
+  const key = `${k}|${r?.trip ?? ''}|${r?.dest ?? ''}|${r ? '' : empty[0]}`;
   if (b.key && key !== b.key) {
     const els = [...(b.key.startsWith(`${k}|`) ? [] : [b.title]), b.digits, b.dest];
     b.key = key;
-    slide(els, () => fillBox(b, k, r, t));
+    slide(els, () => fillBox(b, k, r, empty));
     return;
   }
   b.key = key;
   b.title.textContent = `${ORD_CN[k]}(${ORD[k]})`;
   b.digits.textContent = countdown(r);
   b.el.classList.toggle('arr', !!r && r.status !== 'eta');
-  if (!r) { b.to.textContent = emptyText(t); b.toEn.textContent = ''; return; }
+  if (!r) { [b.to.textContent, b.toEn.textContent] = empty; return; }
   if (r.dest === '本站终到') { b.to.textContent = '终到列车 请勿上车'; b.toEn.textContent = 'Terminating train, please do not board'; return; }
   if (r.noBoard) { b.to.textContent = `本次列车只下不上（往${r.dest}）`; b.toEn.textContent = 'Alighting only, please do not board'; return; }
   b.to.innerHTML = '';
@@ -122,10 +130,10 @@ function fillBox(b: Box, k: number, r: PisRow | undefined, t: number) {
 
 function update(bd: Board) {
   const now = performance.now();
-  const { rows, t } = bd;
-  fillBox(bd.b1, 0, rows[0], t);
+  const { rows } = bd;
+  fillBox(bd.b1, 0, rows[0], emptyText(bd, 0));
   const k = Math.floor(now / 20000) % 2 === 0 || rows.length < 3 ? 1 : 2;
-  fillBox(bd.b2, k, rows[k], t);
+  fillBox(bd.b2, k, rows[k], emptyText(bd, k));
   // clock / station name, 3 s each
   const showClock = Math.floor(now / 3000) % 2 === 0;
   const want = showClock ? `clock` : `name`;
@@ -183,7 +191,7 @@ function build(station: number, track: TrackDir): Board {
   const b1 = mkBox(), b2 = mkBox();
   const b3 = h('div', { class: 'pb pb-info' });
   const root = h('div', { class: 'pis2' }, media, bar, h('div', { class: 'pis-side' }, b1.el, b2.el, b3));
-  return { station, track, root, load, ticker, tickerText: '', b1, b2, b3, rows: [], t: 0, dateLabel: '' };
+  return { station, track, root, load, ticker, tickerText: '', b1, b2, b3, rows: [], t: 0, dateLabel: '', skip: false, done: false, ahead: 0 };
 }
 
 const boards = new WeakMap<HTMLElement, { key: string; list: Board[]; timer: number }>();
@@ -210,6 +218,7 @@ export function renderPis(el: HTMLElement, pis: PisData | null, t: number, dateL
   }
   for (const b of cur.list) {
     b.rows = pis[b.track]; b.t = t; b.dateLabel = dateLabel;
+    b.skip = !!pis.skip?.[b.track]; b.next = pis.next?.[b.track]; b.done = !!pis.done?.[b.track]; b.ahead = pis.ahead?.[b.track] ?? 0;
     if (b.tickerText !== pis.notice) {
       b.tickerText = pis.notice;
       clear(b.ticker);

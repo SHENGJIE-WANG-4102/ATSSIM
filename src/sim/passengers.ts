@@ -126,3 +126,35 @@ export function boardAndAlight(sim: Sim, tr: Train, platform: number, task: Stop
     sim.ridership.peakSectionLoad = Math.max(sim.ridership.peakSectionLoad, tr.load);
   return passengerMinimum(board, alight, tr.load > LINE_INFO.capacity * .95, ps.surge);
 }
+
+/** boarding rate with the doors open: 8 cars x 5 doors, ~0.4 pax/s each 【假设】 */
+const BOARD_RATE = 16;
+
+/**
+ * One tick of boarding while the doors stand open (an origin stop can wait
+ * minutes for its departure): the platform keeps filling and the train takes
+ * the newcomers, up to the crush load and BOARD_RATE per second 【假设】.
+ * No alighting, and the dwell is not extended (late boarders do not hold the train).
+ */
+export function boardWhileOpen(sim: Sim, tr: Train, platform: number, task: StopTask, dt: number) {
+  if (!task.doors || !task.revenue || task.noBoard || task.dep === null) return;
+  // whole seconds only (the step is 0.1 s; waiting is a fraction)
+  if (Math.floor(sim.t) === Math.floor(sim.t - dt)) return;
+  const p = sim.topo.platforms[platform];
+  const ps = sim.plat[p.pool ?? platform];
+  const st = p.station;
+  const room = Math.max(0, LINE_INFO.crushCapacity - tr.load);
+  const board = Math.max(0, Math.min(Math.floor(ps.waiting), room, Math.ceil(BOARD_RATE * Math.max(1, dt))));
+  if (board <= 0) return;
+  ps.waiting -= board;
+  tr.load += board;
+  ps.stranded = Math.floor(ps.waiting);
+  sim.passengersServed += board;
+  sim.metrics.boarded = (sim.metrics.boarded ?? 0) + board;
+  const hour = Math.min(27, Math.floor(sim.t / 3600));
+  sim.ridership.boardings[st][hour] += board;
+  sim.ridership.maxLoad = Math.max(sim.ridership.maxLoad, tr.load);
+  const h = sim.t / 3600;
+  if (sim.plan.dayType === 'weekday' && st >= 4 && st <= 22 && ((h >= 6.8333 && h < 9.5) || (h >= 16.8333 && h < 19.5)))
+    sim.ridership.peakSectionLoad = Math.max(sim.ridership.peakSectionLoad, tr.load);
+}
