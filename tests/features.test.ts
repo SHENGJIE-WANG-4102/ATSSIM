@@ -127,8 +127,9 @@ describe('manual driving', () => {
       check(sim);
       maxV = Math.max(maxV, tr.v);
     }
-    // the EB trips 0.15 m/s over the EBI speed; the step before it can still add one step of full traction
-    expect(maxV).toBeLessThan(PERF.vRM + PERF.atpTolerance + 0.15 + PERF.aMax * 0.1 + 1e-6);
+    // the EB trips 0.15 m/s over the EBI speed; the step before it can still add one step of
+    // full traction, plus gravity on the steepest falling grade (30‰, gradient.ts)
+    expect(maxV).toBeLessThan(PERF.vRM + PERF.atpTolerance + 0.15 + (PERF.aMax + 9.81 * 0.03) * 0.1 + 1e-6);
   });
 });
 
