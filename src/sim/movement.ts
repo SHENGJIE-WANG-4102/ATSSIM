@@ -160,7 +160,10 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
   if (tr.mode === 'RM') res.vBody = Math.min(res.vBody, rescueTarget >= 0 ? PERF.vCouple : PERF.vRM);
   if (tr.tbStage === 'manual' && tr.level === 'TBTC' && tr.mode !== 'RM')
     obstacle(res, 0, 'TBTC牵出须司机人工越过牵出信号内方', 'DIRECTION_WAIT');
-  const pulloutStart = ['manual', 'depart'].includes(tr.tbStage) && berth?.kind === 'platform' && tr.v < 0.05;
+  // (the departure platform of the station it turned back at: a train going
+  // on to stop elsewhere first has no departure platform here to wait for)
+  const pulloutStart = ['manual', 'depart'].includes(tr.tbStage) && berth?.kind === 'platform' && tr.v < 0.05
+    && topo.platforms[berth.platform].station === tr.lastStation;
   if (pulloutStart) {
     const holder = trainInSection(sim, topo.links[berth.link].section, tr.id);
     if (holder >= 0) obstacle(res, 0, '折返发车站台有车，等待平台出清', 'BERTH_WAIT', false, holder);

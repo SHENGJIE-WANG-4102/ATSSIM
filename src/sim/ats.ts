@@ -1272,6 +1272,21 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
         setArsWait(sim, tr, 'REGULATION', -1, sig, '按图出段/插车时刻');
       }
     }
+    // a depot exit changing ends on the junction platform holds that platform
+    // for minutes: it goes only after every train planned to leave there
+    // before it in that direction has left (else it stops them at the platform)
+    if (ok && goalTask.k === 'stop' && goalTask.note === '出段换端' && goalTask.dep === null) {
+      const gt = goalTask;
+      const own = tr.tasks.find((t): t is StopTask => t.k === 'stop' && t.station === gt.station && t.dep !== null);
+      if (own) {
+        const before = sim.trainList.find((o) => o !== tr && !o.failed && o.tasks.some((t) => t.k === 'stop' && t.berth === own.berth
+          && t.dep !== null && t.dep < own.dep! - 1 && t.dep > own.dep! - 900));
+        if (before) {
+          ok = false;
+          setArsWait(sim, tr, 'REGULATION', before.id, sig, '出段换端：让按图先发的列车先行');
+        }
+      }
+    }
     // wrong-direction moves (station-front turnback, single-line working) are
     // only started when the whole path to the berth can be secured at once
     const chain = topo.berths[goal].reverse ? routeChain(sim, sig, goal) : [];
