@@ -65,13 +65,13 @@ export function cancelTrip(trip: Trip, reason: string) {
 
 export type BlockEnd =
   | { kind: 'depot'; depot: number }
-  | { kind: 'stable'; station: number }
+  | { kind: 'stable'; station: number; berth?: number }
   | { kind: 'none' };
 
 export interface Block {
   id: number;
   svc: string;
-  start: { kind: 'depot'; depot: number; time: number } | { kind: 'stable'; station: number };
+  start: { kind: 'depot'; depot: number; time: number } | { kind: 'stable'; station: number; berth?: number };
   end: BlockEnd;
   trips: number[];
   /** A standby took over its later trips (R1, D45): the trips it keeps end

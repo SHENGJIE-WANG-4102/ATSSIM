@@ -5,12 +5,106 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Sim } from '../src/sim/engine';
-import { validatePlan, applyOverlay, OVERLAY_PRESETS, terminalOccupancy } from '../src/sim/timetable';
+import { validatePlan, applyOverlay, OVERLAY_PRESETS, terminalOccupancy, TEMPLATES, dayPeriods, yardNeed, platformBerth, blockTasks } from '../src/sim/timetable';
 import type { DayType } from '../src/sim/model';
 import { SCENARIOS } from '../src/sim/scenario';
 import { STATIONS } from '../src/data/line2';
+import { FIRST_LAST } from '../src/data/firstlast';
 
 const fmtIssues = (xs: { code: string; text: string }[]) => xs.map((i) => `${i.code} ${i.text}`).join('\n');
+
+describe('D72 timetable structure', () => {
+  const H = (h: number, m = 0) => h * 3600 + m * 60;
+  const make = (dayType: DayType) => new Sim({ dayType, dateLabel: 'structure', startTime: H(4), seed: 1 });
+  it('uses a 150-second weekday AM core headway', () => {
+    expect(TEMPLATES.weekdayAM.headway).toBe(150);
+    const sim = make('weekday');
+    for (const dir of ['DN', 'UP'] as const) {
+      const times = sim.plan.trips.filter(t => !t.cancelled && t.dir === dir && t.revenue && t.to !== (dir === 'DN' ? 4 : 22))
+        .flatMap(t => t.stops.filter(s => s.st === (dir === 'DN' ? 4 : 22) && s.dep >= H(7, 30) && s.dep < H(8, 30)).map(s => s.dep)).sort((a, b) => a - b);
+      expect(times.length).toBeGreaterThan(20);
+      for (let i = 1; i < times.length; i++) expect(Math.abs(times[i] - times[i - 1] - 150)).toBeLessThan(1);
+    }
+  });
+  it('keeps short routes at 20:30, then closes them with passenger-carrying withdrawals', () => {
+    const sim = make('weekday');
+    const live = sim.plan.trips.filter(t => t.revenue && !t.cancelled);
+    expect(live.some(t => t.kind === 'small' && t.stops[0].dep <= H(20, 30) && t.stops.at(-1)!.arr > H(20, 30))).toBe(true);
+    expect(live.filter(t => t.kind === 'small' && t.stops.at(-1)!.arr > H(21, 10))).toHaveLength(0);
+    expect(live.some(t => t.kind === 'wd' && t.dir === 'DN' && t.to === 19 && Math.abs(t.stops.at(-1)!.arr - H(20, 55)) <= 300)).toBe(true);
+    expect(live.some(t => t.kind === 'wd' && t.dir === 'UP' && t.from === 22 && t.to === 0 && Math.abs(t.stops[0].dep - H(20, 55)) <= 180)).toBe(true);
+    expect(dayPeriods('weekday').some(p => p.template === 'weekdayEvening')).toBe(false);
+    expect(dayPeriods('weekend').find(p => p.from === H(21))?.template).toBe('weekdayEvening');
+  });
+  for (const dayType of ['weekday', 'weekend'] as const) {
+    it(`${dayType}: official first trains and eight overnight trains fit the yards`, () => {
+      const sim = make(dayType), { plan, topo } = sim;
+      for (const [id, dir] of [['LYL', 'UP'], ['KJG', 'UP'], ['GLL', 'UP'], ['PXL', 'DN'], ['GLL', 'DN'], ['PDA', 'UP']] as const) {
+        const st = STATIONS.findIndex(s => s.id === id);
+        const row = FIRST_LAST.find(r => r.station === STATIONS[st].name)!;
+        const [h, m] = (dir === 'DN' ? row.firstE : row.firstW).split(':').map(Number);
+        const departures = plan.trips.filter(t => !t.cancelled && t.revenue && t.dir === dir && t.to !== st)
+          .flatMap(t => t.stops.filter(s => s.st === st && s.stop && !s.noBoard).map(s => s.dep));
+        const first = Math.min(...departures);
+        expect(first, `${id} ${dir}`).toBeGreaterThanOrEqual(H(h, m) - .001);
+        expect(first, `${id} ${dir}`).toBeLessThanOrEqual(H(h, m) + 60);
+      }
+      // the first trains open the line: they board all the way, wherever run
+      // times put them against the published minutes
+      const opener = (dir: 'UP' | 'DN', from: string, dep: number) => plan.trips.find(t => !t.cancelled && t.dir === dir
+        && STATIONS[t.stops[0].st].id === from && Math.abs(t.stops[0].dep - dep) < 60);
+      for (const [dir, from, dep] of [['DN', 'PXL', H(5, 25)], ['UP', 'LYL', H(5, 20)], ['UP', 'GLL', H(5, 28)], ['DN', 'GLL', H(6)], ['UP', 'PDA', H(6)]] as const) {
+        const t = opener(dir, from, dep);
+        expect(t, `${from} ${dir}`).toBeDefined();
+        expect(t!.revenue).toBe(true);
+        expect(t!.stops.filter(s => s.stop && s.noBoard && s.st !== t!.to).map(s => STATIONS[s.st].id), `${from} ${dir}`).toEqual([]);
+      }
+      expect(plan.blocks.filter(b => b.start.kind === 'stable')).toHaveLength(8);
+      expect(plan.blocks.filter(b => b.start.kind === 'stable' && b.start.station === 17)).toHaveLength(0);
+      const gll = plan.blocks.filter(b => b.start.kind === 'stable' && b.start.station === 22);
+      expect(gll).toHaveLength(2);
+      for (const b of gll) {
+        const first = plan.trips[b.trips[0]];
+        expect(first.stops[0].dep).toBe(first.dir === 'UP' ? H(5, 28) : H(6));
+        if (b.start.kind !== 'stable') throw new Error('stable');
+        const berth = topo.berths[b.start.berth!];
+        expect(berth.platform === topo.stations[22].platforms.DN).toBe(first.dir === 'DN');
+        expect(blockTasks(topo, plan, b).find(t => t.k === 'stop')).toMatchObject({ berth: b.start.berth });
+        expect(sim.trainList.find(t => t.block === b.id)?.dir).toBe(first.dir === 'DN' ? 1 : -1);
+      }
+      sim.step(); sim.step();
+      for (const b of gll) expect(sim.trainList.find(t => t.block === b.id)?.doorsOpen).toBe(false);
+      expect(sim.integrity.violations).toHaveLength(0);
+      expect(plan.blocks.filter(b => b.end.kind === 'stable' && b.end.station === 22)).toHaveLength(2);
+      expect(yardNeed(topo, plan).every((n, d) => n <= topo.depots[d].capacity)).toBe(true);
+      expect(sim.depotStock.every((n, d) => n <= topo.depots[d].capacity)).toBe(true);
+      expect(fmtIssues(validatePlan(sim.planCtx, plan))).toBe('');
+    });
+    it(`${dayType}: protects GLL's DN overnight platform through midnight and the next opening`, () => {
+      const sim = make(dayType), { plan, topo } = sim;
+      const berth = platformBerth(topo, 22, 'DN');
+      const night = plan.blocks.find(b => b.end.kind === 'stable' && b.end.berth === berth)!;
+      const last = plan.trips[night.trips.at(-1)!];
+      const morning = plan.blocks.find(b => b.start.kind === 'stable' && b.start.berth === berth)!;
+      const first = plan.trips[morning.trips[0]];
+      for (const t of plan.trips) {
+        if (t.cancelled || t.dir !== 'DN' || t.id === last.id || t.id === first.id) continue;
+        const tasks = blockTasks(topo, plan, plan.blocks[t.block]);
+        const at = t.stops.find(s => s.st === 22);
+        if (!at || !tasks.some(task => task.k === 'stop' && task.trip === t.id && task.berth === berth) && t.to === 22) continue;
+        expect(at.dep).toBeLessThan(last.stops.at(-1)!.arr);
+        expect(at.arr).toBeGreaterThanOrEqual(first.stops[0].dep);
+      }
+      // A returning empty train must be rejected too, even if it is a fixed
+      // special or a next-day depot positioning trip rather than revenue.
+      const conflicting = plan.trips.find(t => t.dir === 'DN' && t.to > 22 && !t.cancelled)!;
+      conflicting.revenue = false;
+      conflicting.stops.find(s => s.st === 22)!.arr = H(5, 50);
+      conflicting.stops.find(s => s.st === 22)!.dep = H(5, 50);
+      expect(validatePlan(sim.planCtx, plan).some(i => i.code === 'STABLE_CONFLICT' && i.blocks?.includes(conflicting.block))).toBe(true);
+    });
+  }
+});
 
 describe('timetable validator', () => {
   for (const dayType of ['weekday', 'weekend'] as DayType[]) {
@@ -54,7 +148,11 @@ describe('timetable validator', () => {
         for (let t = 11 * 3600; t < 14 * 3600; t += 60) expect(busy(t)).toBeLessThanOrEqual(3);
       }
       // not in the peaks: both tracks turn trains then
-      if (dayType === 'weekday') for (const st of [0, E]) expect(at(st, 8 * 3600).length + at(st, 17.5 * 3600).length).toBe(0);
+      if (dayType === 'weekday') for (const st of [0, E]) {
+        expect(at(st, 8 * 3600).length + at(st, 17.5 * 3600).length).toBe(0);
+        expect(at(st, 20.5 * 3600)).toHaveLength(0);
+        expect(at(st, 21.5 * 3600)).toHaveLength(1);
+      }
       expect(fmtIssues(validatePlan(sim.planCtx, plan))).toBe('');
     }
   });

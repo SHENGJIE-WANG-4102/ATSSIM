@@ -59,10 +59,13 @@ describe('dispatcher commands', () => {
   });
 
   it('manual turnback and withdraw', () => {
-    const sim = makeSim('weekday', H);
+    // D72 changes the 08:00 opposing-train phase. Exercise the command in
+    // the 5-minute off-peak gaps, after the last peak wave clears the core.
+    const sim = makeSim('weekday', 9 * 3600 + 55 * 60, { seed: 5 });
+    runFor(sim, 25 * 60, stepCheck);
     const rm = st(sim, '人民广场');
-    // Calibration changes the phase at 08:00. Wait for a real approaching
-    // train rather than requiring this incidental snapshot to contain one.
+    // Wait for a real approaching train rather than requiring this
+    // incidental snapshot to contain one.
     const suitable = () => sim.trainList.some(t => t.inService && t.phase==='run' && dirOf(sim,t)==='DN'
       && sim.trainChain(t)<rm.chain-1500 && sim.trainChain(t)>rm.chain-5000);
     const until=sim.t+900;while(!suitable()&&sim.t<until)runFor(sim,10,stepCheck);
@@ -100,20 +103,27 @@ describe('dispatcher commands', () => {
     expect(worst).toBeLessThanOrEqual(120);
   });
 
-  it('the CIIE added service in its 09:30 weekday window is planned in full and runs', () => {
+  it('reports the CIIE opening-window capacity shortfall and runs the feasible services', () => {
     const sim = makeSim('weekday', 9 * 3600);
     const preset = { from: 9.5 * 3600, to: 10 * 3600, headway: 900 };
     const before = sim.plan.trips.length;
     const ov = sim.command({ c: 'overlay', id: 'ciie', ...preset });
     expect(ov.ok, ov.msg).toBe(true);
     const added = sim.plan.trips.slice(before).filter(t => t.revenue && t.overlay?.startsWith('ciie'));
-    // 09:30, 09:45 and 10:00 in each direction, none dropped for capacity
+    // D72 changes AM circulation and its return wave. Six departures are
+    // requested at 09:00; report those without a feeder
+    // slot, while the feasible services still complete in the simulation.
     const service = added.filter(t => (t.from === 1 && t.to === 22) || (t.from === 22 && t.to === 1));
     expect(service.length).toBe(6);
-    expect(added.every(t => !t.cancelled)).toBe(true);
-    const last = Math.max(...added.map(t => t.stops.at(-1)!.arr));
+    const omitted = service.filter(t => t.cancelled);
+    expect(omitted).toHaveLength(5);
+    expect(omitted.every(t => t.cancelReason === '加开：高峰间隔内无出段时隙')).toBe(true);
+    expect(ov.msg).toContain('5 个车次因能力或库存不足未安排');
+    const running = added.filter(t => !t.cancelled);
+    expect(running.length).toBeGreaterThan(0);
+    const last = Math.max(...running.map(t => t.stops.at(-1)!.arr));
     runFor(sim, last + 600 - sim.t, stepCheck);
-    expect(added.filter(t => t.completed).length).toBeGreaterThanOrEqual(Math.ceil(.9 * added.length));
+    expect(running.filter(t => t.completed).length).toBeGreaterThanOrEqual(Math.ceil(.9 * running.length));
   });
 
   it('R4 exchanges the duty of a late train with the on-time same-route trip behind it', () => {

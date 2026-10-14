@@ -479,8 +479,8 @@ export const TURNOUT_SPEEDS = {
 export const OPERATIONS = {
   /** published: first train from 蟠祥路·国家会计学院 05:25 */
   firstWestTerminusDep: 5 * 3600 + 25 * 60,
-  /** approx: first westbound from 浦东1号2号航站楼 */
-  firstEastTerminusDep: 5 * 3600 + 30 * 60,
+  /** published: first westbound from 浦东1号2号航站楼 06:00 */
+  firstEastTerminusDep: 6 * 3600,
   /** published: last 蟠祥路 → 浦东1号2号航站楼 21:57 */
   lastBigEastboundDep: 21 * 3600 + 57 * 60,
   /** published: last 蟠祥路 → 广兰路 22:42 */
@@ -498,15 +498,13 @@ export const OPERATIONS = {
   /** overnight stabling at terminal tails (approx) */
   // (蟠祥路: its two turnback tracks and the two places in the DN storage tail)
   terminalStabling: { PXL: 4, PDA: 2 } as Record<string, number>,
-  /** overnight stabling on the line away from the ends (正线存车): the
-   *  上海科技馆 turnback track, entered by eastbound trains and left westbound.
-   *  The trains come down empty from 蟠祥路 after the last departure there and
-   *  start the next day as the first westbound trains from that station. With
-   *  the three yards' 92 places and the 6 at the ends this holds the 100-train
-   *  fleet. (Not 龙阳路: the 龙阳路 depot's eastbound exits change ends on that
-   *  track from 05:00, before a stabled train could leave.)
-   *  【假设】 positions per the 配线图 PDF; real allocation unknown */
-  lineStabling: { KJG: 2 } as Record<string, number>,
+  /** overnight stabling on the line away from the ends (正线存车, D72):
+   *  广兰路, one train on the middle track (out at 05:28 westbound) and one
+   *  at the DN side platform (out at 06:00 eastbound), taken only after the
+   *  last eastbound movement has passed. With the 6 at the ends and the
+   *  yards' 92 places this holds the 100-train fleet.
+   *  【假设】 the real allocation is not published */
+  lineStabling: { GLL: 2 } as Record<string, number>,
   /** a train passing a platform without stopping (跨站/跳停) runs through it at no more than this (km/h) */
   platformPassKmh: 45,
   /** a train entering or leaving a platform it stops at runs at no more than this (km/h) */

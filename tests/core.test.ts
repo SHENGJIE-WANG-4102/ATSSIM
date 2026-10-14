@@ -17,6 +17,7 @@ import { updateHalts, rootCause } from '../src/sim/halt';
 import { platformBerth, tripTasks, addTurnback, blockTasks, turnbackAt, validatePlan } from '../src/sim/timetable';
 import { predictedLateness, RELIEF_DELAY } from '../src/sim/standby';
 import { OPERATIONS } from '../src/data/line2';
+import { MIN_DWELL } from '../src/sim/calibration';
 
 const make = () => new Sim({ dayType: 'weekday', dateLabel: 'core', startTime: 14400, seed: 7, noPossessions: true });
 const advance = (sim: Sim, seconds: number) => { const end = sim.t + seconds; while (sim.t < end - 1e-6) sim.step(); };
@@ -1062,18 +1063,32 @@ describe('standby trains (D45)', () => {
 describe('shared depot admission',()=>{
   it.each(['BZL','CSD'])('keeps an early departure inside %s until its origin slot is ready',key=>{
     const sim=make();const depot=sim.topo.depots.find(d=>d.key===key)!;
-    const block=sim.plan.blocks.find(b=>b.start.kind==='depot'&&b.start.depot===depot.id)!;
+    // D72's first CSD movement may use its dedicated UP exit or be an
+    // empty positioning trip. Select the shared lead's scheduled origin,
+    // which is the admission contract this test exercises.
+    const block=sim.plan.blocks.find(b=>{
+      if(b.start.kind!=='depot'||b.start.depot!==depot.id)return false;
+      const trip=sim.plan.trips[b.trips[0]],tasks=blockTasks(sim.topo,sim.plan,b),first=tasks[0];
+      return trip.kind==='ins'&&depot.transferPaths[depot.portals.exit[trip.dir].path].flow==='shared'
+        &&first?.k==='stop'&&tasks.some(t=>t.k==='stop'&&t.station===first.station&&t.dep!==null&&(t.arr===null||t.arr===t.dep));
+    })!;
+    expect(block).toBeDefined();
     expect(block.start.kind).toBe('depot');if(block.start.kind!=='depot')return;
     sim.plan.blocks=[block];sim.t=block.start.time;
-    const first=blockTasks(sim.topo,sim.plan,block)[0];expect(first.k).toBe('stop');if(first.k!=='stop'||first.dep===null)return;
-    const distance=distanceToBerth(sim,depot.exitSignal,first.berth);
-    const ready=first.dep-((15+distance)/15+30)-40;
+    const tasks=blockTasks(sim.topo,sim.plan,block),first=tasks[0];expect(first.k).toBe('stop');if(first.k!=='stop')return;
+    const index=tasks.findIndex(t=>t.k==='stop'&&t.station===first.station&&t.dep!==null&&(t.arr===null||t.arr===t.dep));
+    const origin=tasks[index];if(origin.k!=='stop'||origin.dep===null)throw new Error('origin');
+    const trip=sim.plan.trips[block.trips[0]],path=depot.transferPaths[depot.portals.exit[trip.dir].path];
+    const distance=distanceToBerth(sim,path.exitSignal,first.berth);
+    const preparation=tasks.slice(0,index).reduce((n,t)=>n+(t.k==='reverse'?t.minTime:t.k==='stop'?MIN_DWELL:0),0);
+    const ready=origin.dep-((15+distance)/15+30+preparation)-40;
+    const initial=sim.trainList.length;
     const stock=sim.depotStock[depot.id];
     expect(sim.t).toBeLessThan(ready);spawnDue(sim);
-    expect(block.train).toBeUndefined();expect(sim.trainList).toHaveLength(0);expect(sim.depotStock[depot.id]).toBe(stock);
+    expect(block.train).toBeUndefined();expect(sim.trainList).toHaveLength(initial);expect(sim.depotStock[depot.id]).toBe(stock);
     sim.t=ready+1;spawnDue(sim);
     expect(block.train).toBeDefined();expect(sim.depotStock[depot.id]).toBe(stock-1);
-    expect(sim.trainList[0].body.every(body=>sim.topo.links[body.link].track==='DEP')).toBe(true);
+    expect(sim.trains.get(block.train!)!.body.every(body=>sim.topo.links[body.link].track==='DEP')).toBe(true);
   });
 });
 

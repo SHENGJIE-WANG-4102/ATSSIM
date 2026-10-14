@@ -457,10 +457,16 @@ export function spawnDue(sim: Sim) {
     if (path.flow === 'shared') {
       const first = tasks[0];
       const goal = taskGoal(sim, first);
-      if (first?.k === 'stop' && first.dep !== null && (first.arr === null || first.arr === first.dep)) {
+      const originIndex = first?.k === 'stop' ? tasks.findIndex(t => t.k === 'stop' && t.station === first.station
+        && t.dep !== null && (t.arr === null || t.arr === t.dep)) : -1;
+      const origin = originIndex >= 0 ? tasks[originIndex] as StopTask : undefined;
+      if (origin) {
         const distance = distanceToBerth(sim, exitSignal, goal);
-        const terminal = topo.stations[first.station].turnbackBerths.length > 0 && isTurnbackOrigin(sim, first);
-        if (!Number.isFinite(distance) || first.dep - sim.t - ((15 + distance) / 15 + 30) > (terminal ? 90 : 40)) continue;
+        const terminal = topo.stations[origin.station].turnbackBerths.length > 0 && isTurnbackOrigin(sim, origin);
+        // A shared lead may first reach the platform facing the other way.
+        // Keep its clear-out stop and cab change inside the readiness ETA.
+        const preparation = tasks.slice(0, originIndex).reduce((seconds, t) => seconds + (t.k === 'reverse' ? t.minTime : t.k === 'stop' ? MIN_DWELL : 0), 0);
+        if (!Number.isFinite(distance) || origin.dep! - sim.t - ((15 + distance) / 15 + 30 + preparation) > (terminal ? 90 : 40)) continue;
       }
       const rid = sim.routeTable.next.get(goal)?.[exitSignal] ?? -1;
       if (rid < 0 || topo.routes[rid].steps.some(step => (sim.linkBodies.get(step.link)?.length ?? 0) > 0)) continue;
@@ -506,7 +512,9 @@ function spawnStabled(sim: Sim, b: Block) {
   // a storage tail holds a train on each of its links
   const placeFree = (x: number) => st.storageBerths.includes(x)
     ? !(sim.linkBodies.get(topo.berths[x].link) ?? []).length : !berthBusy(sim, x, -1);
-  const bid = places[rank] !== undefined && placeFree(places[rank]) ? places[rank] : places.find(placeFree);
+  const bid = b.start.berth !== undefined
+    ? (placeFree(b.start.berth) ? b.start.berth : undefined)
+    : places[rank] !== undefined && placeFree(places[rank]) ? places[rank] : places.find(placeFree);
   if (bid === undefined) return;
   const berth = topo.berths[bid];
   const l = topo.links[berth.link];
@@ -514,7 +522,7 @@ function spawnStabled(sim: Sim, b: Block) {
   const headOff = berth.offset;
   const tr = newTrain(sim, b, berth.link, headOff, berth.dir, [{ link: berth.link, dir: berth.dir }], sim.stabledPool.shift() ?? '0200');
   void l;
-  reverseTrain(sim, tr);
+  if (b.start.berth === undefined) reverseTrain(sim, tr);
   tr.tasks = blockTasks(topo, sim.plan, b);
   tr.lastStation = st.index;
   b.train = tr.id;
@@ -682,6 +690,9 @@ function arriveAtBerth(sim: Sim, tr: Train, task: Task) {
   const { topo } = sim;
   tr.v = 0;
   if (task.k === 'stop') {
+    const duty = sim.plan.blocks[tr.block];
+    if (duty?.start.kind === 'stable' && duty.start.berth === task.berth && duty.trips[0] === task.trip
+      && task.dep !== null && sim.t < task.dep - 60) return;
     if (tr.tbStage === 'depart') tr.tbStage = 'none';
     const p = topo.berths[task.berth].platform;
     const ps = sim.plat[p];
@@ -1394,7 +1405,10 @@ function reversalGuard(sim: Sim, tr: Train): { signal: number; chain: number[]; 
   let against = false;
   if (tr.phase === 'reversing' && t0?.k === 'reverse') { berth = t0.chosen; after = t1; }
   else if ((tr.phase === 'run' || tr.phase === 'dwell') && t0?.k === 'stop' && t1?.k === 'reverse' && t1.chosen === t0.berth) {
-    if (tr.phase === 'run' && !(Math.abs(sim.trainChain(tr) - topo.stations[t0.station].chain) < 1500)) return null;
+    // A depot return must claim the reverse path before a following train
+    // commits to the long junction approach (not just its final platform).
+    const approach = tr.tasks[2]?.k === 'depot' ? 3000 : 1500;
+    if (tr.phase === 'run' && !(Math.abs(sim.trainChain(tr) - topo.stations[t0.station].chain) < approach)) return null;
     // only the train next to arrive there: one still behind another would
     // hold that one's way in
     if (tr.phase === 'run' && trainBefore(sim, tr, t0.berth)) return null;

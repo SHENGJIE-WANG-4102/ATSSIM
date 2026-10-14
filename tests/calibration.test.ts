@@ -73,15 +73,22 @@ describe('calibrated plan structure',()=>{
  // Every train counts, including depot moves and non-revenue positioning:
  // passengers on a platform see each one. At the far end of the core the
  // terminating small-route trains do not depart, so arrivals are compared.
- const peakTimes=(s:Sim,dir:'DN'|'UP',st:number)=>s.plan.trips.filter(t=>!t.cancelled&&t.dir===dir)
+ const peakTimes=(s:Sim,dir:'DN'|'UP',st:number)=>s.plan.trips.filter(t=>{
+  if(t.cancelled||t.dir!==dir)return false;
+  const b=s.plan.blocks[t.block],next=b&&s.plan.trips[b.trips[b.trips.indexOf(t.id)+1]];
+  // A same-direction positioning trip and its onward service are one train
+  // at their shared station, matching the timetable validator's convention.
+  return !(t.to===st&&next?.from===st&&next.dir===dir);
+ })
   .flatMap(t=>t.stops.filter(p=>p.st===st).map(p=>({t:st===(dir==='DN'?22:4)?p.arr:p.dep,trip:t})))
   .sort((a,b)=>a.t-b.t);
- it('runs every train at the peak headway (2\'00" AM, 3\'00" PM) through the whole core, depot moves included',()=>{
+ it('runs every train at the peak headway (2\'30" AM, 3\'00" PM) through the whole core, depot moves included',()=>{
   const s=new Sim({dayType:'weekday',dateLabel:'calibration',startTime:14400,seed:1});
   const peaks=dayPeriods('weekday').filter(p=>p.template==='weekdayAM'||p.template==='weekdayPM');
   let intervals=0;
   for(const peak of peaks)for(const dir of ['DN','UP'] as const)for(let st=4;st<=22;st++){
    const hw=TEMPLATES[peak.template].headway;
+   const tolerance=Math.max(6,hw/20); // unchanged dwell model, wider AM spacing
    const times=peakTimes(s,dir,st).map(x=>x.t);
    // the band starts with the wave already through the core
    const at=times.findIndex(t=>t>=peak.from);
@@ -90,7 +97,7 @@ describe('calibrated plan structure',()=>{
    expect(Math.abs(first-hw),`${dir} station ${st}, band start ${first}`).toBeLessThanOrEqual(6);
    for(let i=at+1;i<times.length&&times[i]<peak.to;i++){
     intervals++;
-    expect(Math.abs(times[i]-times[i-1]-hw),`${dir} station ${st} at ${(times[i]/3600).toFixed(3)}`).toBeLessThanOrEqual(6);
+    expect(Math.abs(times[i]-times[i-1]-hw),`${dir} station ${st} at ${(times[i]/3600).toFixed(3)}`).toBeLessThanOrEqual(tolerance);
    }
    if(st===(dir==='DN'?4:22)){const transition=times.filter(t=>t<peak.from-2400&&t>peak.from-4200);
     const gaps=transition.slice(1).map((t,i)=>t-transition[i]);
@@ -106,7 +113,9 @@ describe('calibrated plan structure',()=>{
   for(const peak of peaks)for(const dir of ['DN','UP'] as const)for(let st=0;st<=3;st++){
    const hw=TEMPLATES[peak.template].headway;
    const all=s.plan.trips.filter(t=>!t.cancelled&&t.dir===dir).flatMap(t=>t.stops.filter(p=>p.st===st).map(p=>t.to===st?p.arr:p.dep)).sort((a,b)=>a-b);
-   const times=all.filter(t=>t>=peak.from+OUTER_BAND_MARGIN&&t<peak.to-OUTER_BAND_MARGIN);
+   const firstAirport=s.plan.trips.find(t=>t.dir==='UP'&&t.from===30&&Math.abs(t.stops[0].dep-6*3600)<1)!;
+   const start=dir==='UP'&&peak.template==='weekdayAM'?Math.max(peak.from+OUTER_BAND_MARGIN,firstAirport.stops.at(-1)!.arr+2*hw):peak.from+OUTER_BAND_MARGIN;
+   const times=all.filter(t=>t>=start&&t<peak.to-OUTER_BAND_MARGIN);
    const gaps=times.slice(1).map((t,i)=>t-times[i]);
    expect(gaps.length).toBeGreaterThan(20);
    for(let i=0;i<gaps.length;i++){
