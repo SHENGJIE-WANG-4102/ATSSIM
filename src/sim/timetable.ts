@@ -89,7 +89,7 @@ export interface OverlayPreset { id: string; label: string; from: number; to: nu
 
 export const OVERLAY_PRESETS: OverlayPreset[] = [
   { id: 'ciie', label: '进博会保障加开', from: H(9, 30), to: H(17, 30), a: 1, b: 22, headway: 900, desc: '国家会展中心 ↔ 广兰路 区间加开，平峰每15分钟一列（各方向）' },
-  { id: 'hongqiao', label: '虹桥枢纽大客流加开', from: H(20), to: H(22, 30), a: 2, b: 22, headway: 720, desc: '虹桥火车站 ↔ 广兰路 区间加开，夜间每12分钟一列（基本图运行时虹桥火车站站前折返无空档，加开车延至国家会展中心折返）' },
+  { id: 'hongqiao', label: '虹桥枢纽大客流加开', from: H(20), to: H(22, 30), a: 2, b: 22, headway: 720, desc: '虹桥火车站 ↔ 广兰路 区间加开，夜间每12分钟一列（虹桥火车站无折返条件，加开车延至国家会展中心折返）' },
 ];
 
 // ---------------------------------------------------------------- helpers
@@ -1472,8 +1472,9 @@ export function applyOverlay(ctx: PlanContext, plan: Plan, preset: { id: string;
   // such time (D47). The added trains run on to the nearest station beyond
   // it with a rear turnback (国家会展中心) and turn there, still serving the
   // whole requested section.
+  // An end with no turnback at all (虹桥火车站 since the PDF layout) is served the same way.
   const outward = (X: number, arrDir: TrackDir): number | undefined => {
-    if (turnbackAt(ctx.topo, X, arrDir)?.kind !== 'front') return undefined;
+    if (turnbackAt(ctx.topo, X, arrDir)?.kind === 'rear') return undefined;
     const step = arrDir === 'DN' ? 1 : -1;
     for (let Y = X + step; Y >= 0 && Y < ctx.topo.stations.length; Y += step)
       if (turnbackAt(ctx.topo, Y, arrDir)?.kind === 'rear') return Y;

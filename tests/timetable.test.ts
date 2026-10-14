@@ -63,19 +63,19 @@ describe('timetable validator', () => {
   it('rejects a front turn that occupies the normal departure platform during a through train', () => {
     const sim = new Sim({dayType:'weekday',dateLabel:'front slot',startTime:14400,seed:1});
     const plan = sim.plan;
-    // shorten one 蟠祥路 turn of a base block to a front turn at 虹桥火车站
+    // shorten one 蟠祥路 turn of a base block to a front turn at 威宁路
     const block = plan.blocks.find(b => b.trips.some((id,i) => {
       const a = plan.trips[id], d = plan.trips[b.trips[i+1]];
       return d && a.revenue && d.revenue && a.dir==='UP' && a.to===0 && d.from===0 && a.stops[0].arr > 10*3600;
     }))!;
     const index = block.trips.findIndex((id,i) => plan.trips[id].to===0 && plan.trips[block.trips[i+1]]?.from===0 && plan.trips[id].stops[0].arr > 10*3600);
     const arrival = plan.trips[block.trips[index]], departure = plan.trips[block.trips[index+1]];
-    arrival.stops = arrival.stops.filter(s => s.st >= 2); arrival.to = 2;
-    departure.stops = departure.stops.filter(s => s.st >= 2); departure.from = 2;
-    const occupied = terminalOccupancy(plan).get(2)!.find(o => o.block===block.id)!;
+    arrival.stops = arrival.stops.filter(s => s.st >= 6); arrival.to = 6;
+    departure.stops = departure.stops.filter(s => s.st >= 6); departure.from = 6;
+    const occupied = terminalOccupancy(plan).get(6)!.find(o => o.block===block.id)!;
     expect(occupied).toBeDefined();
-    const trip = plan.trips.find(t => !t.cancelled && t.block!==block.id && t.dir==='DN' && t.stops.some(s => s.st===2))!;
-    const stop = trip.stops.find(s => s.st===2)!;
+    const trip = plan.trips.find(t => !t.cancelled && t.block!==block.id && t.dir==='DN' && t.stops.some(s => s.st===6))!;
+    const stop = trip.stops.find(s => s.st===6)!;
     const shift = occupied.from+30-stop.dep;
     for (const s of trip.stops) {s.arr+=shift;s.dep+=shift;}
     expect(validatePlan(sim.planCtx,plan).some(issue => issue.code==='FRONT_CONFLICT' && issue.blocks?.includes(block.id))).toBe(true);

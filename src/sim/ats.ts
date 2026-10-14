@@ -1668,6 +1668,26 @@ export function nearestDepot(sim: Sim, station: number, dir: TrackDir): number {
   return best;
 }
 
+/** A coupled consist changes ends on the portal platform only if it then
+ * stands clear of the lead junction behind it. */
+function entryFits(topo: Topology, depot: number, dir: TrackDir, len: number): boolean {
+  const dp = topo.depots[depot], p = dp.portals.entry[dir];
+  if (!p.reverse) return true;
+  const b = topo.berths[platformBerth(topo, p.station, dir)], l = topo.links[b.link];
+  const mark = l.chainA + (l.chainB - l.chainA) * b.offset / l.len;
+  return Math.abs(mark - dp.junctionChain) >= len + 60;
+}
+
+/** nearestDepot ahead whose entry the consist fits (else the nearest) */
+function fittingDepot(sim: Sim, station: number, dir: TrackDir, len: number): number {
+  const { topo } = sim;
+  const ch = topo.stations[station].chain;
+  const ahead = topo.depots.map((_, i) => i)
+    .filter((i) => (dir === 'DN' ? topo.depots[i].junctionChain > ch : topo.depots[i].junctionChain < ch) && entryFits(topo, i, dir, len))
+    .sort((i, j) => Math.abs(topo.depots[i].junctionChain - ch) - Math.abs(topo.depots[j].junctionChain - ch));
+  return ahead[0] ?? nearestDepot(sim, station, dir);
+}
+
 /** A return path must respect routes the train has already entered or cannot
  * stop short of. Geographic chainage alone can choose a depot junction whose
  * through route is already committed. */
@@ -2329,7 +2349,7 @@ function completeCoupling(sim: Sim, tr: Train) {
       tasks.push({ k: 'reverse', berths, chosen: berths[0], station: tailStation, minTime: 40 });
       const back = d === 'DN' ? 'UP' : 'DN';
       tasks.push({ k: 'stop', berth: platformBerth(topo, tailStation, back), station: tailStation, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 120, note: '故障车清客' });
-      depotTasks(topo, nearestDepot(sim, tailStation, back), back, tasks);
+      depotTasks(topo, fittingDepot(sim, tailStation, back, tr.len), back, tasks);
       tr.tasks = tasks; tr.tbStage = 'arrive';
       sim.log('B', '列车', '终点折返股道救援连挂完成，换端后清客回段');
       return;
@@ -2346,7 +2366,7 @@ function completeCoupling(sim: Sim, tr: Train) {
   };
   if (next !== undefined && !passed(next)) tasks.push({ k: 'stop', berth: platformBerth(topo, next, d), station: next, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 120, note: '故障车清客' });
   const clearChain = next === undefined ? sim.trainChain(tr) : topo.stations[next].chain;
-  const forward = depotsAhead(sim, tr, d, clearChain);
+  const forward = depotsAhead(sim, tr, d, clearChain).filter((x) => entryFits(topo, x.index, d, tr.len));
   const depot = forward[0]?.index ?? nearestDepot(sim,next ?? 0,d);
   const reachable = forward.length>0;
   if (reachable) depotTasks(topo, depot, d, tasks);
@@ -2362,7 +2382,7 @@ function completeCoupling(sim: Sim, tr: Train) {
       addTurnback(topo, { id: -1, no: '', dir: d, kind: 'adj', from: terminal, to: terminal, stops: [], revenue: false, block: -1 }, tasks);
       const back = d === 'DN' ? 'UP' : 'DN';
       tasks.push({ k: 'stop', berth: platformBerth(topo, terminal, back), station: terminal, trip: -1, arr: null, dep: null, doors: false, revenue: false, minDwell: 10 });
-      depotTasks(topo, nearestDepot(sim, terminal, back), back, tasks);
+      depotTasks(topo, fittingDepot(sim, terminal, back, tr.len), back, tasks);
     }
   }
   tr.tasks = tasks;

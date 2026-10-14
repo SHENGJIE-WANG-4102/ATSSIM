@@ -369,10 +369,11 @@ export const LAYOUT = {
     { station: 30, side: 'east', length: 450 },
   ] as TailDef[],
   /** two middle tracks behind a double Y (蟠祥路, 国家会展中心, 淞虹路, 上海科技馆) */
+  // (PXL: 420 m, model value — holds a coupled rescue pair clear of the throat)
   pairs: [
     { id: 'PXL', station: 0, side: 'west', at: -205, stubs: [
-      { id: 'PXL1', name: '蟠祥路1道折返线', length: 400 },
-      { id: 'PXL2', name: '蟠祥路2道折返线', length: 400 },
+      { id: 'PXL1', name: '蟠祥路1道折返线', length: 420 },
+      { id: 'PXL2', name: '蟠祥路2道折返线', length: 420 },
     ] },
     { id: 'GJH', station: 1, side: 'west', at: -205, stubs: [
       { id: 'GJH1', name: '国家会展中心1道尽头线', length: 400 },
@@ -413,10 +414,8 @@ export const LAYOUT = {
   ] as LoopDef[],
   /** single crossovers (渡线); a scissors is a '/' and a '\' next to each other */
   crossovers: [
-    // 虹桥火车站: not drawn in the PDF (its legend: only documented track work is
-    // drawn); kept for the 虹桥 large-crowd template's station-front turnback
-    { station: 2, offset: 210, kind: '/' },
-    { station: 2, offset: -210, kind: '/' },
+    // 虹桥火车站: none — the PDF draws none (it does draw minor ones such as
+    // 威宁路 / 凌空路); trains for the 虹桥 hub turn at 国家会展中心
     { station: 6, offset: 215, kind: '/' },
     // 中山公园: scissors right behind the platform (towards 江苏路)
     { station: 8, offset: 175, kind: '/' },
@@ -493,11 +492,9 @@ export const OPERATIONS = {
   /** reference headways (late 2025): core 2'30", outer ≈3'45" average */
   peakCoreHeadway: 150,
   /** minimum turnback (arrival → departure) at each terminal (approx) */
-  // HQZ front turn changes ends on the platform, without rear-tail journeys.
-  // Its 120 s planning minimum is an assumption checked by physical tests.
-  // GLL reverses on its middle-track platform (配线图 PDF): the same change of
-  // ends on the platform as HQZ, so the same 120 s assumption.
-  minTurnback: { PXL: 240, PDA: 240, SHR: 240, GLL: 100, HQZ: 120 } as Record<string, number>,
+  // GLL reverses on its middle-track platform (配线图 PDF): a change of ends
+  // on the platform without a run into a tail.
+  minTurnback: { PXL: 240, PDA: 240, SHR: 240, GLL: 100 } as Record<string, number>,
   /** overnight stabling at terminal tails (approx) */
   terminalStabling: { PXL: 2, PDA: 2 } as Record<string, number>,
   /** a train passing a platform without stopping (跨站/跳停) runs through it at no more than this (km/h) */

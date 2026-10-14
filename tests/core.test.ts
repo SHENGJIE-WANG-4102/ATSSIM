@@ -83,22 +83,22 @@ describe('movement and radio regressions', () => {
     for (const train of [...sim.trainList]) if (train !== tr && train !== other) sim.removeTrain(train);
     for (const id of [...sim.routes.keys()]) releaseRoute(sim,id);
     for (const block of sim.plan.blocks) sim.blockDone.add(block.id);
-    sim.t=20*3600; // revenue boarding window of the Hongqiao overlay
-    const tb = turnbackAt(sim.topo,2,'UP')!; expect(tb.kind).toBe('front');
-    if (tb.kind !== 'front') throw new Error('expected Hongqiao front turn');
-    const signal = sim.topo.signals.find(s => s.name === 'S0406')!;
+    sim.t=20*3600;
+    const tb = turnbackAt(sim.topo,6,'UP')!; expect(tb.kind).toBe('front');
+    if (tb.kind !== 'front') throw new Error('expected 威宁路 front turn');
+    const signal = sim.topo.signals.find(s => s.name === 'S0902')!;
     const entry = sim.topo.links.find(l => l.a === signal.node && l.track === 'UP')!;
     tr.link=entry.id;tr.off=6.4;tr.dir=-1;tr.hist=[{link:entry.id,dir:-1}];
     tr.phase='run';tr.v=0;tr.eb=false;tr.block=-1;tr.tripId=-1;tr.inService=false;tr.depotStage='none';
     tr.load=1000;
     sim.plat[sim.topo.berths[tb.depBerth].platform].waiting=1000;
-    tr.tasks=[{k:'stop',berth:tb.arrBerth,station:2,trip:-1,arr:null,dep:null,doors:true,revenue:true},
-      {k:'reverse',berths:[tb.arrBerth],chosen:tb.arrBerth,station:2,minTime:40},
-      {k:'stop',berth:tb.depBerth,station:2,trip:-1,arr:null,dep:sim.t+600,doors:true,revenue:true},
-      {k:'stop',berth:platformBerth(sim.topo,3,'DN'),station:3,trip:-1,arr:null,dep:null,doors:false,revenue:false}];
+    tr.tasks=[{k:'stop',berth:tb.arrBerth,station:6,trip:-1,arr:null,dep:null,doors:true,revenue:true},
+      {k:'reverse',berths:[tb.arrBerth],chosen:tb.arrBerth,station:6,minTime:40},
+      {k:'stop',berth:tb.depBerth,station:6,trip:-1,arr:null,dep:sim.t+600,doors:true,revenue:true},
+      {k:'stop',berth:platformBerth(sim.topo,7,'DN'),station:7,trip:-1,arr:null,dep:null,doors:false,revenue:false}];
     tr.nextSignal=signal.id;tr.nextSignalDist=6.4;tr.stopDist=Infinity;
     tr.maDist=tr.maFar=0;tr.maSigs=[];tr.lastDs=0;tr.lastMa=Infinity;
-    const downstream = sim.topo.routes.find(r => r.name === 'S0402→S0320')!;
+    const downstream = sim.topo.routes.find(r => r.name === 'S0802→S0716')!;
     expect(trySetRoute(sim,downstream.id,{fleeting:true}).ok).toBe(true);
     const link = sim.topo.links[downstream.steps[0].link];
     other.link=link.id;other.off=60;other.dir=-1;other.hist=[{link:link.id,dir:-1}];
@@ -111,15 +111,15 @@ describe('movement and radio regressions', () => {
     expect(sim.sig[signal.id].route).not.toBe(first);
     sim.removeTrain(other);indexBodies(sim);computeOccupancy(sim);
     let arrival = 0, departure = 0;
-    const end = sim.t+400;
+    const end = sim.t+600;
     while (sim.t < end && !departure) {
       sim.step();
       const current = sim.trains.get(tr.id)!;
-      if (!arrival && current.phase==='dwell' && current.dir===-1 && current.lastStation===2) {
+      if (!arrival && current.phase==='dwell' && current.dir===-1 && current.lastStation===6) {
         arrival=sim.t;
         tr.tasks=tr.tasks.map(task => task.k==='stop' && task.berth===tb.depBerth ? {...task,dep:arrival+120} : task);
       }
-      if (arrival && current.dir===1 && tr.v>0.05 && tr.tasks[0]?.k==='stop' && tr.tasks[0].station===3) departure=sim.t;
+      if (arrival && current.dir===1 && tr.v>0.05 && tr.tasks[0]?.k==='stop' && tr.tasks[0].station===7) departure=sim.t;
     }
     expect(arrival).toBeGreaterThan(0);expect(departure-arrival).toBeGreaterThanOrEqual(120-0.2);
     expect(departure-arrival).toBeLessThan(125);
@@ -600,7 +600,8 @@ describe('paper-based turnback and depot procedures', () => {
     expect(tr.tasks.some(t => t.k === 'reverse')).toBe(true);
     expect(tr.tasks.at(-1)?.k).toBe('depot');
     const vehicles = [tr.vehicle, tr.coupledVehicle];
-    advance(sim, 2400);
+    // 373 m does not fit the change of ends at 淞虹路 (DN entry): it runs on to 龙阳路
+    advance(sim, 6600);
     expect(sim.trains.has(tr.id)).toBe(false);
     for (const vehicle of vehicles) expect(sim.yards.some(y => y.tracks.some(track => track.includes(vehicle!)))).toBe(true);
     expect(sim.integrity.violations).toHaveLength(0);
@@ -646,7 +647,8 @@ describe('paper-based turnback and depot procedures', () => {
     expect(failed.body.slice().sort((a, b) => a.link - b.link)).toEqual(footprint.sort((a, b) => a.link - b.link));
     sim.removeTrain(parallel);
     const vehicles = [tr.vehicle, failed.vehicle];
-    advance(sim, 3300);
+    // 373 m does not fit the change of ends at 远东大道 (UP entry): it runs on to 龙阳路
+    advance(sim, 6600);
     expect(sim.trains.has(failed.id)).toBe(false);
     expect(sim.trains.has(tr.id)).toBe(false);
     for (const vehicle of vehicles) expect(sim.yards.some(y => y.tracks.some(track => track.includes(vehicle)))).toBe(true);
