@@ -37,6 +37,28 @@ describe('timetable validator', () => {
       });
     }
   }
+  it('keeps one hot standby at each line end off-peak, in one turnback track (D70)', () => {
+    for (const dayType of ['weekday', 'weekend'] as DayType[]) {
+      const sim = new Sim({ dayType, dateLabel: 'test', startTime: 4 * 3600, seed: 1 });
+      const { plan, topo } = sim;
+      const E = topo.stations.length - 1;
+      const at = (st: number, t: number) => plan.blocks.filter(b => {
+        const ts = b.trips.map(id => plan.trips[id]).filter(x => !x.cancelled);
+        return ts.some((x, i) => x.standby && x.to === st && ts[i + 1] && x.stops.at(-1)!.arr <= t && ts[i + 1].stops[0].dep > t);
+      });
+      for (const st of [0, E]) {
+        // midday: exactly one, and the other trains turn within the remaining places
+        expect(at(st, 12 * 3600).length, `${dayType} ${STATIONS[st].name}`).toBe(1);
+        const occ = terminalOccupancy(plan).get(st)!;
+        const busy = (t: number) => occ.filter(o => o.from <= t && o.to > t).length;
+        for (let t = 11 * 3600; t < 14 * 3600; t += 60) expect(busy(t)).toBeLessThanOrEqual(3);
+      }
+      // not in the peaks: both tracks turn trains then
+      if (dayType === 'weekday') for (const st of [0, E]) expect(at(st, 8 * 3600).length + at(st, 17.5 * 3600).length).toBe(0);
+      expect(fmtIssues(validatePlan(sim.planCtx, plan))).toBe('');
+    }
+  });
+
   it('fits complete overlay circulations after fault cancellations open larger gaps', () => {
     const sim = new Sim({ dayType: 'weekday', dateLabel: 'recovery', startTime: 14400, seed: 1 });
     for (const block of sim.plan.blocks) if (block.id % 3 === 0)

@@ -13,11 +13,18 @@
  * from the yard keeps the minimum headway and the declared turnback time
  * (`standbyCandidate`), and the changed plan must add no validator error and
  * keep every yard's stock non-negative before it is applied.
+ *
+ * The hot standby (热备, D70) at a line end goes first: crewed in its turnback
+ * track, it needs HOT_NOTICE to be ready and takes a departure from its own
+ * station. In R1 it swaps duties with the late train arriving there, which
+ * becomes the hot standby in its place (终点站换车); in R3 it takes the lost
+ * trips, and a yard standby covers its own later duty.
  */
 import type { Sim } from './engine';
-import type { Block, Train } from './model';
-import { applyStandby, standbyCandidate, minTurn, validatePlan, type StandbyPlan, type PlanIssue } from './timetable';
+import type { Block, Plan, Train } from './model';
+import { applyStandby, standbyCandidate, minTurn, validatePlan, blockTasks, type StandbyPlan, type PlanIssue } from './timetable';
 import { yardShortfall } from './planning';
+import { extendTrainTasks, setTripFromTasks } from './ats';
 
 /** Notice a standby needs before leaving the yard (s). */
 export const STANDBY_NOTICE = 300;
@@ -25,6 +32,104 @@ export const STANDBY_NOTICE = 300;
 export const RELIEF_DELAY = 300;
 
 const issueKey = (i: PlanIssue) => `${i.code}|${i.text}`;
+/** Notice a hot standby needs: crew to the leading cab, train woken up (s). */
+export const HOT_NOTICE = 150;
+/** From its turnback track onto the departure platform (s). */
+const HOT_PULL_OUT = 90;
+
+/** errors of a plan from now on, with the yard stock check */
+function liveIssues(sim: Sim, plan: Plan): PlanIssue[] {
+  const now = validatePlan(sim.planCtx, plan).filter(i => i.severity === 'error' && i.t >= sim.t - 1e-6);
+  const yard = yardShortfall(sim, plan);
+  return yard ? [...now, yard] : now;
+}
+/** the changed plan adds no error */
+function noWorse(sim: Sim, plan: Plan): boolean {
+  const before = new Set(liveIssues(sim, sim.plan).map(issueKey));
+  return liveIssues(sim, plan).every(i => before.has(issueKey(i)));
+}
+
+/** A hot standby standing in its turnback track (D70): its station and the
+ * trip it stands for; null for any other train. */
+export function hotStandby(sim: Sim, tr: Train): { station: number; trip: number } | null {
+  const t0 = tr.tasks[0];
+  if (tr.failed || tr.manual || tr.withdrawn || tr.coupledLen > 0 || tr.block < 0 || tr.relievedBy) return null;
+  if (t0?.k !== 'stop' || !t0.standby || t0.dep === null || t0.trip < 0 || tr.phase !== 'run' || tr.v > 0.05) return null;
+  const tracks = sim.topo.stations[t0.station].turnbackBerths.map(b => sim.topo.berths[b].link);
+  return tracks.includes(tr.link) ? { station: t0.station, trip: t0.trip } : null;
+}
+
+/** live trips of duty `b` from `trip` on */
+function from(plan: Plan, b: Block, trip: number): number[] {
+  return b.trips.slice(b.trips.indexOf(trip)).filter(id => !plan.trips[id].cancelled && !plan.trips[id].completed);
+}
+
+/** The first trip of `tail` (from `minK`) a hot standby can take on time:
+ * the standby, the index, and its own later duty. */
+function hotCandidate(sim: Sim, tail: number[], minK = 0): { h: Train; k: number; own: number[] }[] {
+  const out: { h: Train; k: number; own: number[] }[] = [];
+  for (const h of sim.trainList) {
+    const at = hotStandby(sim, h);
+    if (!at) continue;
+    for (let k = minK; k < tail.length; k++) {
+      const D = sim.plan.trips[tail[k]];
+      if (!D.revenue || D.completed || D.from !== at.station) continue;
+      if (D.stops[0].dep < sim.t + HOT_NOTICE + HOT_PULL_OUT) continue;
+      out.push({ h, k, own: from(sim.plan, sim.plan.blocks[h.block], at.trip) });
+      break;
+    }
+  }
+  return out.sort((a, b) => a.k - b.k);
+}
+
+/** move `taken` (trips of block `src`, its last ones) to the end of block `dst` */
+function moveTrips(plan: Plan, src: number, taken: number[], dst: number) {
+  const s = plan.blocks[src], d = plan.blocks[dst];
+  for (const id of taken) { const t = plan.trips[id]; t.block = dst; t.cancelled = false; delete t.cancelReason; }
+  s.trips = s.trips.filter(id => !taken.includes(id));
+  d.trips.push(...taken);
+  d.end = s.end;
+}
+
+/** the hot standby `h` leaves its track for the duty it now has, from `trip` */
+function callOut(sim: Sim, h: Train, trip: number) {
+  const b = sim.plan.blocks[h.block];
+  // (its departure stop stays a standby's: it is called up to the platform
+  // STANDBY_CALL before, no earlier than the notice allows)
+  h.tasks = blockTasks(sim.topo, sim.plan, b, b.trips.indexOf(trip));
+  setTripFromTasks(sim, h);
+  sim.planRev++;
+  sim.planDirty = true;
+}
+
+/** R3 by the hot standby: it takes the lost trips from the first it can make
+ * from its station; a yard standby takes over its own later duty, or nothing
+ * is changed. */
+function hotTakeover(sim: Sim, from: number, tail: number[], why: string, depotK: number): Block | null {
+  for (const { h, k, own } of hotCandidate(sim, tail)) {
+    if (k > depotK) break;
+    if (!own.length) continue;
+    const cover = findStandby(sim, h.block, own);
+    if (!cover || cover.k) continue;
+    const plan = structuredClone(sim.plan);
+    applyStandby(plan, h.block, own, cover);
+    plan.blocks[h.block].relieved = false;
+    moveTrips(plan, from, tail.slice(k), h.block);
+    plan.blocks[from].relieved = true;
+    if (!noWorse(sim, plan)) continue;
+    const T = sim.plan.trips[tail[k]].from;
+    apply(sim, h.block, own, cover, `${sim.topo.stations[T].name}热备车${h.svc}投入运营`);
+    sim.plan.blocks[h.block].relieved = false;
+    moveTrips(sim.plan, from, tail.slice(k), h.block);
+    sim.plan.blocks[from].relieved = true;
+    callOut(sim, h, tail[k]);
+    const skipped = k ? `；此前${k}趟来不及接替，仍取消` : '';
+    sim.log('C', '运营', `热备车顶替：${sim.topo.stations[T].name}热备车${h.svc}（${h.vehicle}）接替${sim.plan.trips[tail[k]].no}起${tail.length - k}趟车次（${why}）${skipped}`,
+      { key: `hot-${h.id}-${tail[k]}` });
+    return sim.plan.blocks[h.block];
+  }
+  return null;
+}
 
 /** The standby that takes over `tail` (live trip ids of duty `from`, in
  * order), validated on a copy of the plan; null when none can. */
@@ -82,7 +187,47 @@ function apply(sim: Sim, from: number, tail: number[], c: StandbyPlan, why: stri
 export function standbyTakeover(sim: Sim, from: number, tail: number[], why: string): Block | null {
   if (!sim.autoDispatch || !tail.length) return null;
   const c = findStandby(sim, from, tail);
+  // the hot standby first, unless a yard standby makes an earlier trip
+  const hot = hotTakeover(sim, from, tail, why, c?.k ?? tail.length);
+  if (hot) return hot;
   return c ? apply(sim, from, tail, c, why) : null;
+}
+
+/** R1 at a line end (终点站换车): the hot standby there takes the late train's
+ * duty from its first departure there it can make on time; the late train
+ * turns into the standby's track and stands for the standby's own duty. */
+function hotSwap(sim: Sim, tr: Train, tail: number[], minK: number, late: number): { ok: boolean; msg: string } | null {
+  const keeps = (id: number) => tr.tasks.findIndex(t => t.k === 'stop' && t.trip === id && t.dep === null);
+  for (const { h, k, own } of hotCandidate(sim, tail, minK)) {
+    if (!own.length) continue;
+    const lastKept = k ? tail[k - 1] : tr.tripId;
+    if (keeps(lastKept) < 0) continue;
+    const swap = (plan: Plan) => {
+      const taken = tail.slice(k);
+      const bx = plan.blocks[tr.block], bh = plan.blocks[h.block];
+      const [endX, endH] = [bx.end, bh.end];
+      for (const id of taken) plan.trips[id].block = bh.id;
+      for (const id of own) plan.trips[id].block = bx.id;
+      bx.trips = [...bx.trips.filter(id => !taken.includes(id)), ...own];
+      bh.trips = [...bh.trips.filter(id => !own.includes(id)), ...taken];
+      bx.end = endH;
+      bh.end = endX;
+      plan.trips[lastKept].standby = true;
+    };
+    const plan = structuredClone(sim.plan);
+    swap(plan);
+    if (!noWorse(sim, plan)) continue;
+    swap(sim.plan);
+    const T = sim.plan.trips[tail[k]].from;
+    callOut(sim, h, tail[k]);
+    extendTrainTasks(sim, tr, lastKept);
+    setTripFromTasks(sim, tr);
+    const name = sim.topo.stations[T].name;
+    const msg = `${name}热备车${h.svc}（${h.vehicle}）接替${sim.plan.trips[tail[k]].no}起车次；列车${tr.svc}（${tr.vehicle}）预计晚点${Math.round(late / 60)}分钟，到达${name}后转为热备`;
+    sim.log('C', '运营', `终点站换车：${msg}`, { key: `hotswap-${h.id}-${tail[k]}` });
+    return { ok: true, msg };
+  }
+  return null;
 }
 
 /** Trips of the train's duty after its current one that are still to run. */
@@ -117,13 +262,15 @@ export function cmdStandbyRelief(sim: Sim, tr: Train) {
   const keeps = (id: number) => tr.tasks.findIndex(t => t.k === 'stop' && t.trip === id && t.dep === null);
   // The late train must still be able to stop at the end of what it keeps.
   const minK = keeps(tr.tripId) >= 0 ? 0 : 1;
+  const late = predictedLateness(sim, tr);
+  const hot = hotSwap(sim, tr, tail, minK, late);
+  if (hot) return hot;
   const c = findStandby(sim, tr.block, tail, minK);
   if (!c) return { ok: false, msg: '无可正点接替的备车' };
   const lastKept = c.k ? tail[c.k - 1] : tr.tripId;
   const cut = keeps(lastKept);
   if (cut < 0) return { ok: false, msg: '列车已驶离保留车次终点' };
-  const late = Math.round(predictedLateness(sim, tr) / 60);
-  const block = apply(sim, tr.block, tail, c, `列车${tr.svc}预计晚点${late}分钟`);
+  const block = apply(sim, tr.block, tail, c, `列车${tr.svc}预计晚点${Math.round(late / 60)}分钟`);
   tr.tasks = tr.tasks.slice(0, cut + 1);
   const keep = new Set(tr.tasks.flatMap(t => t.k === 'stop' ? [t.berth] : []));
   for (const [berth, train] of sim.berthRes) if (train === tr.id && !keep.has(berth)) sim.berthRes.delete(berth);

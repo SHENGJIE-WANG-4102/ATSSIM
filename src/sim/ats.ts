@@ -6,7 +6,7 @@ import { doorCloseHold, departureHold, DOOR_CUT_DWELL } from './vehicle';
  * regulation and dispatcher train commands.
  */
 import type { Sim } from './engine';
-import { cancelTrip, type Block, type DepotTask, type StopTask, type Task, type Train, type Trip, type TrackDir } from './model';
+import { cancelTrip, STANDBY_CALL, type Block, type DepotTask, type StopTask, type Task, type Train, type Trip, type TrackDir } from './model';
 import type { Dir, Topology } from './topology';
 import { nextLink } from './topology';
 import { cancelRoute, swPos, trySetRoute, releaseRoute, approachLocked, bindRouteApproach, committedTrain, relockRescueApproach } from './interlocking';
@@ -1275,6 +1275,11 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
     // route needed here
     const prio = plannedTime(goalTask, sim.t);
     const r = topo.routes[rid];
+    // a hot standby keeps to its turnback track until it is called out (D70)
+    if (goalTask.k === 'stop' && goalTask.standby && goalTask.dep !== null && goalTask.dep - sim.t > STANDBY_CALL) {
+      setArsWait(sim, tr, 'REGULATION', -1, sig, '热备待命');
+      return { train: tr, signal: sig, route: rid, prio, eta, ready: false, dist, via };
+    }
     let ok = ready && (level === 0 || dist < 1500);
     // do not route into a berth occupied by another train
     let berthWait = false;

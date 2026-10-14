@@ -739,7 +739,7 @@ export class Sim {
         tbStage: tr.tbStage, depotStage: tr.depotStage,
         load: tr.load, hold: tr.hold, failed: tr.failed, doors: tr.doorsOpen, doorSide: tr.doorSide, doorsAwait: tr.doorsAwait,
         platSide: tr.manual && t0?.k === 'stop' && (tr.phase === 'dwell' || (tr.stopDist >= 0 && tr.stopDist < 400)) ? platformSide(this, tr, this.topo.berths[t0.berth].platform) : '',
-        inService: tr.inService, chain: this.trainChain(tr),
+        inService: tr.inService, hot: hotMark(tr), chain: this.trainChain(tr),
         maReason: tr.maReason, maDist: tr.maDist, vPermit: tr.vPermit, nextSig: tr.nextSignal,
         task: t0 ? describeTask(this, t0) : '—', kind: tr.tripId >= 0 ? this.plan.trips[tr.tripId].kind : '',
         rm: tr.mode === 'RM',
@@ -863,3 +863,9 @@ export function describeCommand(sim: Sim, cmd: Command): string {
 }
 
 export type { DayType };
+
+/** standing as a hot standby, or turning back into its track to do so (D70) */
+function hotMark(tr: Train): boolean {
+  const t = tr.phase === 'reversing' ? tr.tasks[1] : tr.tasks[0];
+  return t?.k === 'stop' && !!t.standby && tr.phase !== 'dwell';
+}

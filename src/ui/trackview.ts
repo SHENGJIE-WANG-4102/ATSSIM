@@ -1086,6 +1086,7 @@ export class TrackView {
     if (tr.manual) chips += tr.mode === 'RM' ? '人RM' : '人CM';
     else if (tr.mode !== 'DTO' && !(tr.mode === 'AM' && tr.level === 'CBTC' && this.store.snap?.atoLine)) chips += tr.mode;
     if (tr.hold) chips += '扣';
+    if (tr.hot) chips += '热备';
     if (tr.inService && tr.delay > 120) chips += `+${Math.floor(tr.delay / 60)}'`;
     const H = 40;
     const chipW = chips ? textWidth(chips, 24) + 10 : 0;

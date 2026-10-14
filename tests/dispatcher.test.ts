@@ -4,6 +4,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Sim } from '../src/sim/engine';
 import { exchangePartner } from '../src/sim/ats';
+import { hotStandby, predictedLateness } from '../src/sim/standby';
+import type { StopTask, Train } from '../src/sim/model';
 import { makeSim, runFor, assertNoCollision, assertIntegrity, pickTrain, dirOf } from './helpers';
 
 const st = (sim: Sim, name: string) => sim.topo.stations.find((s) => s.name === name)!;
@@ -143,6 +145,53 @@ describe('dispatcher commands', () => {
     expect(left(w, before.tr)).toBe(true);
     expect(sim.plan.trips[before.tr].cancelled).toBeFalsy();
     expect(sim.plan.trips[before.w].cancelled).toBeFalsy();
+  });
+
+  it('hot standby (D70): stands in a turnback track, takes a lost train\'s departure, relieves a late one', () => {
+    const sim = makeSim('weekday', 9 * 3600 + 55 * 60, { seed: 5 });
+    const E = sim.topo.stations.length - 1;
+    const hots = () => sim.trainList.filter(t => hotStandby(sim, t));
+    const until = sim.t + 2400;
+    while (hots().length < 2 && sim.t < until) runFor(sim, 30, stepCheck);
+    expect(hots().map(t => hotStandby(sim, t)!.station).sort((a, b) => a - b)).toEqual([0, E]);
+    expect(sim.snapshot().trains.filter(t => t.hot).length).toBe(2);
+    // it keeps to its track: the departure platform stays free for the turning trains
+    for (const h of hots()) expect(sim.topo.stations[hotStandby(sim, h)!.station].turnbackBerths.map(b => sim.topo.berths[b].link)).toContain(h.link);
+    const depFrom = (t: Train, st: number) => t.tasks.find((x): x is StopTask => x.k === 'stop' && x.station === st && x.arr === null && x.dep !== null);
+
+    // R3: a train due out of the airport soon is withdrawn; the hot standby there takes its departure
+    sim.autoDispatch = true;
+    const lost = sim.trainList.filter(t => t.inService && !hotStandby(sim, t) && (d => !!d && d.dep! - sim.t > 600 && d.dep! - sim.t < 1500)(depFrom(t, E)))[0];
+    expect(lost).toBeDefined();
+    const D = depFrom(lost, E)!;
+    const hotE = hots().find(t => hotStandby(sim, t)!.station === E)!;
+    expect(sim.command({ c: 'withdraw', train: lost.id }).ok).toBe(true);
+    expect(sim.events.some(e => e.text.includes('热备车顶替'))).toBe(true);
+    let left = -1;
+    runFor(sim, D.dep! - sim.t + 120, (x) => { stepCheck(x); if (left < 0 && hotE.tripId === D.trip && hotE.phase === 'run' && hotE.v > 1) left = x.t; });
+    expect(left).toBeGreaterThan(0);
+    expect(left - D.dep!).toBeLessThan(60);
+    sim.autoDispatch = false;
+
+    // R1 at 蟠祥路: a late westbound train swaps with the standby there and becomes the standby
+    const hotW = hots().find(t => hotStandby(sim, t)!.station === 0)!;
+    const pick = () => sim.trainList.filter(t => t.inService && t !== hotW && t.phase === 'dwell' && (d => !!d && d.dep! - sim.t > 900 && d.dep! - sim.t < 1500)(depFrom(t, 0)))[0];
+    for (let i = 0; i < 120 && !pick(); i++) runFor(sim, 5, stepCheck);
+    const late = pick();
+    expect(late).toBeDefined();
+    const Dw = depFrom(late, 0)!;
+    sim.command({ c: 'trainHold', train: late.id, on: true });
+    while (predictedLateness(sim, late) < 330 && sim.t < Dw.dep! - 300) runFor(sim, 5, stepCheck);
+    sim.command({ c: 'trainHold', train: late.id, on: false });
+    const r = sim.command({ c: 'standby', train: late.id });
+    expect(r.ok, r.msg).toBe(true);
+    expect(r.msg).toContain('转为热备');
+    left = -1;
+    runFor(sim, Dw.dep! - sim.t + 120, (x) => { stepCheck(x); if (left < 0 && hotW.tripId === Dw.trip && hotW.v > 1 && x.trainChain(hotW) > x.topo.stations[0].chain + 300) left = x.t; });
+    expect(left).toBeGreaterThan(0);
+    expect(left - Dw.dep!).toBeLessThan(90);
+    runFor(sim, 900, stepCheck);
+    expect(hotStandby(sim, late)?.station).toBe(0);
   });
 
   it('manual route cancel / set at a signal', () => {

@@ -357,7 +357,7 @@ export class SidePanel {
         h('td', { class: 'mono', style: (t.mode !== 'DTO' && t.mode !== 'AM') || t.manual ? 'color:var(--warn)' : '' }, `${t.manual ? '人' : ''}${t.mode}${t.comm ? '' : '×'}`),
         h('td', { class: 'mono', style: late ? 'color:var(--late)' : '' }, t.inService ? fmtDelay(t.delay) : '—'), h('td', { class: 'mono' }, `${Math.round((t.load / LINE_INFO.capacity) * 100)}%`),
         h('td', { style: t.failed || t.eb ? 'color:var(--bad)' : '', title: t.halt ? `${t.halt.code} ${t.halt.detail}` : '' },
-          t.failed ? '故障' : t.eb ? '紧急制动' : t.hold ? '扣车' : t.phase === 'dwell' ? '停站' : t.phase === 'reversing' ? '折返' : t.v > 0.1 ? '运行'
+          t.failed ? '故障' : t.eb ? '紧急制动' : t.hold ? '扣车' : t.hot ? '热备待命' : t.phase === 'dwell' ? '停站' : t.phase === 'reversing' ? '折返' : t.v > 0.1 ? '运行'
             : t.halt ? `${t.halt.label}${t.halt.blocker ? `（${t.halt.blocker}）` : ''}` : '停车',
           t.vehicleNote ? h('span', { style: 'color:var(--warn);margin-left:6px' }, t.vehicleNote) : ''),
       ));

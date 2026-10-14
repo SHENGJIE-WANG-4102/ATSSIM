@@ -51,6 +51,9 @@ export interface Trip {
   cancelReason?: string;
   /** label of the overlay template that created it */
   overlay?: string;
+  /** after this trip the train stands as hot standby (热备) in a turnback
+   *  track at `to` until its next trip (D70) */
+  standby?: boolean;
 }
 
 /** Cancel a trip with its specific reason. The first reason given is kept
@@ -94,6 +97,9 @@ export interface Plan {
 
 // ---------------------------------------------------------------- tasks
 
+/** a hot standby (热备, D70) is called up to its departure platform this long before it is due (s) */
+export const STANDBY_CALL = 240;
+
 export interface StopTask {
   k: 'stop';
   berth: number;
@@ -109,6 +115,9 @@ export interface StopTask {
   note?: string;
   /** set-down only (定点班车): nobody boards here */
   noBoard?: boolean;
+  /** the departure after a hot standby (热备): the train keeps to its
+   *  turnback track until shortly before it (D70) */
+  standby?: boolean;
 }
 export interface ReverseTask { k: 'reverse'; berths: number[]; chosen: number; station: number; minTime: number }
 export interface DepotTask { k: 'depot'; depot: number; /** 入段 berth of the lead used (default: the depot's) */ berth?: number }
@@ -614,6 +623,8 @@ export interface TrainSnap {
   /** side of the platform at the stop the train stands at or approaches ('' none) */
   platSide: '' | 'L' | 'R';
   inService: boolean;
+  /** hot standby (热备, D70): standing for, or turning into, a standby departure */
+  hot: boolean;
   chain: number;
   maReason: string;
   maDist: number;

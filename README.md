@@ -473,6 +473,19 @@ already facing west, and a small-route arrival whose platform the next arrival n
 first runs on to 浦东1号2号航站楼 (延伸运行).
 Weekday peak uses 65 trains, within the 100-train fleet.
 
+Overnight the yards hold 92 trains; the other 8 stay on the line (D68): 4 at 蟠祥路 (both
+turnback tracks and the two places of the DN storage tail), 2 in the airport tails and 2
+in the 上海科技馆 turnback track, which run up westbound as that station's first trains.
+
+Off-peak each line end keeps a hot standby (热备车, D70) in one of its turnback tracks
+(weekday 10:10–15:50 and 20:00–21:40, weekend 10:00–21:00); the other trains turn through
+the other track. In the peak build-up it takes the first departure the line end has no
+train for. Dispatch uses it before a yard standby: with 2–3 min notice it takes over a
+departure from its station, either for a late train arriving there (which turns into the
+track and becomes the standby, 终点站换车) or for a train lost to a failure (a yard
+standby then covers its own later duty). The train label shows 热备; the train command
+备车接替 calls it.
+
 ## Cab DMI
 
 The DMI in the side panel follows four reference photos in `reference/dmi/`. The files are

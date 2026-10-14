@@ -11,7 +11,7 @@
  */
 import type { Topology } from './topology';
 import type { RunTimes } from './dynamics';
-import { cancelTrip, type Block, type DayType, type Plan, type PlanStop, type Task, type Trip, type TripKind, type TrackDir } from './model';
+import { cancelTrip, type Block, type DayType, type Plan, type PlanStop, type StopTask, type Task, type Trip, type TripKind, type TrackDir } from './model';
 import { plannedDwell } from './calibration';
 import { STATIONS, OPERATIONS, LINE_INFO, FIXED_LATE_TRAINS, type FixedRun } from '../data/line2';
 
@@ -112,6 +112,22 @@ const TERMINAL_CAP: Record<number, number> = { 0: 3, 30: 3, 4: 3, 22: 1, 1: 3, 2
 const MAX_PRESENT: Record<number, number> = { 0: 3, 30: 3, 4: 2, 22: 1, 1: 3, 2: 2 };
 /** longest a train may wait at a terminal between trips (s) */
 const MAX_LAYOVER = 1500;
+/**
+ * Hot standby (热备车, D70): off-peak each line end keeps one train of its
+ * turning cycle aside, crewed, in one of its two turnback tracks; the other
+ * trains turn through the other track. From `from` the first train the line
+ * end has to spare (a third one laying over there) stays; with none to spare
+ * by an hour later the next arrival stays anyway and a train comes out of the
+ * yard for the departure it would have taken. From `need` it takes the first
+ * departure the line end has no train for (the peak build-up: both tracks
+ * turn again); at `to` it rejoins the cycle, or goes back to the yard.
+ */
+interface StandbyWindow { from: number; need: number; to: number }
+function standbyWindows(dayType: DayType): StandbyWindow[] {
+  return dayType === 'weekday'
+    ? [{ from: H(9, 30), need: H(15), to: H(19, 30) }, { from: H(19, 40), need: H(21, 40), to: H(21, 40) }]
+    : [{ from: H(9), need: H(21), to: H(21) }];
+}
 /** longest an added train running on in its own direction may stand at an
  *  intermediate station's through platform before its next trip (s): any
  *  longer and the following train queues behind it */
@@ -553,6 +569,8 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
     .flatMap(([id, n]) => Array<number>(n).fill(STATIONS.findIndex((x) => x.id === id))).sort((a, b) => a - b);
   const sources: GenTrip[] = [];
   const sinks: GenTrip[] = [];
+  /** a hot standby that goes back to the yard: when it leaves the line end */
+  const standbyUntil = new Map<number, number>();
 
   /**
    * An added-service trip into a terminal the base plan already fills does not run: the
@@ -586,7 +604,30 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
     // An added departure placed in the turnback window of an added arrival
     // (applyOverlay) comes linked to it: that train takes it.
     const unlink = (a: GenTrip) => { if (a.next !== undefined) { trips[a.next].prev = undefined; a.next = undefined; } };
-    for (const ev of evs) {
+    // the hot standby held aside at this line end, and its window
+    const windows = !overlay && (T === W || T === topo.stations.length - 1) && topo.stations[T].turnbackBerths.length >= 2 ? standbyWindows(ctx.dayType) : [];
+    let sb: { trip: GenTrip; ready: number; w: StandbyWindow } | null = null;
+    const held = new Set<StandbyWindow>();
+    /** the line end turns every departure up to `until` with the trains in
+     *  `stand` and those arriving, one place fewer than it has */
+    const spare = (from: number, stand: { ready: number }[], until: number) => {
+      const q = stand.map((p) => p.ready);
+      for (let k = from; k < evs.length && evs[k].time < until; k++) {
+        const e = evs[k];
+        if (e.trip.cancelled) continue;
+        for (let i = q.length - 1; i >= 0; i--) if (e.time - q[i] > MAX_LAYOVER) q.splice(i, 1);
+        if (e.kind === 0) { q.push(e.time + mt); if (q.length > cap - 1) q.shift(); continue; }
+        const i = q.findIndex((r) => r <= e.time);
+        if (i < 0) return false;
+        q.splice(i, 1);
+      }
+      return true;
+    };
+    for (let ei = 0; ei < evs.length; ei++) {
+      const ev = evs[ei];
+      // end of the window: back into the cycle, first in line (or to the yard
+      // if the line end is full)
+      if (sb && ev.time >= sb.w.to) { present.unshift({ trip: sb.trip, ready: ev.time }); standbyUntil.set(sb.trip.id, ev.time); sb = null; }
       // trains idle longer than the maximum layover go back to the depot
       for (let i = present.length - 1; i >= 0; i--) {
         if (ev.time - present[i].ready > (T > 0 && T < topo.stations.length - 1 ? 450 : MAX_LAYOVER)) { unlink(present[i].trip); out.push(present.splice(i, 1)[0].trip); }
@@ -597,7 +638,13 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
         const base = (baseOcc?.get(T) ?? []).filter((o) => o.from <= ev.time + mt && o.to > ev.time).length;
         if (overlay && base >= cap) { dropArrival(ev.trip); continue; }
         present.push({ trip: ev.trip, ready: ev.time + mt });
-        if (present.length + base > cap) { const x = present.shift()!.trip; unlink(x); out.push(x); }
+        const w = windows.find((x) => !held.has(x) && ev.time >= x.from && ev.time < Math.min(x.need, x.to - 3600));
+        if (w && !sb && present.length > 1 && (spare(ei + 1, present.slice(0, -1), w.need) || ev.time >= w.from + 3600)) {
+          sb = { trip: present.pop()!.trip, ready: ev.time + mt, w };
+          held.add(w);
+          sb.trip.standby = true;
+        }
+        if (present.length + base > cap - (sb ? 1 : 0)) { const x = present.shift()!.trip; unlink(x); out.push(x); }
       } else {
         const linked = ev.trip.prev;
         let i = linked === undefined ? -1 : present.findIndex(p => p.trip.id === linked && p.ready <= ev.time);
@@ -605,9 +652,12 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
         if (i < 0) i = present.findIndex((p) => p.trip.next === undefined && p.ready <= ev.time && frontTurnClear(ctx, allForGaps(),
           p.trip, ev.time, new Set([p.trip.id, ev.trip.id])));
         if (i >= 0) pairs.push({ a: present.splice(i, 1)[0].trip, d: ev.trip });
+        // short of a train in the build-up: the standby goes back into service
+        else if (sb && ev.time >= sb.w.need && sb.ready <= ev.time) { pairs.push({ a: sb.trip, d: ev.trip }); sb = null; }
         else src.push(ev.trip);
       }
     }
+    if (sb) { standbyUntil.set(sb.trip.id, sb.w.to); out.push(sb.trip); }
     for (const p of present) out.push(p.trip);
     const m = { pairs, out, src };
     for (const p of m.pairs) { p.a.next = p.d.id; p.d.prev = p.a.id; }
@@ -980,7 +1030,8 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
   // platform, in the order it arrived (a train standing on it for a later
   // departure blocks the earlier one), so pair turns first in, first out.
   for (const T of [0, topo.stations.length - 1]) {
-    const turns = trips.filter((a) => a.overlay === overlay && !a.cancelled && a.to === T && a.next !== undefined && trips[a.next].from === T && trips[a.next].dir !== a.dir);
+    // (the hot standby stands aside in its own track)
+    const turns = trips.filter((a) => a.overlay === overlay && !a.cancelled && !a.standby && a.to === T && a.next !== undefined && trips[a.next].from === T && trips[a.next].dir !== a.dir);
     if (turns.length < 2) continue;
     const deps = turns.map((a) => trips[a.next!]).sort((x, y) => x.stops[0].dep - y.stops[0].dep);
     turns.sort((x, y) => x.stops[x.stops.length - 1].arr - y.stops[y.stops.length - 1].arr)
@@ -1107,7 +1158,7 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
     const A = sinkQueue[qi];
     if (endOf.has(A.id) || A.cancelled || A.next !== undefined) continue; // (queued twice: already sent on)
     const T = A.to;
-    const arr = lastArr(A);
+    const arr = Math.max(lastArr(A), standbyUntil.get(A.id) ?? -Infinity);
     const depot = depotIndex(topo, TERMINAL_DEPOT[T]);
     // (an added service ends inside the day: its trains go back as ordinary withdrawals)
     const night = !overlay && arr >= lastDepFrom(T) - 60;
@@ -1849,7 +1900,12 @@ export function blockTasks(topo: Topology, plan: Plan, block: Block, fromTrip = 
     if (trip.cancelled) continue;
     const fromDepot = k === 0 && block.start.kind === 'depot' && fromTrip === 0;
     if (fromDepot && block.start.kind === 'depot') portalExitTasks(topo, block.start.depot, trip, tasks);
+    const first = tasks.length;
     tripTasks(topo, trip, tasks, fromDepot);
+    // after a hot standby: its departure stop (D70)
+    const before = block.trips.slice(0, fromTrip + k).map((i) => plan.trips[i]).filter((t) => !t.cancelled).at(-1);
+    const dep = tasks.slice(first).find((t): t is StopTask => t.k === 'stop');
+    if (before?.standby && dep) dep.standby = true;
     const next = ids.slice(k + 1).map((i) => plan.trips[i]).find((t) => !t.cancelled);
     if (next) {
       if (next.dir !== trip.dir) addTurnback(topo, trip, tasks);
