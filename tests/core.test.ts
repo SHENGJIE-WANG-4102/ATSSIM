@@ -551,26 +551,30 @@ describe('multiple-failure maintenance escalation', () => {
 });
 
 describe('paper-based turnback and depot procedures', () => {
-  it.each([0, 30])('keeps a coupled rescue on its physical terminal tail (%s)', station => {
+  // 蟠祥路 no longer has terminal tails to turn back on (its turnback is the PXL1/PXL2 middle tracks and the two
+  // main-line tails are storage only), so the physical-tail rule is checked on both 浦东1号2号航站楼 tails.
+  it.each([[30, 1], [30, 0]])('keeps a coupled rescue on its physical terminal tail (station %s, tail %s)', (station, physicalIndex) => {
     const sim = make(); advance(sim, 2); const tr = sim.trainList[0];
     for (const other of [...sim.trainList]) if (other !== tr) sim.removeTrain(other);
     for (const rid of [...sim.routes.keys()]) releaseRoute(sim, rid);
     for (const block of sim.plan.blocks) sim.blockDone.add(block.id);
     const berths = sim.topo.stations[station].turnbackBerths;
-    const physical = sim.topo.berths[berths[1]];
+    expect(berths.every(id => sim.topo.berths[id].kind === 'tail')).toBe(true);
+    const physical = sim.topo.berths[berths[physicalIndex]];
+    const other = berths[1 - physicalIndex];
     const link = sim.topo.links[physical.link];
     const inner = sim.topo.links.find(l => l.track === link.track && (physical.dir === 1 ? l.b === link.a : l.a === link.b))!;
     tr.link = link.id; tr.off = physical.offset - physical.dir * 40; tr.dir = physical.dir;
     tr.hist = [{ link: inner.id, dir: physical.dir }, { link: link.id, dir: physical.dir }];
     tr.len = 373; tr.coupledLen = 186; tr.v = 0; tr.eb = false; tr.phase = 'run';
     tr.block = -1; tr.tripId = -1; tr.inService = false; tr.tbStage = 'arrive';
-    tr.tasks = [{ k: 'reverse', berths: [berths[0]], chosen: berths[0], station, minTime: 40 },
-      { k: 'stop', berth: platformBerth(sim.topo, station, station === 0 ? 'DN' : 'UP'), station, trip: -1, arr: null, dep: sim.t + 1800, doors: false, revenue: false }];
-    sim.berthRes.set(berths[0], tr.id); computeBody(sim, tr); indexBodies(sim);
+    tr.tasks = [{ k: 'reverse', berths: [other], chosen: other, station, minTime: 40 },
+      { k: 'stop', berth: platformBerth(sim.topo, station, 'UP'), station, trip: -1, arr: null, dep: sim.t + 1800, doors: false, revenue: false }];
+    sim.berthRes.set(other, tr.id); computeBody(sim, tr); indexBodies(sim);
     tr.maDist = tr.maFar = 0; tr.maSigs = []; tr.lastMa = Infinity; tr.stopDist = Infinity;
     updateTrainTasks(sim, tr);
     expect(tr.tasks[0]).toMatchObject({ chosen: physical.id });
-    expect(sim.berthRes.has(berths[0])).toBe(false);
+    expect(sim.berthRes.has(other)).toBe(false);
     advance(sim, 150);
     expect(tr.dir).toBe(-physical.dir);
     expect(tr.tasks[0].k).toBe('stop');
@@ -606,20 +610,23 @@ describe('paper-based turnback and depot procedures', () => {
     for (const other of [...sim.trainList]) if (![tr, failed, parallel].includes(other)) sim.removeTrain(other);
     for (const rid of [...sim.routes.keys()]) releaseRoute(sim, rid);
     for (const block of sim.plan.blocks) sim.blockDone.add(block.id);
-    const tail = sim.topo.berths[sim.topo.stations[0].turnbackBerths[0]];
+    // the east end: 浦东1号2号航站楼 has the terminal tails (蟠祥路's tails are storage only); the failed train has
+    // changed ends in the DN tail and faces the platform (west), the rescuer arrives from the DN platform
+    const station = 30;
+    const tail = sim.topo.berths[sim.topo.stations[station].turnbackBerths[0]];
+    expect(tail.kind).toBe('tail');
     const outer = sim.topo.links[tail.link];
-    const inner = sim.topo.links.find(l => l.a === outer.b && l.track === outer.track)!;
-    failed.link = inner.id; failed.off = 78; failed.dir = 1;
-    failed.hist = [{ link: outer.id, dir: 1 }, { link: inner.id, dir: 1 }];
+    failed.link = outer.id; failed.off = 78; failed.dir = -1;
+    failed.hist = [{ link: outer.id, dir: -1 }];
     failed.v = 0; failed.eb = false; failed.block = -1; failed.tripId = -1; failed.tbStage = stage === 'none' ? 'none' : 'arrive';
     failed.phase = 'run'; computeBody(sim, failed);
-    const platform = sim.topo.berths[platformBerth(sim.topo, 0, 'UP')];
-    tr.link = platform.link; tr.off = 6; tr.dir = -1; tr.hist = [{ link: platform.link, dir: -1 }];
+    const platform = sim.topo.berths[platformBerth(sim.topo, station, 'DN')];
+    tr.link = platform.link; tr.off = sim.topo.links[platform.link].len - 6; tr.dir = 1; tr.hist = [{ link: platform.link, dir: 1 }];
     tr.v = 0; tr.eb = false; tr.phase = 'run'; tr.block = -1; tr.tripId = -1; tr.inService = false;
-    const otherTail = sim.topo.berths[sim.topo.stations[0].turnbackBerths[1]];
-    parallel.link = otherTail.link; parallel.off = 201; parallel.dir = 1; parallel.hist = [{ link: otherTail.link, dir: 1 }];
+    const otherTail = sim.topo.berths[sim.topo.stations[station].turnbackBerths[1]];
+    parallel.link = otherTail.link; parallel.off = sim.topo.links[otherTail.link].len - 201; parallel.dir = -1; parallel.hist = [{ link: otherTail.link, dir: -1 }];
     parallel.v = 0; parallel.phase = 'run'; parallel.block = -1; parallel.tripId = -1;
-    parallel.tasks = [{ k: 'stop', berth: platformBerth(sim.topo, 0, 'DN'), station: 0, trip: -1, arr: null, dep: sim.t + 3600, doors: false, revenue: false }];
+    parallel.tasks = [{ k: 'stop', berth: platformBerth(sim.topo, station, 'UP'), station, trip: -1, arr: null, dep: sim.t + 3600, doors: false, revenue: false }];
     computeBody(sim, tr); computeBody(sim, parallel); indexBodies(sim);
     for (const train of [tr, failed, parallel]) { train.maDist = train.maFar = 0; train.maSigs = []; train.lastDs = 0; train.lastMa = Infinity; }
     checkSafety(sim);
@@ -679,13 +686,25 @@ describe('paper-based turnback and depot procedures', () => {
   });
   it('uses the full physical depot insertion path rather than half the terminal route cost', () => {
     const sim = make(); const depot = sim.topo.depots.find(d => d.key === 'CSD')!;
-    const goal = sim.topo.berths.find(b => b.station === 29 && b.kind === 'platform' && b.dir === 1)!;
+    // CSD's exit joins the UP main east of 远东大道 and runs west (dir -1): the first platform it reaches is that
+    // station's UP platform
+    const goal = sim.topo.berths.find(b => b.station === depot.station && b.kind === 'platform' && b.dir === -1 && sim.topo.links[b.link].track === 'UP')!;
     const distance = distanceToBerth(sim, depot.exitSignal, goal.id);
     // the junction to the platform plus the transfer track and turnouts
-    const span = sim.topo.stations[29].chain - depot.junctionChain;
+    const span = Math.abs(sim.topo.stations[depot.station].chain - depot.junctionChain);
     expect(distance).toBeGreaterThan(span);
     expect(distance).toBeLessThan(span + 600);
-    expect(distance).toBeGreaterThan(sim.routeTable.dist.get(goal.id)![depot.exitSignal] * 1.7);
+    // The weighted route-choice cost counts the route holding the berth at half length (and adds a penalty per
+    // diverging route); the physical path is the plain length of the routes before it plus most of that route.
+    const table = sim.routeTable.next.get(goal.id)!;
+    let before = 0, sig = depot.exitSignal, terminal = sim.topo.routes[table[sig]];
+    for (let guard = 0; guard < 20 && !terminal.berths.includes(goal.id); guard++) {
+      before += terminal.length; sig = terminal.end; terminal = sim.topo.routes[table[sig]];
+    }
+    expect(terminal.berths).toContain(goal.id);
+    expect(before).toBeGreaterThan(0);
+    expect(distance).toBeGreaterThan(before + 0.5 * terminal.length);
+    expect(distance).toBeLessThanOrEqual(before + terminal.length);
   });
   it('does not apply reverse-interval TD protection to an ordinary terminal tail move', () => {
     const sim = make(); advance(sim, 2); const tr = sim.trainList[0];
@@ -768,8 +787,13 @@ describe('withdrawal approach continuity', () => {
     computeBody(sim,tr); indexBodies(sim); checkSafety(sim);
     expect(sim.command({c:'withdraw',train:tr.id}).ok).toBe(true);
     const stops=tr.tasks.filter(t=>t.k==='stop');
-    expect(stops.map(t=>t.station)).toEqual([3,1]);
+    // the DN entry to BZL changes ends on the 淞虹路 DN platform (the leads lie west of the station), so the
+    // return after the turnback at 1 ends with that 回段换端 stop
+    const entry=sim.topo.depots[0].portals.entry.DN;
+    expect(entry).toMatchObject({station:4,reverse:true});
+    expect(stops.map(t=>t.station)).toEqual([3,1,entry.station]);
     expect(tr.tasks.find(t=>t.k==='reverse')).toMatchObject({station:1});
+    expect(tr.tasks.filter(t=>t.k==='reverse').at(-1)).toMatchObject({station:entry.station});
     const vehicle=tr.vehicle; const cleared=sim.passengersCleared;
     advance(sim,2500);
     expect(sim.trains.has(tr.id)).toBe(false);
@@ -784,7 +808,9 @@ describe('withdrawal approach continuity', () => {
     for (const block of sim.plan.blocks) sim.blockDone.add(block.id);
     const depot = sim.topo.depots.find(d => d.key === key)!;
     const berth = sim.topo.berths[depot.berth];
-    tr.link = berth.link; tr.off = berth.offset - berth.dir * 10; tr.dir = berth.dir;
+    // far enough up the gate link for the train to settle on its braking curve: from 10 m the BZL leads (3‰ down
+    // towards the gate) overshoot the berth by more than the 1.5 m arrival tolerance and the train waits at 段界
+    tr.link = berth.link; tr.off = berth.offset - berth.dir * 80; tr.dir = berth.dir;
     tr.hist = [{link:tr.link,dir:tr.dir}]; tr.v = 0; tr.eb = false; tr.phase = 'run';
     tr.block = -1; tr.tripId = -1; tr.inService = true; tr.delay = 1000; tr.load = 0;
     tr.tasks = [{k:'depot',depot:depot.id}]; tr.depotStage = 'none';
@@ -817,7 +843,15 @@ describe('withdrawal approach continuity', () => {
     expect(sim.command({c:'withdraw',train:tr.id}).ok).toBe(true);
     expect(tr.tasks[0]).toMatchObject({k:'reverse',station:0});
     advance(sim,300);
-    expect(tr.dir).toBe(1); expect(tr.tasks[0]).toMatchObject({k:'depot',depot:0});
+    expect(tr.dir).toBe(1);
+    // no clear-out stop at 蟠祥路: what remains is the DN entry to BZL, which changes ends on the 淞虹路 platform
+    // (the leads lie west of that station) and then goes in
+    const entry=sim.topo.depots[0].portals.entry.DN;
+    expect(entry).toMatchObject({station:4,reverse:true});
+    expect(tr.tasks.some(t=>t.k==='stop'&&t.station===0)).toBe(false);
+    expect(tr.tasks.map(t=>t.k)).toEqual(['stop','reverse','depot']);
+    expect(tr.tasks[0]).toMatchObject({k:'stop',station:entry.station,note:'回段换端'});
+    expect(tr.tasks.at(-1)).toMatchObject({k:'depot',depot:0});
     expect(sim.integrity.violations).toHaveLength(0);
   });
   it('keeps the normal clear-out platform when the depot is behind a moving train', () => {
@@ -846,7 +880,17 @@ describe('depot selection after clear-out', () => {
     expect(sim.command({c:'withdraw',train:tr.id}).ok).toBe(true);
     expect(tr.tasks[0]).toMatchObject({k:'stop',station:19});
     const depot=tr.tasks.at(-1);expect(depot?.k).toBe('depot');
-    if(depot?.k==='depot')expect(sim.topo.depots[depot.depot].key).toBe('BZL');
+    if(depot?.k!=='depot')return;
+    // LYD's leads lie east of 龙阳路: the junction is between the train and the clear-out station. Its UP entry
+    // changes ends on that platform, so the depot is entered only after the clear-out stop there (the entrance
+    // before the station is never taken ahead of the clear-out).
+    const lyd=sim.topo.depots[depot.depot];
+    expect(lyd.key).toBe('LYD');
+    expect(lyd.junctionChain).toBeGreaterThan(sim.topo.stations[19].chain);
+    expect(lyd.junctionChain).toBeLessThan(sim.trainChain(tr));
+    expect(lyd.portals.entry.UP).toMatchObject({station:19,reverse:true});
+    expect(tr.tasks.map(t=>t.k)).toEqual(['stop','reverse','depot']);
+    expect(tr.tasks[1]).toMatchObject({k:'reverse',station:19});
   });
 });
 
