@@ -722,7 +722,8 @@ export class Sim {
       if (p.psdBypass) f |= PLT.BYPASS;
       if (p.surge > 1) f |= PLT.SURGE;
       platforms[i] = f;
-      platformWaiting[i] = Math.min(65535, Math.round(p.waiting));
+      // a face sharing another platform's queue (广兰路 middle track) shows that queue
+      platformWaiting[i] = Math.min(65535, Math.round(this.plat[topo.platforms[i].pool ?? i].waiting));
     });
     for (const tr of this.trainList) {
       const sp = topo.links[tr.link].platform;
