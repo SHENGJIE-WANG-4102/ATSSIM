@@ -1263,7 +1263,11 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
           ok = false;
           setArsWait(sim, tr, 'REGULATION', -1, sig, '接续始发临近前在折返线待发，保持正线平台空闲');
         }
-        if (goalTask.dep - sim.t - eta > 240 && !isNextDeparture(sim, tr, goal, goalTask.dep) && !(tailsBlocked(sim, tr, goalTask.station) && firstInTails(sim, tr, goal, goalTask.dep, goalTask.station))) {
+        // a train due out before us that is already here (in the other
+        // tail, changing ends, running in) goes first however close our time is
+        const first = earlierDeparture(sim, tr, goal, goalTask.dep);
+        const near = !!first && Math.abs(sim.trainChain(first) - topo.stations[goalTask.station].chain) < 1500;
+        if (first && (goalTask.dep - sim.t - eta > 240 || near) && !(tailsBlocked(sim, tr, goalTask.station) && firstInTails(sim, tr, goal, goalTask.dep, goalTask.station))) {
           ok = false;
           setArsWait(sim, tr, 'REGULATION', -1, sig, '终点站发车次序');
         }
@@ -1279,8 +1283,11 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
       const gt = goalTask;
       const own = tr.tasks.find((t): t is StopTask => t.k === 'stop' && t.station === gt.station && t.dep !== null);
       if (own) {
+        // through trains (arriving with a dwell); other exits through this
+        // platform are already spaced among themselves
+        const D = own.dep!;
         const before = sim.trainList.find((o) => o !== tr && !o.failed && o.tasks.some((t) => t.k === 'stop' && t.berth === own.berth
-          && t.dep !== null && t.dep < own.dep! - 1 && t.dep > own.dep! - 900));
+          && t.arr !== null && t.dep !== null && t.dep - t.arr > 1 && t.dep < D - 1 && t.dep > D - 900));
         if (before) {
           ok = false;
           setArsWait(sim, tr, 'REGULATION', before.id, sig, '出段换端：让按图先发的列车先行');
@@ -1422,17 +1429,18 @@ function chainRouteFree(sim: Sim, rid: number, chain: number[], self: number): b
   return true;
 }
 
-function isNextDeparture(sim: Sim, self: Train, berth: number, dep: number): boolean {
+/** a train due to leave this platform before `dep` */
+function earlierDeparture(sim: Sim, self: Train, berth: number, dep: number): Train | undefined {
   const platform = sim.topo.berths[berth].platform;
   for (const tr of sim.trainList) {
     if (tr.id === self.id) continue;
     for (let i = 0; i < Math.min(6, tr.tasks.length); i++) {
       const t = tr.tasks[i];
       if (t.k !== 'stop' || t.dep === null || t.dep >= dep) continue;
-      if (sim.topo.berths[t.berth].platform === platform) return false;
+      if (sim.topo.berths[t.berth].platform === platform) return tr;
     }
   }
-  return true;
+  return undefined;
 }
 
 /** all turnback berths at the station are occupied and another train is queued to turn back */
