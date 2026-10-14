@@ -189,6 +189,9 @@ export interface TStation {
   turnbackBerths: number[];
   /** station-front turnback possible (crossover adjacent) */
   frontTurnback: { DN: boolean; UP: boolean };
+  /** storage-only tail berths a stabled train leaves straight for the
+   *  departure platform from, the one nearer the platform first */
+  storageBerths: number[];
   equipped: boolean;
   row: number;
   x: number;
@@ -1058,6 +1061,7 @@ export function buildTopology(): Topology {
   const berths: TBerth[] = [];
   const addBerth = (b: Omit<TBerth, 'id'>) => { const id = berths.length; berths.push({ ...b, id }); return id; };
   const stationTurnback: number[][] = chains.map(() => []);
+  const stationStorage: number[][] = chains.map(() => []);
   for (const p of platforms) {
     const l = links[p.link];
     const stopOff = (LINE_INFO.platformLength / 2) + (PLAT_HALF - LINE_INFO.platformLength / 2); // head at platform end
@@ -1084,6 +1088,16 @@ export function buildTopology(): Topology {
       const offset = dir === -1 ? 15 : l.len - 15;
       const id = addBerth({ kind: 'tail', link: lid, offset, dir, platform: -1, station: ti.station, depot: -1, reverse: false, name: `${STATIONS[ti.station].name}${t === 'DN' ? '下行' : '上行'}尾轨` });
       if (ti.turnback) stationTurnback[ti.station].push(id);
+      // A storage-only tail on the track that leaves away from the buffer
+      // (蟠祥路 下行) holds two trains, one on each of its links: they go out
+      // straight to the departure platform, the inner one first.
+      const away = (t === 'DN') === (dir === -1);
+      const innerId = dir === -1 ? mainLinks[t][1] : mainLinks[t][mainLinks[t].length - 2];
+      if (!ti.turnback && away && links[innerId].len >= LINE_INFO.trainLength + 30) {
+        const il = links[innerId];
+        const inner = addBerth({ kind: 'tail', link: innerId, offset: dir === -1 ? 15 : il.len - 15, dir, platform: -1, station: ti.station, depot: -1, reverse: false, name: `${STATIONS[ti.station].name}${t === 'DN' ? '下行' : '上行'}尾轨(内)` });
+        stationStorage[ti.station].push(inner, id);
+      }
     }
   }
   for (const b of sidingBerthInfo) {
@@ -1470,7 +1484,7 @@ export function buildTopology(): Topology {
     const frontUP = front('UP');
     return {
       index: i, id: s.id, name: s.name, chain: chains[i], platforms: stationPlat[i],
-      turnbackBerths: stationTurnback[i], frontTurnback: { DN: frontDN, UP: frontUP }, equipped: equipped[i],
+      turnbackBerths: stationTurnback[i], storageBerths: stationStorage[i], frontTurnback: { DN: frontDN, UP: frontUP }, equipped: equipped[i],
       row: r, x: chainToX(chains[i], r),
     };
   });

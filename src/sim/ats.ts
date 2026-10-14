@@ -336,7 +336,11 @@ function resolveChoice(sim: Sim, tr: Train, task0: Task): Task {
     const cur = sim.berthRes.get(task.chosen);
     if (cur === tr.id) return task;
     const free = task.berths.filter((b) => !berthBusy(sim, b, tr.id));
-    const pick = free[0] ?? task.berths[0];
+    // a depot exit due over the lead's stub before we leave again needs that
+    // stub; turn back on the other track when there is one
+    const leave = tr.tasks.find((t): t is StopTask => t.k === 'stop' && t.dep !== null)?.dep ?? sim.t;
+    const clear = free.filter((b) => !exitDueOver(sim, sim.topo.berths[b].link, leave));
+    const pick = clear[0] ?? free[0] ?? task.berths[0];
     if (task.chosen !== pick) { task = cowTask(tr, task); task.chosen = pick; }
     if (!berthBusy(sim, pick, tr.id)) sim.berthRes.set(pick, tr.id);
   } else if (task.k === 'stable' && task.berth < 0) {
@@ -345,6 +349,19 @@ function resolveChoice(sim: Sim, tr: Train, task0: Task): Task {
     if (opts.length) { task = cowTask(tr, task); task.berth = opts[0]; sim.berthRes.set(opts[0], tr.id); }
   }
   return task;
+}
+
+/** a depot exit not yet out whose lead stub is `link`, due by `until` */
+function exitDueOver(sim: Sim, link: number, until: number): boolean {
+  const { topo } = sim;
+  for (const b of sim.plan.blocks) {
+    if (b.start.kind !== 'depot' || b.train !== undefined || sim.blockDone.has(b.id) || b.start.time > until) continue;
+    const first = b.trips.map((id) => sim.plan.trips[id]).find((t) => !t.cancelled);
+    if (!first || first.stops[0].dep < sim.t - 1800) continue;
+    const dp = topo.depots[b.start.depot];
+    if (dp.transferPaths[dp.portals.exit[first.dir].path].stub === link) return true;
+  }
+  return false;
 }
 
 export function depotBerth(topo: Topology, task: { depot: number; berth?: number }): number {
@@ -470,8 +487,18 @@ function spawnStabled(sim: Sim, b: Block) {
   const { topo } = sim;
   if (b.start.kind !== 'stable') return;
   const st = topo.stations[b.start.station];
-  const tb = st.turnbackBerths.filter((x) => !berthBusy(sim, x, -1));
-  const bid = tb[0];
+  // in departure order: the first ones in the turnback tracks (empty again
+  // before the first arrivals turn), later ones in the storage tail, the
+  // earlier of those nearer the platform
+  const at = b.start.station;
+  const firstDep = (x: Block) => sim.plan.trips[x.trips.find((id) => !sim.plan.trips[id].cancelled)!].stops[0].dep;
+  const rank = sim.plan.blocks.filter((x) => x.start.kind === 'stable' && x.start.station === at && x.trips.some((id) => !sim.plan.trips[id].cancelled))
+    .sort((x, y) => firstDep(x) - firstDep(y)).indexOf(b);
+  const places = [...st.turnbackBerths, ...st.storageBerths];
+  // a storage tail holds a train on each of its links
+  const placeFree = (x: number) => st.storageBerths.includes(x)
+    ? !(sim.linkBodies.get(topo.berths[x].link) ?? []).length : !berthBusy(sim, x, -1);
+  const bid = places[rank] !== undefined && placeFree(places[rank]) ? places[rank] : places.find(placeFree);
   if (bid === undefined) return;
   const berth = topo.berths[bid];
   const l = topo.links[berth.link];

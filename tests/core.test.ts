@@ -20,6 +20,17 @@ import { OPERATIONS } from '../src/data/line2';
 
 const make = () => new Sim({ dayType: 'weekday', dateLabel: 'core', startTime: 14400, seed: 7, noPossessions: true });
 const advance = (sim: Sim, seconds: number) => { const end = sim.t + seconds; while (sim.t < end - 1e-6) sim.step(); };
+/** The UP-direction home signal at the east end of 淞虹路 UP platform (the long UP approach from the east). */
+const upHomeEastOfStation4 = (sim: Sim) => sim.topo.signals.filter(s => s.station === 4 && s.role === 'home' && s.dir === -1 && sim.topo.links[s.link].track === 'UP').sort((a, b) => b.chain - a.chain)[0];
+/** The signal that starts a train's route into the BZL depot: the UP-platform departure signal at the
+ * depot's station (the two depot leads lie west of 淞虹路 between the mains), and the UP link the train
+ * waits on in front of it (it governs the next link; the train runs west, dir -1, from the link's a end). */
+const depotApproach = (sim: Sim, depot = 0) => {
+  const topo = sim.topo;
+  const signal = topo.signals.find(s => s.station === topo.depots[depot].station && s.role === 'start' && s.dir === -1 && topo.links[s.link].track === 'UP')!;
+  const link = topo.links.find(l => l.a === signal.node && l.track === 'UP')!;
+  return { signal, link };
+};
 
 describe('dispatcher boundary', () => {
   it('rejects invalid objects and non-finite values without partial writes', () => {
@@ -119,9 +130,8 @@ describe('movement and radio regressions', () => {
     const sim = make(); advance(sim,2); const tr = sim.trainList[0];
     for (const other of [...sim.trainList]) if (other !== tr) sim.removeTrain(other);
     for (const id of [...sim.routes.keys()]) releaseRoute(sim,id);
-    const signal = sim.topo.signals.find(s => s.name === 'X0501')!;
-    const entry = sim.topo.links.find(l => l.b === signal.node && l.track === 'DN')!;
-    tr.link = entry.id; tr.off = entry.len-50; tr.dir = 1; tr.hist = [{link:entry.id,dir:1}];
+    const { link: entry } = depotApproach(sim);
+    tr.link = entry.id; tr.off = 50; tr.dir = -1; tr.hist = [{link:entry.id,dir:-1}];
     tr.tasks = [{k:'depot',depot:0}]; tr.phase = 'run'; tr.v = 0; tr.eb = false;
     tr.depotStage = 'none'; tr.manual = false; tr.tbStage = 'none';
     tr.lastDs = 0; tr.lastMa = Infinity; tr.maSigs = []; tr.maDist = tr.maFar = 0;
@@ -138,17 +148,18 @@ describe('movement and radio regressions', () => {
   it('follows occupancy behind a red signal even when the desired route is already set', () => {
     const sim = make(); advance(sim,2); const [tr,other] = sim.trainList;
     for (const id of [...sim.routes.keys()]) releaseRoute(sim,id);
-    const signal = sim.topo.signals.find(s => s.name === 'X0501')!;
+    const { signal, link: entry } = depotApproach(sim);
     const rid = sim.routeTable.next.get(sim.topo.depots[0].berth)![signal.id], route = sim.topo.routes[rid];
     expect(trySetRoute(sim,rid,{train:tr.id}).ok).toBe(true);
     const ar = sim.routes.get(rid)!; ar.state = 'locked';
-    const entry = sim.topo.links.find(l => l.b === signal.node && l.track === 'DN')!;
-    tr.link = entry.id; tr.off = entry.len-6.1; tr.dir = 1; tr.hist = [{link:entry.id,dir:1}];
+    tr.link = entry.id; tr.off = 6.1; tr.dir = -1; tr.hist = [{link:entry.id,dir:-1}];
     tr.tasks = [{k:'depot',depot:0}]; tr.phase = 'run'; tr.v = 0; tr.eb = false;
     tr.nextSignal = signal.id; tr.nextSignalDist = 6.1; tr.stopDist = Infinity;
     tr.maDist = 0; tr.maCode = 'ROUTE_WAIT'; tr.maTrain = -1; tr.arsWait = null;
-    const last = route.steps.at(-1)!; other.link = last.link; other.off = sim.topo.links[last.link].len-6;
-    other.dir = last.dir; other.hist = route.steps.map(step => ({...step})); other.failed = true; other.phase = 'failed'; other.v = 0;
+    // The failed train stands where both leads' routes still share track: on the lead's own stub the ATS
+    // would simply send the depot train in by the other lead.
+    const at = route.steps.length >> 1, last = route.steps[at]; other.link = last.link; other.off = sim.topo.links[last.link].len-6;
+    other.dir = last.dir; other.hist = route.steps.slice(0,at+1).map(step => ({...step})); other.failed = true; other.phase = 'failed'; other.v = 0;
     computeBody(sim,tr); computeBody(sim,other); indexBodies(sim); computeOccupancy(sim); sim.sig[signal.id].aspect = 'R';
     runARS(sim); updateHalts(sim);
     expect(tr.arsWait).toMatchObject({code:'TRAIN_AHEAD',train:other.id,t:sim.t});
@@ -158,14 +169,13 @@ describe('movement and radio regressions', () => {
   it('retains the live blocker while cancellation of an occupied route is refused', () => {
     const sim = make(); advance(sim,2); const [tr,other] = sim.trainList;
     for (const id of [...sim.routes.keys()]) releaseRoute(sim,id);
-    const signal = sim.topo.signals.find(s => s.name === 'X0501')!;
+    const { signal, link } = depotApproach(sim);
     const wanted = sim.routeTable.next.get(sim.topo.depots[0].berth)![signal.id];
     const actual = signal.routes.find(id => id !== wanted && sim.topo.routes[id].fleeting)!;
     expect(trySetRoute(sim,actual,{train:other.id}).ok).toBe(true);
     const ar = sim.routes.get(actual)!; ar.entered = true; ar.owner = other.id;
     sim.sec[sim.topo.routes[actual].sections[0]].trainOcc = true;
-    const link = sim.topo.links.find(l => l.b === signal.node && l.track === 'DN')!;
-    tr.link = link.id; tr.off = link.len-6.1; tr.dir = 1; tr.hist = [{link:link.id,dir:1}];
+    tr.link = link.id; tr.off = 6.1; tr.dir = -1; tr.hist = [{link:link.id,dir:-1}];
     tr.tasks = [{k:'depot',depot:0}]; tr.phase = 'run'; tr.v = 0; tr.eb = false;
     tr.nextSignal = signal.id; tr.nextSignalDist = 6.1; tr.stopDist = Infinity;
     tr.maDist = 0; tr.maCode = 'ROUTE_WAIT'; tr.maTrain = -1; tr.arsWait = null;
@@ -252,7 +262,8 @@ describe('movement and radio regressions', () => {
     for (const other of [...sim.trainList]) if (![front,rear,preceding].includes(other)) sim.removeTrain(other);
     for (const rid of [...sim.routes.keys()]) releaseRoute(sim, rid);
     for (const block of sim.plan.blocks) sim.blockDone.add(block.id);
-    const sig = sim.topo.signals.find(s => s.name === 'S0506')!;
+    // the UP home signal east of 淞虹路 platform: the long UP approach, several routes before 虹桥2号航站楼
+    const sig = upHomeEastOfStation4(sim);
     const link = sim.topo.links.find(l => l.a === sig.node && l.track === 'UP')!;
     const previous = sim.topo.links.find(l => l.a === link.b && l.track === 'UP')!;
     for (const [tr,l,off] of [[front,link,6.4],[rear,previous,58]] as const) {
@@ -284,10 +295,11 @@ describe('movement and radio regressions', () => {
     const sim = make(); advance(sim, 2); const [front, rear] = sim.trainList;
     for (const other of [...sim.trainList]) if (other !== front && other !== rear) sim.removeTrain(other);
     for (const rid of [...sim.routes.keys()]) releaseRoute(sim, rid);
-    const sig = sim.topo.signals.find(s => s.name === 'S0506')!;
+    // the UP platform departure signal at 淞虹路: its first route (towards 虹桥2号航站楼) crosses a point
+    const sig = depotApproach(sim).signal;
     const link = sim.topo.links.find(l => l.a === sig.node && l.track === 'UP')!;
     const goal = platformBerth(sim.topo, 3, 'UP');
-    for (const [tr, off, arr] of [[front,6.1,sim.t+100],[rear,212.1,sim.t-100]] as const) {
+    for (const [tr, off, arr] of [[front,6.1,sim.t+100],[rear,Math.min(212.1,link.len-0.1),sim.t-100]] as const) {
       tr.link=link.id;tr.off=off;tr.dir=-1;tr.hist=[{link:link.id,dir:-1}];tr.v=0;tr.eb=false;tr.phase='run';
       tr.tasks=[{k:'stop',berth:goal,station:3,trip:-1,arr,dep:arr+40,doors:false,revenue:false}];
       tr.nextSignal=sig.id;tr.nextSignalDist=off;tr.stopDist=Infinity;computeBody(sim,tr);
@@ -334,7 +346,8 @@ describe('movement and radio regressions', () => {
   });
   it('refuses authority towards a preceding train even under a signal failure', () => {
     const sim = make(); advance(sim, 2); const [tr, ahead] = sim.trainList;
-    sim.linkBodies.set(tr.link, [{ train: ahead.id, from: tr.off + 1, to: tr.off + 20 }]);
+    // the other train sits just ahead of tr in tr's own running direction
+    sim.linkBodies.set(tr.link, [tr.dir === 1 ? { train: ahead.id, from: tr.off + 1, to: tr.off + 20 } : { train: ahead.id, from: tr.off - 20, to: tr.off - 1 }]);
     expect(unsafeAhead(sim, tr)).toContain('列车');
     tr.v = 0; tr.maCode = 'SIGNAL_FAULT';
     expect(sim.command({ c: 'authRM', train: tr.id }).ok).toBe(false);

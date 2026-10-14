@@ -1182,6 +1182,31 @@ function relieveTerminals(ctx: PlanContext, blocks: Block[], trips: GenTrip[]) {
     for (const [x, d] of moves) if (d > turnSlack(x) || !clearAt(trips[x.trips[0]], d, skip)) return null;
     return moves;
   };
+  /**
+   * Where no later exit fits (the morning build-up at 蟠祥路, fed through the
+   * change of ends at 淞虹路), a train that would come out of the depot empty
+   * to start there (an 出段 insertion trip in service, or empty) stands
+   * overnight in the station's storage tail instead.
+   */
+  const stableInstead = (st: number, present: { from: number; block: number }[]): boolean => {
+    const night = st === 0 ? OPERATIONS.terminalStabling.PXL : st === topo.stations.length - 1 ? OPERATIONS.terminalStabling.PDA : 0;
+    const used = blocks.filter((x) => x.start.kind === 'stable' && x.start.station === st && x.trips.some((id) => !trips[id].cancelled)).length;
+    if (used >= night + topo.stations[st].storageBerths.length) return false;
+    for (const o of present.slice().sort((x, y) => y.from - x.from)) {
+      const b = blocks.find((x) => x.id === o.block)!;
+      const a = trips[b.trips[0]], d = trips[b.trips[1]];
+      if (b.start.kind !== 'depot' || !d || (a.kind !== 'ins' && a.kind !== 'empty') || a.to !== st || d.from !== st || a.stops.at(-1)!.arr !== o.from) continue;
+      if (d.stops[0].dep > 10 * 3600) continue;
+      a.cancelled = true;
+      a.block = -1;
+      a.next = undefined;
+      d.prev = undefined;
+      b.trips.shift();
+      b.start = { kind: 'stable', station: st };
+      return true;
+    }
+    return false;
+  };
   for (let iter = 0; iter < 30; iter++) {
     let moved = false;
     for (const [st, list] of terminalOccupancy(plan)) {
@@ -1189,6 +1214,7 @@ function relieveTerminals(ctx: PlanContext, blocks: Block[], trips: GenTrip[]) {
       const over = ov && list.find((o) => o.from === ov.t);
       if (!over) continue;
       const present = list.filter((x) => x.from <= over.from && x.to > over.from);
+      let relieved = false;
       // the latest arrivals first: they are the ones to hold back
       for (const o of present.sort((x, y) => y.from - x.from)) {
         const b = blocks.find((x) => x.id === o.block)!;
@@ -1203,9 +1229,10 @@ function relieveTerminals(ctx: PlanContext, blocks: Block[], trips: GenTrip[]) {
           for (const p of t.stops) { p.arr += d; p.dep += d; }
           if (x.start.kind === 'depot') x.start.time = depotStartTime(ctx, x.start.depot, t);
         }
-        moved = true;
+        moved = relieved = true;
         break;
       }
+      if (!relieved && stableInstead(st, present)) moved = true;
     }
     if (!moved) break;
   }
