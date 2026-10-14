@@ -7,11 +7,13 @@ import type { Sim } from './engine';
 import type { PisData, PisRow, TrackDir } from './model';
 import { STATIONS, LINE_INFO } from '../data/line2';
 import { FIRST_LAST } from '../data/firstlast';
+import { PERF } from './dynamics';
 
-/** Platform countdown; a train arriving / in the platform always reads 00:00. */
+/** Platform countdown: it counts down to the train standing in the platform
+ *  (an arriving train still counts), then reads 00:00 while it stands. */
 export function formatPisCountdown(row: PisRow | undefined): string {
   if (!row) return '--:--';
-  if (row.status !== 'eta') return '00:00';
+  if (row.status === 'at' || row.status === 'departing') return '00:00';
   if (row.eta > 3600) return '预计大于1小时';
   const seconds = Math.max(0, Math.round(row.eta));
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -41,6 +43,15 @@ export function selectPisFirstLast(station: string, track: TrackDir, first?: Pis
   return services.map(item);
 }
 
+/** time for a train at `v` to stand at its stopping point `d` ahead: on at
+ *  its speed, then braking as ATO plans it; a train standing or crawling
+ *  (held at a signal) is given the old rough allowance */
+export function timeToStop(v: number, d: number): number {
+  if (v < 1) return d / 8 + 8;
+  const brake = v * v / (2 * PERF.bPlan);
+  return d > brake ? (d - brake) / v + v / PERF.bPlan : 2 * d / v;
+}
+
 export function computePis(sim: Sim, station: number): PisData {
   const { topo } = sim;
   const out: PisData = { station, DN: [], UP: [], notice: '' };
@@ -53,7 +64,7 @@ export function computePis(sim: Sim, station: number): PisData {
       if (t.k !== 'stop') continue;
       let eta: number;
       if (i === 0 && tr.phase === 'dwell') eta = sim.t;
-      else if (i === 0 && Number.isFinite(tr.stopDist)) eta = sim.t + tr.stopDist / Math.max(tr.v, 8) + 8;
+      else if (i === 0 && Number.isFinite(tr.stopDist)) eta = sim.t + timeToStop(tr.v, tr.stopDist);
       else eta = Math.max(prevEta + 45, (t.arr ?? t.dep ?? sim.t) + late);
       prevEta = eta;
       if (t.station !== station) continue;

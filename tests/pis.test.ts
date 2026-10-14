@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { formatPisCountdown, selectPisFirstLast } from '../src/sim/pis';
+import { formatPisCountdown, selectPisFirstLast, timeToStop } from '../src/sim/pis';
+import { PERF } from '../src/sim/dynamics';
 import { STATIONS, STATION_EN } from '../src/data/line2';
 import type { PisRow, TrackDir } from '../src/sim/model';
 
@@ -23,8 +24,19 @@ describe('PIS countdown', () => {
     expect(formatPisCountdown(train('PDA', eta))).toBe(expected);
   });
 
-  it.each(['at', 'arriving', 'departing'] as const)('shows zero for %s even with a stale ETA', (status) => {
+  it.each(['at', 'departing'] as const)('shows zero for %s even with a stale ETA', (status) => {
     expect(formatPisCountdown(train('PDA', 7000, status))).toBe('00:00');
+  });
+
+  it('times the run in as cruising, then braking as ATO plans it', () => {
+    const v = 15, brake = v * v / (2 * PERF.bPlan);
+    expect(timeToStop(v, brake)).toBeCloseTo(v / PERF.bPlan);
+    expect(timeToStop(v, brake + 150)).toBeCloseTo(10 + v / PERF.bPlan);
+    expect(timeToStop(5, 1)).toBeCloseTo(0.4);
+  });
+
+  it('keeps counting down while the train runs into the platform', () => {
+    expect(formatPisCountdown(train('PDA', 18, 'arriving'))).toBe('00:18');
   });
 });
 
