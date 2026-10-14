@@ -167,7 +167,7 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
     && topo.platforms[berth.platform].station === tr.lastStation;
   // (a hot standby not yet called out does not queue for the platform, D70)
   const t0 = tr.tasks[0];
-  const standing = t0?.k === 'stop' && t0.standby && t0.dep !== null && t0.dep - sim.t > STANDBY_CALL;
+  const standing = t0?.k === 'stop' && (t0.standby || t0.stabledOut) && t0.dep !== null && t0.dep - sim.t > STANDBY_CALL;
   if (pulloutStart && !standing) {
     const holder = trainInSection(sim, topo.links[berth.link].section, tr.id);
     if (holder >= 0) obstacle(res, 0, '折返发车站台有车，等待平台出清', 'BERTH_WAIT', false, holder);

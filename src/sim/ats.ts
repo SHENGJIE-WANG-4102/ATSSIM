@@ -1286,9 +1286,10 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
     // route needed here
     const prio = plannedTime(goalTask, sim.t);
     const r = topo.routes[rid];
-    // a hot standby keeps to its turnback track until it is called out (D70)
-    if (goalTask.k === 'stop' && goalTask.standby && goalTask.dep !== null && goalTask.dep - sim.t > STANDBY_CALL) {
-      setArsWait(sim, tr, 'REGULATION', -1, sig, '热备待命');
+    // a hot standby keeps to its turnback track until it is called out (D70),
+    // a train stabled overnight to its stabling place (D72)
+    if (goalTask.k === 'stop' && (goalTask.standby || goalTask.stabledOut) && goalTask.dep !== null && goalTask.dep - sim.t > STANDBY_CALL) {
+      setArsWait(sim, tr, 'REGULATION', -1, sig, goalTask.standby ? '热备待命' : '存车待发');
       return { train: tr, signal: sig, route: rid, prio, eta, ready: false, dist, via };
     }
     let ok = ready && (level === 0 || dist < 1500);

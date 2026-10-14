@@ -2047,6 +2047,12 @@ export function blockTasks(topo: Topology, plan: Plan, block: Block, fromTrip = 
       const departure = tasks.slice(first).find((t): t is StopTask => t.k === 'stop');
       if (departure) departure.berth = block.start.berth;
     }
+    // an overnight train comes out of its stabling place shortly before its
+    // first departure, not as soon as the day starts (D72)
+    if (k === 0 && fromTrip === 0 && block.start.kind === 'stable') {
+      const departure = tasks.slice(first).find((t): t is StopTask => t.k === 'stop');
+      if (departure) departure.stabledOut = true;
+    }
     // after a hot standby: its departure stop (D70)
     const before = block.trips.slice(0, fromTrip + k).map((i) => plan.trips[i]).filter((t) => !t.cancelled).at(-1);
     const dep = tasks.slice(first).find((t): t is StopTask => t.k === 'stop');

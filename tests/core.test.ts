@@ -189,7 +189,7 @@ describe('movement and radio regressions', () => {
   it('brakes within the issued MA when an ESP creates an unreachable shorter target', () => {
     const sim = make();
     let tr: Sim['trainList'][number] | undefined;
-    while (!tr && sim.t < 14700) {
+    while (!tr && sim.t < 20400) { // overnight trains leave their stabling ~05:20 (D72)
       sim.step();
       tr = sim.trainList.find(t => t.v > 5 && t.body.some(b => sim.topo.links[b.link].platform >= 0));
     }
@@ -229,7 +229,7 @@ describe('movement and radio regressions', () => {
     const sim = make();
     let tr: Sim['trainList'][number] | undefined;
     let signal = -1;
-    while (!tr && sim.t < 14430) {
+    while (!tr && sim.t < 20400) { // overnight trains leave their stabling ~05:20 (D72)
       sim.step();
       for (const candidate of sim.trainList) for (const sig of candidate.maSigs) {
         const route = sim.sig[sig].route;

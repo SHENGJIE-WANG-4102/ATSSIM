@@ -118,6 +118,9 @@ export interface StopTask {
   /** the departure after a hot standby (热备): the train keeps to its
    *  turnback track until shortly before it (D70) */
   standby?: boolean;
+  /** the first departure of a train stabled overnight: it keeps to its
+   *  stabling place until shortly before it, like a hot standby (D72) */
+  stabledOut?: boolean;
 }
 export interface ReverseTask { k: 'reverse'; berths: number[]; chosen: number; station: number; minTime: number }
 export interface DepotTask { k: 'depot'; depot: number; /** 入段 berth of the lead used (default: the depot's) */ berth?: number }
