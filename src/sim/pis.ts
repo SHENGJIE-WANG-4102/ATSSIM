@@ -4,8 +4,42 @@
  * lists, their current delay and position.
  */
 import type { Sim } from './engine';
-import type { PisData, PisRow } from './model';
+import type { PisData, PisRow, TrackDir } from './model';
 import { STATIONS, LINE_INFO } from '../data/line2';
+import { FIRST_LAST } from '../data/firstlast';
+
+/** Platform countdown; a train arriving / in the platform always reads 00:00. */
+export function formatPisCountdown(row: PisRow | undefined): string {
+  if (!row) return '--:--';
+  if (row.status !== 'eta') return '00:00';
+  if (row.eta > 3600) return '预计大于1小时';
+  const seconds = Math.max(0, Math.round(row.eta));
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(Math.floor(seconds / 60))}:${pad(seconds % 60)}`;
+}
+
+export interface PisFirstLast { destination: string; first: string; last: string }
+
+/** Published times at this station, with the first train's destination first. */
+export function selectPisFirstLast(station: string, track: TrackDir, first?: PisRow): PisFirstLast[] {
+  const row = FIRST_LAST.find((r) => r.station === station);
+  if (!row) return [];
+  const dest = first?.dest !== '本站终到' ? STATIONS[first?.destSt ?? -1]?.id : undefined;
+  // 【假设】龙阳路、淞虹路等其他终点没有单独的官方列，沿用该方向大交路。
+  // 无车或本站终到时也按站台方向显示，避免把到达本站的车当成发车方向。
+  const service = dest === 'GLL' ? 'GLL' : dest === 'PXL' ? 'PXL' : dest === 'PDA' ? 'PDA' : track === 'DN' ? 'PDA' : 'PXL';
+  const time = (s: string) => s ? `${String(Number(s.slice(0, 2)) % 24).padStart(2, '0')}${s.slice(2)}` : '--:--';
+  const item = (id: 'PDA' | 'GLL' | 'PXL'): PisFirstLast => ({
+    destination: STATIONS.find((s) => s.id === id)!.name,
+    first: time(id === 'PXL' ? row.firstW : row.firstE),
+    last: time(id === 'PXL' ? row.lastW : id === 'GLL' ? row.lastG : row.lastE),
+  });
+  // 实拍江苏路往东同时列机场与广兰路，第一班的目的地置于首行。
+  const services: ('PDA' | 'GLL' | 'PXL')[] = [service];
+  if (service === 'PDA' && row.lastG) services.push('GLL');
+  else if (service === 'GLL') services.push('PDA');
+  return services.map(item);
+}
 
 export function computePis(sim: Sim, station: number): PisData {
   const { topo } = sim;

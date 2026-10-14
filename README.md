@@ -746,6 +746,9 @@ the on-screen readout in a hardware-accelerated browser.
 
 AGPL-3.0, see [LICENSE](LICENSE).
 
+The PIS seven-segment digits use DSEG7 Classic by keshikan (SIL Open Font License 1.1,
+[src/ui/assets/fonts/DSEG-LICENSE.txt](src/ui/assets/fonts/DSEG-LICENSE.txt)).
+
 
 ## Stabilization validation
 

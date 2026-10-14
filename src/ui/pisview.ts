@@ -2,32 +2,26 @@
  * Platform passenger information display (PIS), laid out like the Line 2
  * platform screens: a media area on the left with the scrolling notice bar
  * beneath it, and three boxes on the right — the first train's countdown
- * (always shown), the second and third trains in turn every 20 s, and the
+ * (always shown), the second / third trains and first / last times every 20 s, and the
  * clock/date and the station name in turn every 3 s.
  *
  * The board is updated in place: rebuilding it on every snapshot restarted
  * the notice ticker, which then only ever showed its first half glyph. A box
  * whose content turns to another train (the first one left, the 2nd / 3rd
  * rotation) or to the other info page pushes the old content out to the left
- * while the new one comes in from the right.
+ * while the new one comes in from the right. The clock / station box rolls
+ * vertically and fades between pages.
  */
 import { h, clear } from './dom';
 import type { PisData, PisRow, TrackDir } from '../sim/model';
 import { STATIONS, STATION_EN, DIRECTIONS } from '../data/line2';
+import { formatPisCountdown, selectPisFirstLast, type PisFirstLast } from '../sim/pis';
 import metroLogo from './assets/metro-logo.png';
 import lineBadge from './assets/line2-badge.png';
 
 const ORD = ['1st', '2nd', '3rd'];
 const ORD_CN = ['第一班列车', '第二班列车', '第三班列车'];
 const pad = (n: number) => String(n).padStart(2, '0');
-
-/** countdown as mm:ss (00:00 once the train is in the platform) */
-function countdown(r: PisRow | undefined): string {
-  if (!r) return '--:--';
-  if (r.status !== 'eta') return '00:00';
-  const s = Math.max(0, Math.round(r.eta));
-  return s >= 6000 ? '--:--' : `${pad(Math.floor(s / 60))}:${pad(s % 60)}`;
-}
 
 function loadText(f: number): string {
   if (f >= .9) return '拥挤';
@@ -70,7 +64,7 @@ const SLIDE: KeyframeAnimationOptions = { duration: 520, easing: 'cubic-bezier(.
  * right. `fill` returns the new elements when it replaces `els` instead of
  * updating them in place.
  */
-function slide(els: HTMLElement[], fill: () => HTMLElement[] | void) {
+function slide(els: HTMLElement[], fill: () => HTMLElement[] | void, vertical = false) {
   const ghosts = els.filter((e) => typeof e.animate === 'function' && e.offsetWidth > 0).map((e) => {
     const g = e.cloneNode(true) as HTMLElement;
     g.classList.add('pis-ghost');
@@ -80,21 +74,48 @@ function slide(els: HTMLElement[], fill: () => HTMLElement[] | void) {
     });
     e.parentElement!.append(g);
     // measured now: `fill` may take `e` out of the page. Clear of the box: its own right edge past the box's left edge
-    return { g, out: e.offsetLeft + e.offsetWidth + 4 };
+    return { g, out: vertical ? e.offsetTop + e.offsetHeight + 4 : e.offsetLeft + e.offsetWidth + 4 };
   });
   const fresh = fill() ?? els;
   for (const { g, out } of ghosts) {
     // held off-box at the end and removed then: on the animation's own clock, so it never vanishes mid-slide
-    const a = g.animate([{ transform: 'none' }, { transform: `translateX(${-out}px)` }], { ...SLIDE, fill: 'forwards' });
+    const a = g.animate([
+      { transform: 'none', opacity: 1 },
+      { transform: `translate${vertical ? 'Y' : 'X'}(${-out}px)`, opacity: vertical ? 0 : 1 },
+    ], { ...SLIDE, fill: 'forwards' });
     a.onfinish = a.oncancel = () => g.remove();
   }
   if (!ghosts.length) return;
   for (const e of fresh) {
     if (typeof e.animate !== 'function') continue;
     // in from just past the box's right edge (offsets are within the positioned box)
-    const from = (e.offsetParent as HTMLElement | null)?.clientWidth ?? e.offsetWidth;
-    e.animate([{ transform: `translateX(${from - e.offsetLeft + 4}px)` }, { transform: 'none' }], SLIDE);
+    const parent = e.offsetParent as HTMLElement | null;
+    const from = vertical ? (parent?.clientHeight ?? e.offsetHeight) - e.offsetTop + 4 : (parent?.clientWidth ?? e.offsetWidth) - e.offsetLeft + 4;
+    e.animate([
+      { transform: `translate${vertical ? 'Y' : 'X'}(${from}px)`, opacity: vertical ? 0 : 1 },
+      { transform: 'none', opacity: 1 },
+    ], SLIDE);
   }
+}
+
+const englishScrolls = new WeakMap<HTMLElement, { width: number; textWidth: number; animation?: Animation }>();
+
+/** Measure after layout: short names stay still; overflow enters from the right. */
+function fillEnglish(el: HTMLElement, text: string) {
+  if (el.textContent !== text || !el.firstElementChild) {
+    englishScrolls.get(el)?.animation?.cancel();
+    englishScrolls.delete(el);
+    el.replaceChildren(h('span', {}, text));
+  }
+  const span = el.firstElementChild as HTMLElement;
+  const width = el.clientWidth, textWidth = span.offsetWidth;
+  const old = englishScrolls.get(el);
+  if (old?.width === width && old.textWidth === textWidth) return;
+  old?.animation?.cancel();
+  const animation = width > 0 && textWidth > width && typeof span.animate === 'function' ? span.animate([
+    { transform: `translateX(${width}px)` }, { transform: `translateX(${-textWidth}px)` },
+  ], { duration: (width + textWidth) / Math.max(1, el.getBoundingClientRect().width / 10) * 1000, iterations: Infinity, easing: 'linear' }) : undefined;
+  englishScrolls.set(el, { width, textWidth, animation });
 }
 
 const hhmm = (t: number) => { const d = ((t % 86400) + 86400) % 86400; return `${pad(Math.floor(d / 3600))}:${pad(Math.floor(d % 3600 / 60))}`; };
@@ -117,30 +138,60 @@ function fillBox(b: Box, k: number, r: PisRow | undefined, empty: [string, strin
     return;
   }
   b.key = key;
+  b.el.classList.remove('first-last');
+  b.digits.classList.remove('pb-timetable');
+  b.dest.hidden = false;
   b.title.textContent = `${ORD_CN[k]}(${ORD[k]})`;
-  b.digits.textContent = countdown(r);
+  b.digits.textContent = formatPisCountdown(r);
+  b.digits.classList.toggle('long', !!r && r.status === 'eta' && r.eta > 3600);
   b.el.classList.toggle('arr', !!r && r.status !== 'eta');
-  if (!r) { [b.to.textContent, b.toEn.textContent] = empty; return; }
-  if (r.dest === '本站终到') { b.to.textContent = '终到列车 请勿上车'; b.toEn.textContent = 'Terminating train, please do not board'; return; }
-  if (r.noBoard) { b.to.textContent = `本次列车只下不上（往${r.dest}）`; b.toEn.textContent = 'Alighting only, please do not board'; return; }
+  if (!r) { b.to.textContent = empty[0]; fillEnglish(b.toEn, empty[1]); return; }
+  if (r.dest === '本站终到') { b.to.textContent = '终到列车 请勿上车'; fillEnglish(b.toEn, 'Terminating train, please do not board'); return; }
+  if (r.noBoard) { b.to.textContent = `本次列车只下不上（往${r.dest}）`; fillEnglish(b.toEn, 'Alighting only, please do not board'); return; }
   b.to.innerHTML = '';
   b.to.append(h('span', {}, '开往'), h('span', {}, r.dest));
-  b.toEn.textContent = r.destSt >= 0 ? `To  ${STATION_EN[STATIONS[r.destSt].id] ?? ''}` : '';
+  fillEnglish(b.toEn, r.destSt >= 0 ? `To  ${STATION_EN[STATIONS[r.destSt].id] ?? ''}` : '');
+}
+
+function fillFirstLast(b: Box, times: PisFirstLast[]) {
+  const key = `first-last|${JSON.stringify(times)}`;
+  if (b.key === key) return;
+  if (b.key) {
+    b.key = '';
+    slide([b.title, b.digits, b.dest], () => fillFirstLast(b, times));
+    return;
+  }
+  b.key = key;
+  b.el.classList.add('first-last');
+  b.el.classList.remove('arr');
+  b.digits.classList.remove('long');
+  b.digits.classList.add('pb-timetable');
+  b.dest.hidden = true;
+  b.title.textContent = '首末班车(First / Last)';
+  clear(b.digits);
+  clear(b.to);
+  fillEnglish(b.toEn, '');
+  if (!times.length) { b.digits.append(h('div', { class: 'pb-times-empty' }, '暂无首末班信息')); return; }
+  for (const row of times) b.digits.append(h('div', { class: 'pb-times' },
+    h('div', { class: 'pb-times-to' }, `往${row.destination}`),
+    h('div', { class: 'pb-times-labels' }, h('span', {}, '首班'), h('span', {}, '末班')),
+    h('div', { class: 'pb-times-values' }, h('span', {}, row.first), h('span', {}, row.last))));
 }
 
 function update(bd: Board) {
   const now = performance.now();
   const { rows } = bd;
   fillBox(bd.b1, 0, rows[0], emptyText(bd, 0));
-  const k = Math.floor(now / 20000) % 2 === 0 || rows.length < 3 ? 1 : 2;
-  fillBox(bd.b2, k, rows[k], emptyText(bd, k));
+  const page = Math.floor(now / 20000) % 3;
+  if (page === 2) fillFirstLast(bd.b2, selectPisFirstLast(STATIONS[bd.station].name, bd.track, rows[0]));
+  else { const k = page + 1; fillBox(bd.b2, k, rows[k], emptyText(bd, k)); }
   // clock / station name, 3 s each
   const showClock = Math.floor(now / 3000) % 2 === 0;
   const want = showClock ? `clock` : `name`;
   if (bd.b3.dataset.mode !== want) {
     const old = infoContent(bd);
     bd.b3.dataset.mode = want;
-    if (old.length) { slide(old, () => { for (const e of old) e.remove(); fillInfo(bd, showClock); return infoContent(bd); }); return void fillLoad(bd); }
+    if (old.length) { slide(old, () => { for (const e of old) e.remove(); fillInfo(bd, showClock); return infoContent(bd); }, true); return void fillLoad(bd); }
   }
   fillInfo(bd, showClock);
   fillLoad(bd);
