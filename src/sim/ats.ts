@@ -1380,6 +1380,9 @@ function reversalGuard(sim: Sim, tr: Train): { signal: number; chain: number[]; 
   let berth = -1;
   let after: Task | undefined;
   let start = -1;
+  // the train sets off against a running line's normal direction (it changed ends
+  // on a main-line platform): such a move opposes every train following it in
+  let against = false;
   if (tr.phase === 'reversing' && t0?.k === 'reverse') { berth = t0.chosen; after = t1; }
   else if ((tr.phase === 'run' || tr.phase === 'dwell') && t0?.k === 'stop' && t1?.k === 'reverse' && t1.chosen === t0.berth) {
     if (tr.phase === 'run' && !(Math.abs(sim.trainChain(tr) - topo.stations[t0.station].chain) < 1500)) return null;
@@ -1389,6 +1392,8 @@ function reversalGuard(sim: Sim, tr: Train): { signal: number; chain: number[]; 
     berth = t0.berth; after = tr.tasks[2];
   } else if (tr.phase === 'run' && tr.tbStage === 'depart' && t0 && tr.nextSignal >= 0 && tr.nextSignalDist < 400) {
     start = tr.nextSignal; after = t0;
+    const nd = topo.links[tr.link].normalDir;
+    against = nd !== 0 && nd !== tr.dir;
   } else return null;
   if (!after || (after.k !== 'depot' && after.k !== 'stop')) return null;
   if (start < 0) {
@@ -1397,11 +1402,16 @@ function reversalGuard(sim: Sim, tr: Train): { signal: number; chain: number[]; 
     const tail = Math.min(len, Math.max(0, b.offset - b.dir * tr.len));
     start = signalAheadFrom(sim, b.link, tail, (-b.dir) as Dir, 600)?.sig ?? -1;
     if (start < 0) return null;
+    const nd = topo.links[b.link].normalDir;
+    against = nd !== 0 && nd !== -b.dir;
   }
   const goal = taskGoal(sim, after);
   if (goal < 0 || !sim.routeTable.next.has(goal)) return null;
   const chain = routeChain(sim, start, goal);
-  if (!chain.some((c) => topo.routes[c].wrongDir)) return null;
+  // (回段 at 淞虹路: a reverse signal at the platform end leads straight onto
+  // the crossover, so the routes themselves run the right way. A terminal's
+  // platform turnback is left to the terminal's own sequencing.)
+  if (!(against && after.k === 'depot') && !chain.some((c) => topo.routes[c].wrongDir)) return null;
   return { signal: start, chain, secs: Array.from(new Set(chain.flatMap((c) => topo.routes[c].sections))) };
 }
 
