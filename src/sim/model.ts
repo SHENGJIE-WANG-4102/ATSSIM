@@ -112,7 +112,7 @@ export interface StopTask {
 }
 export interface ReverseTask { k: 'reverse'; berths: number[]; chosen: number; station: number; minTime: number }
 export interface DepotTask { k: 'depot'; depot: number; /** 入段 berth of the lead used (default: the depot's) */ berth?: number }
-export interface StableTask { k: 'stable'; berth: number; reason: string }
+export interface StableTask { k: 'stable'; berth: number; reason: string; /** station whose tracks a berth of -1 is chosen from (default: the train's last station) */ station?: number }
 export interface RescueTask { k: 'rescue'; target: number }
 export type Task = StopTask | ReverseTask | DepotTask | StableTask | RescueTask;
 

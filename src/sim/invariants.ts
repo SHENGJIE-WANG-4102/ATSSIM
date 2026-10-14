@@ -365,7 +365,11 @@ export function checkLiveness(sim: Sim) {
       g.stuckSince.delete(tr.id);
       // An exemption is not open-ended: a standstill outside the plan that a
       // fault or procedure explains is still reported after EXEMPT_LIMIT.
-      if (h.unplannedSince && h.code !== 'STABLED') {
+      // (nor is one queued behind another in a storage track, waiting for its
+      // own departure that is not yet due)
+      const t0 = tr.tasks[0];
+      const notDue = t0?.k === 'stop' && t0.arr === null && t0.dep !== null && t0.dep > sim.t;
+      if (h.unplannedSince && h.code !== 'STABLED' && !notDue) {
         const held = Math.max(g.heldSince.get(tr.id) ?? sim.t, h.unplannedSince);
         g.heldSince.set(tr.id, held);
         if (sim.t - held >= EXEMPT_LIMIT && !sim.alarms.has(`held-${tr.id}`))

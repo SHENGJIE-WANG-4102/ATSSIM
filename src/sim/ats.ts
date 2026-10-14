@@ -155,12 +155,14 @@ function berthBusy(sim: Sim, berth: number, self: number): boolean {
       for (const lid of path.links) if ((sim.linkBodies.get(lid) ?? []).some((s) => s.train !== self)) return true;
     }
   }
-  // a tail berth: a train anywhere else on that tail (e.g. stabled short of
-  // the berth) blocks it as well
+  // a tail berth: a train anywhere else on that tail short of the berth (e.g.
+  // stabled there) blocks it as well; one further in (蟠祥路's two-place
+  // storage tail, the deeper place) does not
   if (b.kind === 'tail') {
     const bl = sim.topo.links[b.link];
     for (const l of sim.topo.links) {
       if (l.track !== bl.track || sim.topo.sections[l.section].kind !== 'tail' || Math.abs(l.chainA - bl.chainA) > 800) continue;
+      if (l.id !== bl.id && Math.sign(l.chainA - bl.chainA) === b.dir) continue;
       const segs = sim.linkBodies.get(l.id);
       if (segs && segs.some((s) => s.train !== self)) return true;
     }
@@ -344,7 +346,9 @@ function resolveChoice(sim: Sim, tr: Train, task0: Task): Task {
     if (task.chosen !== pick) { task = cowTask(tr, task); task.chosen = pick; }
     if (!berthBusy(sim, pick, tr.id)) sim.berthRes.set(pick, tr.id);
   } else if (task.k === 'stable' && task.berth < 0) {
-    const st = sim.topo.stations[tr.lastStation >= 0 ? tr.lastStation : 0];
+    // (a night move to 上海科技馆 runs through without stopping: its last
+    // station is still where it set off)
+    const st = sim.topo.stations[task.station ?? (tr.lastStation >= 0 ? tr.lastStation : 0)];
     const opts = st.turnbackBerths.filter((b) => !berthBusy(sim, b, tr.id));
     if (opts.length) { task = cowTask(tr, task); task.berth = opts[0]; sim.berthRes.set(opts[0], tr.id); }
   }
@@ -1395,7 +1399,7 @@ function reversalGuard(sim: Sim, tr: Train): { signal: number; chain: number[]; 
     const nd = topo.links[tr.link].normalDir;
     against = nd !== 0 && nd !== tr.dir;
   } else return null;
-  if (!after || (after.k !== 'depot' && after.k !== 'stop')) return null;
+  if (!after || (after.k !== 'depot' && after.k !== 'stop' && after.k !== 'stable')) return null;
   if (start < 0) {
     const b = topo.berths[berth];
     const len = topo.links[b.link].len;

@@ -655,9 +655,11 @@ describe('paper-based turnback and depot procedures', () => {
     expect(sim.integrity.violations).toHaveLength(0);
   });
   it('holds a CBTC train inside the tail until a complete pull-out path is locked', () => {
-    const sim = make(); advance(sim, 2); const tr = sim.trainList[0];
-    for (const other of [...sim.trainList]) if (other !== tr) sim.removeTrain(other);
+    const sim = make(); advance(sim, 2);
     const berth = sim.topo.berths[sim.topo.stations[0].turnbackBerths[0]];
+    // (the train stabled there overnight: one moved in from elsewhere would keep its old authority)
+    const tr = sim.trainList.find(t => t.link === berth.link) ?? sim.trainList[0];
+    for (const other of [...sim.trainList]) if (other !== tr) sim.removeTrain(other);
     const platform = sim.topo.berths.find(b => b.station === 0 && b.kind === 'platform' && b.dir === 1)!;
     tr.link = berth.link; tr.off = berth.offset; tr.dir = berth.dir; tr.hist = [{ link: berth.link, dir: berth.dir }];
     tr.v = 0; tr.phase = 'reversing'; tr.dwellUntil = sim.t; tr.tbStage = 'arrive'; tr.block = -1; tr.tripId = -1;
@@ -753,8 +755,9 @@ describe('paper-based turnback and depot procedures', () => {
   });
   it('keeps a TBTC forward turnback stopped until a driver instruction and signal passage', () => {
     const sim = make(); advance(sim, 2); sim.autoRadio = false;
-    const tr = sim.trainList[0]; const station = sim.topo.stations[0];
+    const station = sim.topo.stations[0];
     const berth = sim.topo.berths[station.turnbackBerths[0]];
+    const tr = sim.trainList.find(t => t.link === berth.link) ?? sim.trainList[0];
     const platform = sim.topo.berths.find(b => b.station === 0 && b.kind === 'platform' && b.dir === 1)!;
     tr.link = berth.link; tr.off = berth.offset; tr.dir = berth.dir; tr.hist = [{ link: berth.link, dir: berth.dir }];
     tr.v = 0; tr.phase = 'reversing'; tr.dwellUntil = sim.t; tr.tbStage = 'arrive';

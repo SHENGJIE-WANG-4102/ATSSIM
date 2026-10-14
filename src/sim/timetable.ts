@@ -134,6 +134,8 @@ export function entryStation(topo: Topology, depot: number, dir: TrackDir): numb
 }
 /** extra time a depot move spends changing ends at its junction station (s) */
 const PORTAL_REVERSE = 90;
+/** trains carry passengers from (a positioning move before this runs empty) */
+const LINE_OPEN = H(5, 10);
 
 export function minTurn(st: number): number {
   const id = STATIONS[st].id;
@@ -201,7 +203,26 @@ export interface OverlayReuse {
   absorbed?: { block: number; into: number; trips: number[]; lead: number[]; end: Block['end'] }[];
 }
 
-export function generatePlan(ctx: PlanContext): Plan {
+/** trains each yard must hold at the start of the day: its largest deficit of exits over returns */
+export function yardNeed(topo: Topology, plan: Plan): number[] {
+  const ev: { t: number; d: number; v: number }[] = [];
+  for (const b of plan.blocks) {
+    if (!b.trips.some((id) => !plan.trips[id].cancelled)) continue;
+    if (b.start.kind === 'depot') ev.push({ t: b.start.time, d: b.start.depot, v: -1 });
+    if (b.end.kind === 'depot') {
+      const last = plan.trips[b.trips[b.trips.length - 1]];
+      ev.push({ t: last.stops[last.stops.length - 1].arr + 300, d: b.end.depot, v: 1 });
+    }
+  }
+  ev.sort((a, b) => a.t - b.t);
+  const bal = topo.depots.map(() => 0), need = topo.depots.map(() => 0);
+  for (const e of ev) { bal[e.d] += e.v; need[e.d] = Math.max(need[e.d], -bal[e.d]); }
+  return need;
+}
+
+/** `shift`: per yard, how many of its earliest morning exits another yard
+ *  takes (a second pass when the first one needed more than a yard holds) */
+export function generatePlan(ctx: PlanContext, shift?: number[]): Plan {
   const { topo } = ctx;
   const periods = dayPeriods(ctx.dayType);
   const trips: GenTrip[] = [];
@@ -355,7 +376,7 @@ export function generatePlan(ctx: PlanContext): Plan {
     }
   }
 
-  const blocks = circulate(ctx, trips, [W, E, SHR, GLL], periods, undefined);
+  const blocks = circulate(ctx, trips, [W, E, SHR, GLL], periods, undefined, undefined, 0, undefined, undefined, shift);
   addFixedRuns(ctx, trips, blocks, ctx.fixedRuns ?? FIXED_LATE_TRAINS);
   const plan: Plan = {
     dayType: ctx.dayType, trips, blocks,
@@ -364,6 +385,10 @@ export function generatePlan(ctx: PlanContext): Plan {
   };
   numberPlan(plan);
   plan.fleetPeak = fleetPeak(plan);
+  if (!shift) {
+    const over = yardNeed(topo, plan).map((n, d) => Math.max(0, n - topo.depots[d].capacity));
+    if (over.some((n) => n > 0)) return generatePlan(ctx, over);
+  }
   return plan;
 }
 
@@ -512,12 +537,20 @@ function addFixedRuns(ctx: PlanContext, trips: GenTrip[], blocks: Block[], runs:
  * withdrawals and terminal stabling. Mutates `trips` (adds new trips) and
  * returns the new blocks.
  */
-function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], periods: Period[], overlay?: string, baseTrips?: Trip[], blockBase = 0, baseOcc?: Map<number, { from: number; to: number; block?: number }[]>, reuse?: OverlayReuse): Block[] {
+function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], periods: Period[], overlay?: string, baseTrips?: Trip[], blockBase = 0, baseOcc?: Map<number, { from: number; to: number; block?: number }[]>, reuse?: OverlayReuse, shift?: number[]): Block[] {
   const { topo } = ctx;
   const pool = trips.filter((t) => t.overlay === overlay && !t.cancelled);
   const allForGaps = () => [...(baseTrips ?? []), ...trips];
-  const stabling: Record<number, number> = overlay ? {} : { 0: OPERATIONS.terminalStabling.PXL, [topo.stations.length - 1]: OPERATIONS.terminalStabling.PDA };
-  const stablingNight: Record<number, number> = { ...stabling };
+  const stablingNight: Record<number, number> = overlay ? {} : { 0: OPERATIONS.terminalStabling.PXL, [topo.stations.length - 1]: OPERATIONS.terminalStabling.PDA };
+  // In the morning the trains in the turnback tracks take the first
+  // departures (the tracks are needed for turning soon after); those in a
+  // storage tail are placed later (relieveTerminals).
+  const stabling: Record<number, number> = Object.fromEntries(Object.entries(stablingNight)
+    .map(([st, n]) => [st, Math.min(n, topo.stations[+st].turnbackBerths.length)]));
+  const W = 0;
+  /** line stabling places, one entry per train, nearest 蟠祥路 first */
+  const lineSlots: number[] = overlay ? [] : Object.entries(OPERATIONS.lineStabling)
+    .flatMap(([id, n]) => Array<number>(n).fill(STATIONS.findIndex((x) => x.id === id))).sort((a, b) => a - b);
   const sources: GenTrip[] = [];
   const sinks: GenTrip[] = [];
 
@@ -819,6 +852,34 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
   const now = reuse?.now ?? -Infinity;
   /** departures of trains brought into place by a positioning move, per station */
   const positioned = new Map<number, number[]>();
+  const lineMorning = [...lineSlots];
+  // A yard can send out no more trains before the morning returns than it
+  // holds. Its earliest exits past that (while the line still has room for a
+  // longer move) come from the next nearest yard with room instead.
+  const redirect = new Map<number, number>();
+  if (!overlay && shift) {
+    const left = { ...stabling };
+    let lines = lineSlots.length;
+    const byDepot = topo.depots.map(() => [] as GenTrip[]);
+    for (const D of queue) {
+      const T = D.from, dep = D.stops[0].dep;
+      if (dep >= H(10)) break;
+      if ((dep <= firstDepFrom(T) + 1500 || D.kind === 'small') && (left[T] ?? 0) > 0) { left[T]--; continue; }
+      if (T === W && D.dir === 'DN' && dep < H(7) && lines > 0) { lines--; continue; }
+      byDepot[depotIndex(topo, TERMINAL_DEPOT[T])].push(D);
+    }
+    const spare = topo.depots.map((dp, i) => dp.capacity - byDepot[i].length - shift[i]);
+    shift.forEach((n, d) => {
+      for (const D of byDepot[d].slice(0, n)) {
+        const c = topo.stations[D.from].chain;
+        const alt = topo.depots.map((_, i) => i).filter((i) => i !== d && shift[i] === 0 && spare[i] > 0)
+          .sort((i, j) => Math.abs(topo.depots[i].junctionChain - c) - Math.abs(topo.depots[j].junctionChain - c))[0];
+        if (alt === undefined) break;
+        redirect.set(D.id, alt);
+        spare[alt]--;
+      }
+    });
+  }
   for (let qi = 0; qi < queue.length; qi++) {
     const D = queue[qi];
     const T = D.from;
@@ -830,7 +891,24 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
       startOf.set(D.id, { kind: 'stable', station: T });
       continue;
     }
+    // a train stabled on the line comes up westbound in service, one of the
+    // first trains from its station, and turns at 蟠祥路 into D
+    const lineRun = (P: number) => buildStops(ctx, 'UP', P, W, 0, true, 1).at(-1)!.arr;
+    if (!overlay && T === W && D.dir === 'DN' && dep < H(7) && lineMorning.length
+      && dep - minTurn(W) - 60 - lineRun(lineMorning[0]) >= LINE_OPEN) {
+      const P = lineMorning.shift()!;
+      const latest = dep - minTurn(W) - 60 - lineRun(P);
+      const st = fitBefore('UP', latest, (t0) => buildStops(ctx, 'UP', P, W, t0, true, 1), undefined, (x) => x[0].dep >= LINE_OPEN)
+        ?? buildStops(ctx, 'UP', P, W, latest, true, 1);
+      const m = addTo(trips, 'UP', 'ins', P, W, st, true, overlay);
+      m.next = D.id;
+      D.prev = m.id;
+      startOf.set(m.id, { kind: 'stable', station: P });
+      continue;
+    }
     if (overlay && reuse && extendBase(D, depot)) continue;
+    const alt = redirect.get(D.id);
+    if (alt !== undefined) { depot = alt; early = true; }
     let towardDir: TrackDir = topo.stations[T].chain < topo.depots[depot].junctionChain ? 'UP' : 'DN';
     let farMove = false;
     if (!overlay && towardDir !== D.dir && !turnPlaceFits(T, towardDir, depot, dep)) {
@@ -918,6 +996,45 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
       stablingNight[T]--;
       endOf.set(A.id, { kind: 'stable', station: T });
     }
+  }
+  // overnight stabling on the line (正线存车): of the other trains ending at
+  // 蟠祥路 after its last departure, the latest run down empty to a line
+  // place instead of going into the yard
+  const lineNight = [...lineSlots];
+  /** each eastbound fixed-time train's departure at each station of its run */
+  const fixedPaths = (ctx.fixedRuns ?? FIXED_LATE_TRAINS).flatMap((F) => {
+    const idx = (id: string) => STATIONS.findIndex((x) => x.id === id);
+    const from = idx(F.from), to = idx(F.to);
+    if (from > to) return [];
+    const halts = new Set([...F.board, ...F.alight].map(idx));
+    return F.departures.map((d) => new Map(buildStops(ctx, 'DN', from, to, d, true, 1, (x) => halts.has(x)).map((x) => [x.st, x.dep] as [number, number])));
+  });
+  for (const A of sinks.slice().sort((a, b) => lastArr(b) - lastArr(a))) {
+    if (!lineNight.length) break;
+    if (A.to !== W || endOf.has(A.id) || A.next !== undefined || lastArr(A) < lastDepFrom(W) - 60) continue;
+    const P = lineNight.shift()!;
+    // (well clear of the fixed-time trains, added later: ≥5 min apart at every
+    // station both run through, and neither catching up with the other — they
+    // pass most stations too, at a different pace)
+    const fixedClear = (stops: PlanStop[]) => fixedPaths.every((F) => {
+      let side = 0;
+      for (const x of stops) {
+        const f = F.get(x.st);
+        if (f === undefined) continue;
+        if (Math.abs(x.dep - f) < 300) return false;
+        const s = Math.sign(x.dep - f);
+        if (side && s !== side) return false;
+        side = s;
+      }
+      return true;
+    });
+    const st = fitAfter('DN', lastArr(A) + minTurn(W), (t0) => buildStops(ctx, 'DN', W, P, t0, false, 1), fixedClear) ?? buildStops(ctx, 'DN', W, P, lastArr(A) + minTurn(W), false, 1);
+    // straight on into the turnback track, no stop at the platform
+    st[st.length - 1].stop = false;
+    const e = addTo(trips, 'DN', 'empty', W, P, st, false, overlay);
+    A.next = e.id;
+    e.prev = A.id;
+    endOf.set(e.id, { kind: 'stable', station: P });
   }
   /**
    * An added train that cannot get back to the depot between the trains of
@@ -1188,21 +1305,28 @@ function relieveTerminals(ctx: PlanContext, blocks: Block[], trips: GenTrip[]) {
    * to start there (an 出段 insertion trip in service, or empty) stands
    * overnight in the station's storage tail instead.
    */
+  const placesLeft = (st: number) => topo.stations[st].turnbackBerths.length + topo.stations[st].storageBerths.length
+    - blocks.filter((x) => x.start.kind === 'stable' && x.start.station === st && x.trips.some((id) => !trips[id].cancelled)).length;
+  /** a morning yard exit whose first move only brings the train to `st`, where it can stand overnight instead */
+  const stableable = (b: Block, st: number) => {
+    const a = trips[b.trips[0]], d = trips[b.trips[1]];
+    return b.start.kind === 'depot' && !!d && (a.kind === 'ins' || a.kind === 'empty') && a.to === st && d.from === st && d.stops[0].dep <= 10 * 3600;
+  };
+  const toStable = (b: Block, st: number) => {
+    const a = trips[b.trips[0]], d = trips[b.trips[1]];
+    a.cancelled = true;
+    a.block = -1;
+    a.next = undefined;
+    d.prev = undefined;
+    b.trips.shift();
+    b.start = { kind: 'stable', station: st };
+  };
   const stableInstead = (st: number, present: { from: number; block: number }[]): boolean => {
-    const night = st === 0 ? OPERATIONS.terminalStabling.PXL : st === topo.stations.length - 1 ? OPERATIONS.terminalStabling.PDA : 0;
-    const used = blocks.filter((x) => x.start.kind === 'stable' && x.start.station === st && x.trips.some((id) => !trips[id].cancelled)).length;
-    if (used >= night + topo.stations[st].storageBerths.length) return false;
+    if (placesLeft(st) <= 0) return false;
     for (const o of present.slice().sort((x, y) => y.from - x.from)) {
       const b = blocks.find((x) => x.id === o.block)!;
-      const a = trips[b.trips[0]], d = trips[b.trips[1]];
-      if (b.start.kind !== 'depot' || !d || (a.kind !== 'ins' && a.kind !== 'empty') || a.to !== st || d.from !== st || a.stops.at(-1)!.arr !== o.from) continue;
-      if (d.stops[0].dep > 10 * 3600) continue;
-      a.cancelled = true;
-      a.block = -1;
-      a.next = undefined;
-      d.prev = undefined;
-      b.trips.shift();
-      b.start = { kind: 'stable', station: st };
+      if (!stableable(b, st) || trips[b.trips[0]].stops.at(-1)!.arr !== o.from) continue;
+      toStable(b, st);
       return true;
     }
     return false;
@@ -1235,6 +1359,13 @@ function relieveTerminals(ctx: PlanContext, blocks: Block[], trips: GenTrip[]) {
       if (!relieved && stableInstead(st, present)) moved = true;
     }
     if (!moved) break;
+  }
+  // places left in a storage tail take the earliest such exits: they stood
+  // there overnight (the trains that ended the day there)
+  for (const st of [0, topo.stations.length - 1]) {
+    if (!topo.stations[st].storageBerths.length) continue;
+    const list = blocks.filter((b) => stableable(b, st)).sort((x, y) => trips[x.trips[1]].stops[0].dep - trips[y.trips[1]].stops[0].dep);
+    for (const b of list) { if (placesLeft(st) <= 0) break; toStable(b, st); }
   }
 }
 
@@ -1726,10 +1857,35 @@ export function blockTasks(topo: Topology, plan: Plan, block: Block, fromTrip = 
     else if (block.end.kind === 'depot') depotTasks(topo, block.end.depot, trip.dir, tasks);
     else if (block.end.kind === 'stable') {
       const tb = turnbackAt(topo, trip.to, trip.dir);
-      if (tb && tb.kind === 'rear') tasks.push({ k: 'stable', berth: -1, reason: '存车' });
+      if (tb && tb.kind === 'rear' && !tailTasks(topo, plan, block, trip, tasks)) tasks.push({ k: 'stable', berth: -1, reason: '存车', station: trip.to });
     }
   }
   return tasks;
+}
+
+/**
+ * The first trains stabled overnight at a terminal with a storage tail
+ * (蟠祥路下行尾轨) go on into it, the first deepest: it is entered only from
+ * the departure platform, so the train turns through a turnback track, changes
+ * ends again on the departure platform and sets back into the tail. The last
+ * ones stay in the turnback tracks, which they would otherwise block.
+ * false: this train stays in a turnback track.
+ */
+function tailTasks(topo: Topology, plan: Plan, block: Block, trip: Trip, tasks: Task[]): boolean {
+  const st = topo.stations[trip.to];
+  const tb = turnbackAt(topo, trip.to, trip.dir);
+  if (!st.storageBerths.length || tb?.kind !== 'rear') return false;
+  const lastArr = (b: Block) => plan.trips[b.trips.filter((id) => !plan.trips[id].cancelled).at(-1)!].stops.at(-1)!.arr;
+  const ending = plan.blocks.filter((b) => b.end.kind === 'stable' && b.end.station === trip.to && b.trips.some((id) => !plan.trips[id].cancelled))
+    .sort((a, b) => lastArr(a) - lastArr(b));
+  const rank = ending.indexOf(block);
+  if (rank < 0 || rank >= Math.min(st.storageBerths.length, ending.length - st.turnbackBerths.length)) return false;
+  const plat = platformBerth(topo, trip.to, trip.dir === 'DN' ? 'UP' : 'DN');
+  tasks.push({ k: 'reverse', berths: tb.berths, chosen: tb.berths[0], station: trip.to, minTime: 40 });
+  tasks.push({ k: 'stop', berth: plat, station: trip.to, trip: -1, arr: null, dep: null, doors: false, revenue: false, note: '入尾轨换端' });
+  tasks.push({ k: 'reverse', berths: [plat], chosen: plat, station: trip.to, minTime: 40 });
+  tasks.push({ k: 'stable', berth: st.storageBerths[st.storageBerths.length - 1 - rank], reason: '存车' });
+  return true;
 }
 
 /** A move out of the depot reaching its first platform against the trip's

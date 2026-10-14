@@ -496,7 +496,17 @@ export const OPERATIONS = {
   // on the platform without a run into a tail.
   minTurnback: { PXL: 240, PDA: 240, SHR: 240, GLL: 100 } as Record<string, number>,
   /** overnight stabling at terminal tails (approx) */
-  terminalStabling: { PXL: 2, PDA: 2 } as Record<string, number>,
+  // (蟠祥路: its two turnback tracks and the two places in the DN storage tail)
+  terminalStabling: { PXL: 4, PDA: 2 } as Record<string, number>,
+  /** overnight stabling on the line away from the ends (正线存车): the
+   *  上海科技馆 turnback track, entered by eastbound trains and left westbound.
+   *  The trains come down empty from 蟠祥路 after the last departure there and
+   *  start the next day as the first westbound trains from that station. With
+   *  the three yards' 92 places and the 6 at the ends this holds the 100-train
+   *  fleet. (Not 龙阳路: the 龙阳路 depot's eastbound exits change ends on that
+   *  track from 05:00, before a stabled train could leave.)
+   *  【假设】 positions per the 配线图 PDF; real allocation unknown */
+  lineStabling: { KJG: 2 } as Record<string, number>,
   /** a train passing a platform without stopping (跨站/跳停) runs through it at no more than this (km/h) */
   platformPassKmh: 45,
   /** a train entering or leaving a platform it stops at runs at no more than this (km/h) */
