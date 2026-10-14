@@ -679,7 +679,7 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
   /** Added moves through BZL/CSD's shared conversion track are planned
    * clear of the other trains' exits and returns (DEPOT_CONFLICT, D47). */
   const exitsPlanned: { depot: number; at: number }[] = [];
-  const shared = (depot: number) => topo.depots[depot].gateLink === topo.depots[depot].outGateLink;
+  const shared = (depot: number) => sharedLead(topo, depot);
   const baseLive = (b: Block) => !reused.has(b.id) && b.trips.some(id => !trips[id].cancelled);
   const exitClear = (depot: number, start: number) => !reuse || !shared(depot)
     || reuse.blocks.every(b => !baseLive(b) || b.end.kind !== 'depot' || b.end.depot !== depot || (() => {
@@ -817,6 +817,8 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
   // Added service ordered during the day: a train can leave the yard from now on.
   // A trip it cannot reach in time is dropped; the train comes out for the next.
   const now = reuse?.now ?? -Infinity;
+  /** departures of trains brought into place by a positioning move, per station */
+  const positioned = new Map<number, number[]>();
   for (let qi = 0; qi < queue.length; qi++) {
     const D = queue[qi];
     const T = D.from;
@@ -849,8 +851,14 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
       // non-revenue positioning move before service
       const probe = buildStops(ctx, towardDir, ex, T, 0, false, 1);
       const run = probe[probe.length - 1].arr;
-      const st = fitBefore(towardDir, placeBefore(ex, towardDir, dep - mt - (towardDir === D.dir ? 0 : 60) - run), (t0) => buildStops(ctx, towardDir, ex, T, t0, false, 1), towardDir === D.dir ? D : undefined)
+      // a single turnback place (广兰路): not in before the previous positioned train has left it
+      const single = (TERMINAL_CAP[T] ?? topo.stations[T].turnbackBerths.length) === 1;
+      const before = single ? Math.max(-Infinity, ...(positioned.get(T) ?? []).filter((x) => x <= dep)) : -Infinity;
+      const st = fitBefore(towardDir, placeBefore(ex, towardDir, dep - mt - (towardDir === D.dir ? 0 : 60) - run), (t0) => buildStops(ctx, towardDir, ex, T, t0, false, 1), towardDir === D.dir ? D : undefined,
+        (stops) => stops.at(-1)!.arr >= before)
+        ?? fitBefore(towardDir, placeBefore(ex, towardDir, dep - mt - (towardDir === D.dir ? 0 : 60) - run), (t0) => buildStops(ctx, towardDir, ex, T, t0, false, 1), towardDir === D.dir ? D : undefined)
         ?? buildStops(ctx, towardDir, ex, T, dep - mt - (towardDir === D.dir ? 0 : 60) - run, false, 1);
+      positioned.set(T, [...(positioned.get(T) ?? []), dep]);
       st[0].stop = false;
       if (towardDir === D.dir) st[st.length-1].stop = false;
       const e = addTo(trips, towardDir, 'empty', ex, T, st, false, overlay);
@@ -1093,8 +1101,176 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
       cur = trips[cur.next];
     }
   }
+  spacePortalExits(ctx, blocks, trips);
+  if (!overlay) relieveTerminals(ctx, blocks, trips);
   void periods;
   return blocks;
+}
+
+/** how far a trip can move later / earlier and still keep `keep` s to every
+ *  other train in its direction at each of its stops */
+function headwayRoom(trips: Trip[], t: Trip, keep: number, skip: Set<number> = new Set()): { later: number; earlier: number } {
+  let later = Infinity, earlier = Infinity;
+  for (const u of trips) {
+    if (u.dir !== t.dir || u.cancelled || u.id === t.id || skip.has(u.id)) continue;
+    for (const s of t.stops) {
+      const us = u.stops.find((x) => x.st === s.st);
+      if (!us) continue;
+      if (us.dep >= s.dep) later = Math.min(later, us.dep - s.dep - keep);
+      else earlier = Math.min(earlier, s.dep - us.dep - keep);
+    }
+  }
+  return { later: Math.max(0, later), earlier: Math.max(0, earlier) };
+}
+
+/** `t` moved by `shift` keeps `keep` s to every other train in its direction at each of its stops */
+function headwayClear(trips: Trip[], t: Trip, shift: number, keep: number, skip: Set<number> = new Set()): boolean {
+  return trips.every((u) => {
+    if (u.dir !== t.dir || u.cancelled || u.id === t.id || skip.has(u.id)) return true;
+    return t.stops.every((s) => {
+      const us = u.stops.find((x) => x.st === s.st);
+      return !us || Math.abs(us.dep - (s.dep + shift)) >= keep;
+    });
+  });
+}
+
+/**
+ * A train brought out of the depot to start at a terminal that would make
+ * more trains stand there at once than it holds comes later instead: within
+ * its own turn there, clear of every other train on its way (it may drop in
+ * behind one), and its exit spacing kept (later exits through the same
+ * change-of-ends portal move up with it where they can).
+ */
+function relieveTerminals(ctx: PlanContext, blocks: Block[], trips: GenTrip[]) {
+  const { topo } = ctx;
+  const plan = { blocks, trips } as unknown as Plan;
+  const clearAt = (t: Trip, delta: number, skip: Set<number>) => trips.every((u) => {
+    if (u.dir !== t.dir || u.cancelled || u.id === t.id || skip.has(u.id)) return true;
+    return t.stops.every((s) => {
+      const us = u.stops.find((x) => x.st === s.st);
+      return !us || Math.abs(us.dep - (s.dep + delta)) >= MIN_HEADWAY;
+    });
+  });
+  /** exits after `b` through the same reversing portal, in order */
+  const portalFollowers = (b: Block): Block[] => {
+    const a = trips[b.trips[0]];
+    if (b.start.kind !== 'depot') return [];
+    const depot = b.start.depot;
+    const p = topo.depots[depot].portals.exit[a.dir];
+    if (!p.reverse || a.stops[0].st !== p.station) return [];
+    return blocks.filter((x) => x !== b && x.start.kind === 'depot' && x.start.depot === depot && !trips[x.trips[0]].cancelled
+      && trips[x.trips[0]].dir === a.dir && trips[x.trips[0]].stops[0].st === p.station && trips[x.trips[0]].stops[0].dep >= a.stops[0].dep)
+      .sort((x, y) => trips[x.trips[0]].stops[0].dep - trips[y.trips[0]].stops[0].dep);
+  };
+  const turnSlack = (b: Block) => {
+    const a = trips[b.trips[0]], d = trips[b.trips[1]];
+    return d && !d.cancelled && a.to === d.from ? d.stops[0].dep - a.stops[a.stops.length - 1].arr - minTurn(a.to) : 0;
+  };
+  /** move `b`'s first trip `delta` later, pushing the portal exits behind it; false (nothing moved) if it cannot */
+  const plan2 = (b: Block, delta: number): Map<Block, number> | null => {
+    const moves = new Map<Block, number>();
+    let prevDep = trips[b.trips[0]].stops[0].dep + delta;
+    moves.set(b, delta);
+    for (const f of portalFollowers(b)) {
+      const dep = trips[f.trips[0]].stops[0].dep;
+      const push = prevDep + PORTAL_CYCLE - dep;
+      if (push <= 0) break;
+      moves.set(f, push);
+      prevDep = dep + push;
+    }
+    const skip = new Set([...moves.keys()].map((x) => x.trips[0]));
+    for (const [x, d] of moves) if (d > turnSlack(x) || !clearAt(trips[x.trips[0]], d, skip)) return null;
+    return moves;
+  };
+  for (let iter = 0; iter < 30; iter++) {
+    let moved = false;
+    for (const [st, list] of terminalOccupancy(plan)) {
+      const ov = terminalOverflows(topo, st, list)[0];
+      const over = ov && list.find((o) => o.from === ov.t);
+      if (!over) continue;
+      const present = list.filter((x) => x.from <= over.from && x.to > over.from);
+      // the latest arrivals first: they are the ones to hold back
+      for (const o of present.sort((x, y) => y.from - x.from)) {
+        const b = blocks.find((x) => x.id === o.block)!;
+        const a = trips[b.trips[0]];
+        if (b.start.kind !== 'depot' || b.trips.length < 2 || a.to !== st || a.stops[a.stops.length - 1].arr !== o.from) continue;
+        const need = Math.min(...present.filter((x) => x !== o).map((x) => x.to)) - o.from + 5;
+        let moves: Map<Block, number> | null = null;
+        for (let delta = Math.max(need, 1); delta <= turnSlack(b) && !moves; delta += 10) moves = plan2(b, delta);
+        if (!moves) continue;
+        for (const [x, d] of moves) {
+          const t = trips[x.trips[0]];
+          for (const p of t.stops) { p.arr += d; p.dep += d; }
+          if (x.start.kind === 'depot') x.start.time = depotStartTime(ctx, x.start.depot, t);
+        }
+        moved = true;
+        break;
+      }
+    }
+    if (!moved) break;
+  }
+}
+
+/** platform time a depot exit takes when it changes ends on the junction
+ *  platform: in against the normal direction, change ends, board, away */
+const PORTAL_CYCLE = 150;
+/** spacing kept to the other trains when such an exit is moved (MIN_HEADWAY + margin) */
+const HEADWAY_KEEP = 120;
+
+/**
+ * Exits that change ends on the junction platform (北翟路 trains for the UP
+ * at 淞虹路, 川沙 trains for the DN at 远东大道) use that platform one after
+ * another, PORTAL_CYCLE apart at least. A burst planned closer is spread:
+ * later where the train's turn at the far end has the slack (it then stands
+ * there for less), earlier only for what that slack cannot take.
+ */
+function spacePortalExits(ctx: PlanContext, blocks: Block[], trips: GenTrip[]) {
+  const { topo } = ctx;
+  topo.depots.forEach((dp, d) => {
+    for (const dir of ['DN', 'UP'] as const) {
+      const p = dp.portals.exit[dir];
+      if (!p.reverse) continue;
+      const group = blocks.filter((b) => b.start.kind === 'depot' && b.start.depot === d && trips[b.trips[0]]?.dir === dir
+        && trips[b.trips[0]].stops[0].st === p.station && !trips[b.trips[0]].cancelled)
+        .sort((a, b) => trips[a.trips[0]].stops[0].dep - trips[b.trips[0]].stops[0].dep);
+      if (group.length < 2) continue;
+      const first = group.map((b) => trips[b.trips[0]]);
+      const dep0 = first.map((t) => t.stops[0].dep);
+      const later = group.map((b, k) => {
+        const t = first[k];
+        const n = b.trips[1] !== undefined ? trips[b.trips[1]] : undefined;
+        if (!n || n.cancelled) return 0;
+        return Math.max(0, n.stops[0].dep - t.stops[t.stops.length - 1].arr - minTurn(t.to));
+      });
+      // as late as each train's turn at the far end allows (no longer layover
+      // there than needed), working back from the last, PORTAL_CYCLE apart,
+      // and clear of every other train on the way by HEADWAY_KEEP (it may drop
+      // in behind one rather than stay ahead of it)
+      const moving = new Set(first.map((t) => t.id));
+      const dep = dep0.slice();
+      for (let k = dep.length - 1; k >= 0; k--) {
+        let hi = dep0[k] + later[k];
+        if (k < dep.length - 1) hi = Math.min(hi, dep[k + 1] - PORTAL_CYCLE);
+        let at = NaN;
+        for (let x = hi; x >= Math.min(dep0[k], hi) - 600; x -= 10) {
+          if (headwayClear(trips, first[k], x - dep0[k], HEADWAY_KEEP, moving)) { at = x; break; }
+          // where it was planned is good enough when nothing later is
+          if (x - 10 < dep0[k] && dep0[k] <= hi) { at = dep0[k]; break; }
+        }
+        if (Number.isNaN(at)) {
+          const room = headwayRoom(trips, first[k], HEADWAY_KEEP, moving);
+          at = Math.min(dep0[k] + Math.min(later[k], room.later), hi);
+        }
+        dep[k] = at;
+      }
+      group.forEach((b, k) => {
+        const shift = dep[k] - dep0[k];
+        if (Math.abs(shift) < 0.5) return;
+        for (const st of first[k].stops) { st.arr += shift; st.dep += shift; }
+        if (b.start.kind === 'depot') b.start.time = depotStartTime(ctx, d, first[k]);
+      });
+    }
+  });
 }
 
 function addTo(trips: GenTrip[], dir: TrackDir, kind: TripKind, from: number, to: number, stops: PlanStop[], revenue: boolean, overlay?: string): GenTrip {
@@ -1105,6 +1281,15 @@ function addTo(trips: GenTrip[], dir: TrackDir, kind: TripKind, from: number, to
 
 /** BZL/CSD share their conversion track: a returning train holds it from
  * 1500 m before the junction until it is clear inside the yard. */
+/** some lead of the depot takes both trains going in and trains coming out
+ *  (北翟路: each 出入段线 for its direction; 川沙: the 出入段线), so an added
+ *  return can meet a planned exit on it */
+export function sharedLead(topo: Topology, depot: number): boolean {
+  const p = topo.depots[depot].portals;
+  const ins = new Set([p.entry.DN.path, p.entry.UP.path]);
+  return ins.has(p.exit.DN.path) || ins.has(p.exit.UP.path);
+}
+
 export function inboundWindow(topo: Topology, depot: number, last: Trip): [number, number] {
   const d = topo.depots[depot];
   const distance = Math.abs(topo.stations[last.to].chain - d.junctionChain);
@@ -1629,6 +1814,32 @@ function tailOrderClear(topo: Topology, st: number, occ: { from: number; to: num
   return occ.every(o => o.block === own || !(o.from < from && o.to > to + .01) && !(o.from > from && o.to < to - .01));
 }
 
+/** time a train held on a line end's arrival platform needs to move on
+ *  into the turnback track once a place there is free */
+const HOLD_CLEAR = 120;
+
+/**
+ * Moments a terminal holds more trains than it can. TERMINAL_CAP keeps the
+ * arrival platform free; at a line end (every train arriving there
+ * terminates) one more may stand on it, provided the next arrival comes
+ * HOLD_CLEAR after a place has freed up for it.
+ */
+export function terminalOverflows(topo: Topology, st: number, list: { from: number; to: number }[]): { t: number; cur: number; cap: number }[] {
+  const cap = TERMINAL_CAP[st] ?? (topo.stations[st].turnbackBerths.length || 1);
+  const lineEnd = st === 0 || st === topo.stations.length - 1;
+  const evs = list.flatMap((o) => [[o.from, 1], [o.to, -1]] as [number, number][]).sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  const out: { t: number; cur: number; cap: number }[] = [];
+  let cur = 0;
+  let held = -Infinity; // when the train held on the arrival platform can move on
+  for (const [t, dlt] of evs) {
+    if (dlt > 0 && lineEnd && (cur > cap || (cur === cap && t < held))) out.push({ t, cur: cur + 1, cap });
+    cur += dlt;
+    if (!lineEnd && cur > cap) out.push({ t, cur, cap });
+    if (lineEnd && dlt < 0 && cur === cap) held = t + HOLD_CLEAR;
+  }
+  return out;
+}
+
 /** time intervals trains spend turning back / laying over at each station (between two trips in opposite directions) */
 export function terminalOccupancy(plan: Plan): Map<number, { from: number; to: number; block: number }[]> {
   const occ = new Map<number, { from: number; to: number; block: number }[]>();
@@ -1717,21 +1928,16 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
       for (let i=1;i<ordered.length;i++) if (ordered[i-1].to > ordered[i].to + .01)
         out.push({severity:'error',code:'TAIL_ORDER',t:ordered[i].from,blocks:[ordered[i-1].block,ordered[i].block],text:`${name(st)} 单一折返线到达次序与发车次序相反`});
     }
-    const cap = TERMINAL_CAP[st] ?? (topo.stations[st].turnbackBerths.length || 1);
-    const evs = list.flatMap((o) => [[o.from, 1], [o.to, -1]] as [number, number][]).sort((x, y) => x[0] - y[0] || x[1] - y[1]);
-    let cur = 0;
     let reported = -Infinity;
-    for (const [t, dlt] of evs) {
-      cur += dlt;
-      if (cur > cap && t - reported > 1800) {
-        reported = t;
-        const blocks = plan.blocks.filter(block => {
-          const ts = block.trips.map(id => plan.trips[id]).filter(trip => !trip.cancelled);
-          return ts.some((a,i) => { const d = ts[i+1]; return d && a.to === st && d.from === st && a.dir !== d.dir
-            && a.stops.at(-1)!.arr <= t && d.stops[0].dep > t; });
-        }).map(block => block.id);
-        out.push({ severity: 'error', code: 'TERMINAL_FULL', t, blocks, text: `${name(st)} 同时折返/待发 ${cur} 列，超过能力 ${cap} 列` });
-      }
+    for (const { t, cur, cap } of terminalOverflows(topo, st, list)) {
+      if (t - reported <= 1800) continue;
+      reported = t;
+      const blocks = plan.blocks.filter(block => {
+        const ts = block.trips.map(id => plan.trips[id]).filter(trip => !trip.cancelled);
+        return ts.some((a,i) => { const d = ts[i+1]; return d && a.to === st && d.from === st && a.dir !== d.dir
+          && a.stops.at(-1)!.arr <= t && d.stops[0].dep > t; });
+      }).map(block => block.id);
+      out.push({ severity: 'error', code: 'TERMINAL_FULL', t, blocks, text: `${name(st)} 同时折返/待发 ${cur} 列，超过能力 ${cap} 列` });
     }
   }
   // BZL/CSD share their conversion track. A returning added train receives
@@ -1739,7 +1945,7 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
   // entry against planned yard exits, rather than delaying a peak origin.
   // LYD's independent inbound/outbound tracks have no such conflict.
   for (const depot of topo.depots) {
-    if (depot.gateLink !== depot.outGateLink) continue;
+    if (!sharedLead(topo, depot.id)) continue;
     const exits = plan.blocks.filter(b => b.start.kind==='depot' && b.start.depot===depot.id
       && b.trips.some(id => !plan.trips[id].cancelled));
     for (const inbound of plan.blocks) {
