@@ -1033,8 +1033,10 @@ describe('standby trains (D45)', () => {
   });
   it('relieves a late train: the standby runs its next departure on time, the late train goes home after its current trip', () => {
     const sim = live();
-    const tr = sim.trainList.find(t => t.inService && t.block >= 0 && t.tasks.some(x => x.k === 'stop' && x.trip === t.tripId && x.dep === null)
-      && sim.plan.blocks[t.block].trips.indexOf(t.tripId) < sim.plan.blocks[t.block].trips.length - 3)!;
+    // (the one whose current trip ends first: the test runs to its end)
+    const tr = sim.trainList.filter(t => t.inService && t.block >= 0 && t.tasks.some(x => x.k === 'stop' && x.trip === t.tripId && x.dep === null)
+      && sim.plan.blocks[t.block].trips.indexOf(t.tripId) < sim.plan.blocks[t.block].trips.length - 3)
+      .sort((a, b) => sim.plan.trips[a.tripId].stops.at(-1)!.arr - sim.plan.trips[b.tripId].stops.at(-1)!.arr)[0];
     tr.delay = 1200;
     expect(predictedLateness(sim, tr)).toBeGreaterThan(RELIEF_DELAY);
     const current = tr.tripId; const nBlocks = sim.plan.blocks.length;
