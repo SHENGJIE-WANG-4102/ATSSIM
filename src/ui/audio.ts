@@ -2,10 +2,13 @@
  * Synthesised sounds (Web Audio, no assets): alarm tones by level, the
  * radio / phone ring while a call waits, a squelch burst when a call is
  * answered, and a short click for commands. Mute is persisted. The one
- * recorded sound, the inverter of the train listened to, is in vvvf.ts.
+ * recorded sounds are handled by vvvf.ts and stationaudio.ts.
  */
 import { loadPref, savePref } from './layout';
+import { RECORDED_VOLUME_GAINS, type RecordedVolume } from '../data/onboardbank';
 import { VvvfSound, type VvvfMode } from './vvvf';
+import { StationAudio, type StationAudioFrame } from './stationaudio';
+import { OnboardAudio, type OnboardAudioFrame } from './onboardaudio';
 
 export class Audio {
   private ctx: AudioContext | null = null;
@@ -13,10 +16,14 @@ export class Audio {
   muted = loadPref('muted', false);
   /** the inverter sound of the selected train, switched on and off in 设置 › 走行音 */
   traction = loadPref('traction', true);
+  stationSound = loadPref('stationSound', true);
+  recordedVolume: RecordedVolume = (() => { const v = loadPref<string>('recordedVolume', 'medium'); return v in RECORDED_VOLUME_GAINS ? v as RecordedVolume : 'medium'; })();
   private ringTimer = 0;
   private alarmTimer = 0;
   private overTimer = 0;
   private vvvf: VvvfSound | null = null;
+  private station: StationAudio | null = null;
+  private onboard: OnboardAudio | null = null;
 
   constructor() {
     const unlock = () => {
@@ -35,6 +42,9 @@ export class Audio {
       this.master.gain.value = this.muted ? 0 : 0.35;
       this.master.connect(this.ctx.destination);
       this.vvvf = new VvvfSound(this.ctx, this.master);
+      this.station = new StationAudio(this.ctx, this.master);
+      this.onboard = new OnboardAudio(this.ctx, this.master);
+      this.applyRecordedVolume();
     } catch {
       this.ctx = null;
     }
@@ -44,7 +54,7 @@ export class Audio {
     this.muted = m;
     savePref('muted', m);
     if (this.master) this.master.gain.value = m ? 0 : 0.35;
-    if (m) { this.stopRing(); this.stopAlarm(); this.setOverspeed(false); }
+    if (m) { this.stopRing(); this.stopAlarm(); this.setOverspeed(false); this.stopStationAudio(); }
   }
 
   private tone(freq: number, start: number, dur: number, type: OscillatorType = 'sine', vol = 0.6) {
@@ -142,8 +152,8 @@ export class Audio {
   }
 
   /**
-   * Door warning of the train listened to (synthesised 【假设】: the 02A05 tone is
-   * not recorded): a few short beeps as the doors open, a beep train while they
+   * Door warning of the train listened to (synthesised 【假设】):
+   * a few short beeps as the doors open, a beep train while they
    * close. Goes with the traction sound setting (the sounds on board).
    */
   doorChime(closing: boolean) {
@@ -159,6 +169,26 @@ export class Audio {
   setTractionOn(on: boolean) {
     this.traction = on;
     savePref('traction', on);
+  }
+
+  setStationSoundOn(on: boolean) {
+    this.stationSound = on;
+    savePref('stationSound', on);
+    if (!on) this.stopStationAudio();
+  }
+  setRecordedVolume(level: RecordedVolume) {
+    this.recordedVolume = level; savePref('recordedVolume', level); this.applyRecordedVolume();
+  }
+  private applyRecordedVolume() {
+    const gain = RECORDED_VOLUME_GAINS[this.recordedVolume];
+    this.station?.setVolume(gain); this.onboard?.setVolume(gain); this.vvvf?.setVolume(gain);
+  }
+  stopStationAudio() { this.station?.reset(); this.onboard?.reset(); }
+  setStationAudio(frame: Omit<StationAudioFrame, 'muted' | 'enabled'>) {
+    this.station?.update({ ...frame, muted: this.muted, enabled: this.stationSound });
+  }
+  setOnboardAudio(frame: Omit<OnboardAudioFrame, 'muted' | 'enabled'>) {
+    this.onboard?.update({ ...frame, muted: this.muted, enabled: this.stationSound });
   }
 
   /** the inverter sound of the train listened to (see vvvf.ts) */

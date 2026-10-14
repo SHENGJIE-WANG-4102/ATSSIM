@@ -5,6 +5,7 @@
  * entries (UI scale, sound, the selected train's traction sound) plus 运营日 / 诊断导出 / 帮助.
  */
 import { h, clear } from './dom';
+import type { RecordedVolume } from '../data/onboardbank';
 import type { Store } from './store';
 import { fmtTime } from './theme';
 import { UI_SCALES, loadPref, savePref } from './layout';
@@ -24,6 +25,10 @@ export interface HeaderHooks {
   setMuted(m: boolean): void;
   traction(): boolean;
   setTraction(on: boolean): void;
+  stationSound(): boolean;
+  setStationSound(on: boolean): void;
+  recordedVolume(): RecordedVolume;
+  setRecordedVolume(level: RecordedVolume): void;
   help(): void;
 }
 
@@ -113,7 +118,7 @@ export class Header {
       el.addEventListener('click', (e) => { if (e.target === el || (e.target as HTMLElement).parentElement === el) el.classList.toggle('open'); });
       return el;
     };
-    const scale = this.hooks.scale(), muted = this.hooks.muted(), traction = this.hooks.traction();
+    const scale = this.hooks.scale(), muted = this.hooks.muted(), traction = this.hooks.traction(), stationSound = this.hooks.stationSound();
     clear(this.menu);
     this.menu.append(
       sub('界面缩放', `${Math.round(scale * 100)}%`,
@@ -125,6 +130,11 @@ export class Header {
       sub('走行音', traction ? '开启' : '关闭',
         item('开启', () => { this.hooks.setTraction(true); this.refreshScale(); }, { on: traction }),
         item('关闭', () => { this.hooks.setTraction(false); this.refreshScale(); }, { on: !traction })),
+      sub('车站音效', stationSound ? '开启' : '关闭',
+        item('开启', () => { this.hooks.setStationSound(true); this.refreshScale(); }, { on: stationSound }),
+        item('关闭', () => { this.hooks.setStationSound(false); this.refreshScale(); }, { on: !stationSound })),
+      sub('车内/车站音量', ({ large: '大', medium: '中', small: '小' })[this.hooks.recordedVolume()],
+        ...(['large', 'medium', 'small'] as const).map(v => item(({ large: '大', medium: '中', small: '小' })[v], () => { this.hooks.setRecordedVolume(v); this.refreshScale(); }, { on: v === this.hooks.recordedVolume() }))),
       sub('能耗与运行等级', this.energy ? '显示' : '隐藏',
         item('显示', () => this.setEnergy(true), { on: this.energy }),
         item('隐藏', () => this.setEnergy(false), { on: !this.energy })),

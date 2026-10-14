@@ -367,6 +367,24 @@ Up to 5× only; switch it off in 设置 › 走行音. The recordings are third-
 the repository: cut them from p02.wav with `scripts/vvvf-clips.sh path/to/p02.wav` into
 `public/sounds/vvvf/` (git-ignored); without them the sound stays off (D61).
 
+Local field recordings also stay outside the repository. Timing measurements,
+confidence labels and reproducible analysis are documented in `docs/recordings.md` (D71).
+**Station sound** (设置 › 车站音效, on by default) plays local platform recordings
+while a station is selected, unmuted and running at up to 5×. Arrivals follow a
+stable stop estimate, departures and closing warnings follow the train state;
+missing recordings stay silent. Jiangsu Road platform material is reused at underground
+stations (assumption); exposed stations stay silent. Selecting a train adds complete bilingual
+carriage PA and speed-dependent rolling/floor noise alongside VVVF. Matching original PA
+wins; otherwise exact-name library compositions are used. By user decision, 江苏路
+borrows its platform name; its English fallback joins 江苏 to the recorded word Road.
+Other station phrases use the carriage voice library. Airport services
+omit the short-route airport transfer notice. 设置 › 车内/车站音量 offers 大/中/小,
+with a shared gain for recorded PA/ambience and VVVF. Speech uses loudnorm -16 LUFS;
+noise preserves its measured level relative to the source announcements.
+Cut the supplied WAVs with `npx --no-install vite-node scripts/audio/slice-recordings.ts work/recordings`
+into the ignored `public/sounds/field-20261014/`; `node scripts/mock-soundbank.mjs`
+creates missing placeholders for testing and preserves existing recordings.
+
 ### Keys
 
 | Key | Action |

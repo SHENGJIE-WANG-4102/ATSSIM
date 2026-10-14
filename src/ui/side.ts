@@ -16,9 +16,8 @@ import type { Audio } from './audio';
 import { speedIndication } from './dmi';
 import type { VvvfMode } from './vvvf';
 import { PERF, tractionAccel } from '../sim/dynamics';
-
-/** the inverter sound plays up to this time acceleration (the manual-driving limit); faster it is only a blur */
-const VVVF_MAX_RATE = 5;
+import { stationFrame, VVVF_MAX_RATE } from './stationaudio';
+import { onboardFrame } from './onboardaudio';
 
 const CAT_FILTERS = ['全部', '报警', '调度', '通话', '信号', '列车', '车站', '客流', '施工', '教员'];
 
@@ -100,6 +99,9 @@ export class SidePanel {
     store.on('events', () => { if (this.tab === 2) this.appendEvents(); });
     store.on('rewound', () => { if (this.tab === 2) this.setTab(2); });
     store.on('selection', () => { if (this.store.selection && this.tab !== 0) this.setTab(0); });
+    store.on('selection', () => this.audio.stopStationAudio());
+    store.on('rewound', () => this.audio.stopStationAudio());
+    store.on('ready', () => this.audio.stopStationAudio());
     store.on('ready', () => { this.seenAlarms.clear(); this.seenCalls.clear(); });
     store.on('snap', () => {
       this.renderCalls();
@@ -199,6 +201,8 @@ export class SidePanel {
     const hunt = Math.sin(performance.now() / 120);
     const wheel = heard?.slip === 'slip' ? 1.12 + 0.06 * hunt : heard?.slip === 'slide' ? 0.85 + 0.05 * hunt : 1;
     this.audio.setTraction(mode, (heard?.v ?? 0) * wheel, level);
+    this.audio.setStationAudio(stationFrame(snap, sel?.kind === 'station' ? sel.id : null, this.store.topo));
+    this.audio.setOnboardAudio(onboardFrame(snap, heard ?? null, this.store.topo, this.store.plan));
     // its door warning, once per opening and closing
     const doorKey = heard && !snap.paused && snap.speed <= VVVF_MAX_RATE ? `${heard.id}|${heard.doors}` : '';
     if (doorKey && this.doorKey && doorKey !== this.doorKey && doorKey.split('|')[0] === this.doorKey.split('|')[0]) this.audio.doorChime(!heard!.doors);

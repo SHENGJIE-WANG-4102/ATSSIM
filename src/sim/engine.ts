@@ -748,6 +748,8 @@ export class Sim {
         stopDist: Number.isFinite(tr.stopDist) ? tr.stopDist : -1, a: tr.a, manual: tr.manual, notch: tr.notch,
         dwellLeft: tr.phase === 'dwell' || tr.phase === 'reversing' ? Math.max(0, tr.dwellUntil - this.t) : 0,
         nextStation: nextStopStation(tr), ebReason: tr.eb ? tr.ebReason : tr.stopUntil > this.t ? tr.stopReason : '',
+        nextStopSkipped: t0?.k === 'stop' && t0.revenue && t0.dep !== null &&
+          (tr.skipStations.has(t0.station) || this.plat[this.topo.berths[t0.berth].platform].skip),
         halt: tr.halt.code === 'NONE' ? null : {
           code: tr.halt.code, label: HALT[tr.halt.code].label, detail: tr.halt.detail, since: tr.halt.since,
           blocker: tr.halt.train >= 0 ? (() => { const o = this.trains.get(tr.halt.train); return o ? `${o.svc}-${o.tripNo}` : ''; })() : '',

@@ -136,6 +136,10 @@ export class App {
       setMuted: (m) => { this.audio.setMuted(m); this.header.refreshScale(); },
       traction: () => this.audio.traction,
       setTraction: (on) => this.audio.setTractionOn(on),
+      stationSound: () => this.audio.stationSound,
+      setStationSound: (on) => this.audio.setStationSoundOn(on),
+      recordedVolume: () => this.audio.recordedVolume,
+      setRecordedVolume: (level) => this.audio.setRecordedVolume(level),
       help: () => openHelp(this.overlay),
     });
     this.side = new SidePanel(store, this.audio, panelHooks);

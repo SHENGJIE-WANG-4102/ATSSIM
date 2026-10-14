@@ -22,7 +22,9 @@ const HOP = GRAIN / 2;
 const LOOKAHEAD = 0.12;
 /** random offset of each grain, so a held position does not buzz at the grain rate */
 const JITTER = 0.025;
-const VOLUME = 1.4;
+// D71 cabin reference: ride startup -23.65 vs PA -14.61 LUFS.
+// 【假设】 full-power grains (-18.09 LUFS) use .45 gain to retain ~9 dB below PA.
+const VOLUME = .45;
 /** stop scheduling grains this long after the sound faded out (s) */
 const IDLE = 0.8;
 
@@ -67,6 +69,7 @@ export class VvvfSound {
   /** what is being played (kept while the sound fades out) */
   private voice: Exclude<VvvfMode, 'off'> = 'power';
   private f = 0;
+  private volumeScale = 1;
 
   constructor(private ctx: AudioContext, dest: AudioNode) {
     this.out = ctx.createGain();
@@ -82,11 +85,13 @@ export class VvvfSound {
     }
   }
 
+  setVolume(gain: number) { this.volumeScale = Math.max(0, gain); }
+
   /** the train listened to: what its inverter does, its speed (m/s) and how hard it pulls or brakes (0–1) */
   set(mode: VvvfMode, v: number, level: number) {
     const now = this.ctx.currentTime;
     const f = v * VVVF_HZ_PER_MS;
-    let target = mode === 'off' ? 0 : VOLUME * (0.35 + 0.65 * Math.min(1, Math.max(0, level)));
+    let target = mode === 'off' ? 0 : VOLUME * this.volumeScale * (0.35 + 0.65 * Math.min(1, Math.max(0, level)));
     if (mode === 'brake' && f < BRAKE_TAIL) target *= 2 - f / BRAKE_TAIL;
     this.out.gain.setTargetAtTime(target, now, 0.12);
     if (mode === 'off') return;

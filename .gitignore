@@ -7,3 +7,6 @@ tests/out
 
 # third-party recordings, not redistributable under the repo licence (see src/data/vvvf.ts)
 /public/sounds/vvvf/*.mp3
+
+# Local field recordings and generated placeholders (D71), never redistributed.
+/public/sounds/field-20261014/

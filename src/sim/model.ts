@@ -649,6 +649,8 @@ export interface TrainSnap {
   notch: number;
   dwellLeft: number;
   nextStation: number;
+  /** Upcoming passenger call is bypassed by train/platform skip-stop; UI audio only. */
+  nextStopSkipped?: boolean;
   ebReason: string;
   /** machine-readable stop reason while standing (halt.ts), null when running */
   halt: { code: string; label: string; detail: string; blocker: string; since: number } | null;
