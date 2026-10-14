@@ -339,8 +339,8 @@ function resolveChoice(sim: Sim, tr: Train, task0: Task): Task {
     // a depot exit due over the lead's stub before we leave again needs that
     // stub; turn back on the other track when there is one
     const leave = tr.tasks.find((t): t is StopTask => t.k === 'stop' && t.dep !== null)?.dep ?? sim.t;
-    const clear = free.filter((b) => !exitDueOver(sim, sim.topo.berths[b].link, leave));
-    const pick = clear[0] ?? free[0] ?? task.berths[0];
+    const due = (b: number) => nextExitOver(sim, sim.topo.berths[b].link, leave);
+    const pick = free.slice().sort((a, b) => due(b) - due(a))[0] ?? task.berths[0];
     if (task.chosen !== pick) { task = cowTask(tr, task); task.chosen = pick; }
     if (!berthBusy(sim, pick, tr.id)) sim.berthRes.set(pick, tr.id);
   } else if (task.k === 'stable' && task.berth < 0) {
@@ -351,17 +351,20 @@ function resolveChoice(sim: Sim, tr: Train, task0: Task): Task {
   return task;
 }
 
-/** a depot exit not yet out whose lead stub is `link`, due by `until` */
-function exitDueOver(sim: Sim, link: number, until: number): boolean {
+const YIELD_EXIT = '折返线让出段车先出';
+
+/** earliest depot exit not yet out over the lead stub `link`, due by `until` (Infinity: none) */
+function nextExitOver(sim: Sim, link: number, until: number): number {
   const { topo } = sim;
+  let at = Infinity;
   for (const b of sim.plan.blocks) {
     if (b.start.kind !== 'depot' || b.train !== undefined || sim.blockDone.has(b.id) || b.start.time > until) continue;
     const first = b.trips.map((id) => sim.plan.trips[id]).find((t) => !t.cancelled);
     if (!first || first.stops[0].dep < sim.t - 1800) continue;
     const dp = topo.depots[b.start.depot];
-    if (dp.transferPaths[dp.portals.exit[first.dir].path].stub === link) return true;
+    if (dp.transferPaths[dp.portals.exit[first.dir].path].stub === link) at = Math.min(at, b.start.time);
   }
-  return false;
+  return at;
 }
 
 export function depotBerth(topo: Topology, task: { depot: number; berth?: number }): number {
@@ -440,7 +443,8 @@ export function spawnDue(sim: Sim) {
     if (busy) continue;
     // the lead's stub doubles as a turnback track: a train turning back there has it
     const stubBerths = topo.berths.filter((x) => x.link === path.stub);
-    if (stubBerths.some((x) => { const r = sim.berthRes.get(x.id); return r !== undefined && sim.trains.has(r); })
+    // (unless it is holding back on the platform to let this exit out first)
+    if (stubBerths.some((x) => { const r = sim.berthRes.get(x.id); return r !== undefined && sim.trains.has(r) && sim.trains.get(r)!.arsWait?.detail !== YIELD_EXIT; })
       || (sim.linkBodies.get(path.stub)?.length ?? 0) > 0) continue;
     const tasks = blockTasks(topo, sim.plan, b);
     // A two-way lead is shared with returning trains. Timetable positioning
@@ -1319,6 +1323,15 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
           ok = false;
           setArsWait(sim, tr, 'REGULATION', before.id, sig, '出段换端：让按图先发的列车先行');
         }
+      }
+    }
+    // turning back on a depot lead's stub: an exit already due over that stub
+    // comes out first while there is time in hand (the train waits on the platform)
+    if (ok && goalTask.k === 'reverse' && sim.berthRes.get(goal) === tr.id) {
+      const leave = tr.tasks.find((t): t is StopTask => t.k === 'stop' && t.dep !== null)?.dep ?? sim.t;
+      if (leave - sim.t - eta > 360 && nextExitOver(sim, topo.berths[goal].link, sim.t + 60) <= sim.t + 60) {
+        ok = false;
+        setArsWait(sim, tr, 'REGULATION', -1, sig, YIELD_EXIT);
       }
     }
     // wrong-direction moves (station-front turnback, single-line working) are
