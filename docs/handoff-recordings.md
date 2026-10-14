@@ -1,16 +1,17 @@
 # 交接说明：2026-10-14 实地录音（切分、测量、车站音效逻辑）
 
-给本地 Codex。录音只在用户本机，云端（Claude）拿不到音频文件，所以分工是：
+给本地 Codex。两边都在用户本机同一个工作区里干活，分工是：
 
-- **Codex（本地）**：听/分析录音 → 切片（不入库）→ 测量数据（入库）→ 写播放逻辑和单元测试。
-- **Claude（云端）**：拉取你的分支，审代码、跑测试、用占位音频验证调度逻辑、修改，然后合入 `claude/nifty-faraday-mdr3ug` 并推送。
+- **Codex**：听/分析录音 → 切片（不入库）→ 测量数据 → 写播放逻辑和单元测试。**只改工作区，不 commit、不 push。**
+- **Claude（本地）**：审 Codex 的改动、推敲逻辑、修改、跑测试，然后由 Claude 统一 commit + push。Claude 侧的交接见 `docs/handoff-claude-local.md`。
 
 ## 分支与提交
 
-- 从 `claude/nifty-faraday-mdr3ug` 最新提交（≥ `94f55d1`）拉出 **`codex/recordings`**，只在这个分支上工作，推送这个分支。**不要**推送或改写 `claude/nifty-faraday-mdr3ug`。
-- 提交说明用英文、正文说清改了什么；不要在提交、代码、文档里写任何模型名称。
+- 工作分支 `claude/nifty-faraday-mdr3ug`（远端仓库已改名为 `SHENGJIE-WANG-4102/ShmetroLine2ATS`，旧地址自动跳转）。Codex 不切分支、不提交；做完一块就停下告诉用户，由 Claude 审完再提交。
+- 不要在代码、文档里写任何模型名称。
 - **任何音频都不入库**，转写文本里有乘客说话的也不入库。原始录音放 `work/recordings/`（`/work/` 已在 .gitignore）；切出来的片段放 `public/sounds/` 下的新子目录，并在 `.gitignore` 里加上对应规则（参照已有的 `/public/sounds/vvvf/*.mp3`）。理由：仓库是 AGPL 公开仓库；报站录音版权属于申通，录音里有其他乘客的声音。
 - 入库的只有：代码、测量出的数字表（TS 数据文件）、切片脚本、文档。
+- 建议按任务 A → B → C 的顺序做，每做完一个任务停一次，让 Claude 审一次，不要三块攒在一起。
 
 ## 素材（先问用户确认）
 
@@ -73,14 +74,14 @@
 - 两侧独立；两侧同时有事件且有 `both` 片段时可用之。
 - 不改 `pisview.ts` / PIS 的样式（Claude 同时在改 PIS 显示）。需要第一班列车信息就读现有的 PIS 数据（`PisData`），只读。
 
-把可测的部分写成纯函数（例如：由列车状态与片段元数据算出开始播放的仿真时刻/是否播放），并写 `tests/stationaudio.test.ts` 单元测试。另外写 `scripts/mock-soundbank.mjs`：按 `soundbank.ts` 生成同名的占位音频（短促的不同频率提示音即可），这样 Claude 在云端没有录音也能在浏览器里验证调度。
+把可测的部分写成纯函数（例如：由列车状态与片段元数据算出开始播放的仿真时刻/是否播放），并写 `tests/stationaudio.test.ts` 单元测试。另外写 `scripts/mock-soundbank.mjs`：按 `soundbank.ts` 生成同名的占位音频（短促的不同频率提示音即可），这样没有录音的环境（云端、CI、别人的克隆）也能验证调度。
 
 ## 检查与交付
 
 - `npx tsc --noEmit` 通过；只跑新增和相关的单元测试（`npx vitest run tests/stationaudio.test.ts`）。**不要**跑 soak 或全量长测试。
 - 在 `docs/design-decisions.md` 末尾追加 `D71 实地录音：测量与车站音效`，写清依据、【假设】和已知局限；`README.md` 的声音部分补一两句（新增设置项、录音不随仓库）。
 - `docs/recordings.md`：素材清单（文件名、时长、内容、时间范围、由谁切）、测量结果表及与官方表的对比、不确定项。
-- 推送 `codex/recordings` 后告诉用户，用户会转告 Claude。
+- 每个任务做完告诉用户「任务 X 完成，待审」，列出改动的文件。不提交、不推送。
 
 ## 风格
 
