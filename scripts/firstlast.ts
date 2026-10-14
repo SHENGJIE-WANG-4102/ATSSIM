@@ -7,19 +7,20 @@ import { FIRST_LAST } from '../src/data/firstlast';
 const sim = new Sim({ dayType: 'weekday', dateLabel: 'firstlast', startTime: 4 * 3600, seed: 1 });
 const p = sim.plan, topo = sim.topo;
 const tm = (s: string) => { const [h, m] = s.split(':').map(Number); return h * 3600 + m * 60; };
-const hm = (t: number) => `${String(Math.floor(t / 3600) % 24).padStart(2, '0')}:${String(Math.floor(t % 3600 / 60)).padStart(2, '0')}`;
+const hm = (t: number) => { const minute = Math.floor((t + .001) / 60); return `${String(Math.floor(minute / 60) % 24).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`; };
 const idx = (n: string) => { const i = topo.stations.findIndex((s) => s.name === n); if (i < 0) throw new Error(n); return i; };
 const E = topo.stations.length - 1, GLL = idx('广兰路');
 const rev = p.trips.filter((t) => !t.cancelled && t.revenue);
 const boardAt = (t: (typeof rev)[number], st: number) => t.stops.find((x) => x.st === st && x.stop && !x.noBoard);
 
 /** first / last boardable departure at `st` in `dir` on a trip satisfying `ok` */
-function pick(st: number, dir: 'DN' | 'UP', ok: (t: (typeof rev)[number]) => boolean, last: boolean): number | null {
+function pick(st: number, dir: 'DN' | 'UP', ok: (t: (typeof rev)[number]) => boolean, last: boolean, arrival = false): number | null {
   let best: number | null = null;
   for (const t of rev) {
-    if (t.dir !== dir || !ok(t) || t.to === st) continue;
-    const s = boardAt(t, st);
-    if (s && (best === null || (last ? s.dep > best : s.dep < best))) best = s.dep;
+    if (t.dir !== dir || !ok(t) || (t.to === st && !arrival)) continue;
+    const s = arrival && t.to === st ? t.stops.at(-1) : boardAt(t, st);
+    const time = s && (arrival && t.to === st ? s.arr : s.dep);
+    if (time !== undefined && (best === null || (last ? time > best : time < best))) best = time;
   }
   return best;
 }
@@ -34,8 +35,8 @@ const cell = (v: string, ours: number | null) => {
 console.log('station | first→airport | first→蟠祥路 | last→airport | last→蟠祥路 | last→广兰路   (official/ours Δmin)');
 for (const r of FIRST_LAST) {
   const st = idx(r.station);
-  console.log([r.station, cell(r.firstE, pick(st, 'DN', toE, false)), cell(r.firstW, pick(st, 'UP', toW, false)),
-    cell(r.lastE, pick(st, 'DN', toE, true)), cell(r.lastW, pick(st, 'UP', toW, true)), cell(r.lastG, pick(st, 'DN', viaG, true))].join(' | '));
+  console.log([r.station, cell(r.firstE, pick(st, 'DN', toE, false, st === E)), cell(r.firstW, pick(st, 'UP', toW, false, st === 0)),
+    cell(r.lastE, pick(st, 'DN', toE, true, st === E)), cell(r.lastW, pick(st, 'UP', toW, true, st === 0)), cell(r.lastG, pick(st, 'DN', viaG, true, st === GLL))].join(' | '));
 }
 
 // section times along the last trains: official (minute-truncated, ±1) vs planned

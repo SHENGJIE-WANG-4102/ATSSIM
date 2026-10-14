@@ -485,10 +485,10 @@ export const OPERATIONS = {
   lastBigEastboundDep: 21 * 3600 + 57 * 60,
   /** published: last 蟠祥路 → 广兰路 22:42 */
   lastLateEastboundDep: 22 * 3600 + 42 * 60,
-  /** published: last westbound from 浦东1号2号航站楼 arrives 蟠祥路 00:05 — the departure is derived from run times */
+  /** published: last westbound departure from 浦东1号2号航站楼 22:30 */
+  lastBigWestboundDep: 22 * 3600 + 30 * 60,
+  /** published arrival, checked independently of the origin departure */
   lastBigWestboundArrival: 24 * 3600 + 5 * 60,
-  /** approx: last westbound from 广兰路 */
-  lastLateWestboundDep: 23 * 3600 + 20 * 60,
   /** reference headways (late 2025): core 2'30", outer ≈3'45" average */
   peakCoreHeadway: 150,
   /** minimum turnback (arrival → departure) at each terminal (approx) */
@@ -510,7 +510,7 @@ export const OPERATIONS = {
   /** a train entering or leaving a platform it stops at runs at no more than this (km/h) */
   platformStopKmh: 50,
   /** planned run time margin over the minimum ATO run between stations */
-  runMargin: 0.04,
+  runMargin: 0.16,
   /** ATO with a driver (DTO degraded / ATO operation): change of ends at a
    *  turnback, on top of the unattended DTO reversal (s) 【假设】 */
   atoEndChange: 45,

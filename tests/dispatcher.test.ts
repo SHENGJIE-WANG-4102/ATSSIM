@@ -116,9 +116,9 @@ describe('dispatcher commands', () => {
     const service = added.filter(t => (t.from === 1 && t.to === 22) || (t.from === 22 && t.to === 1));
     expect(service.length).toBe(6);
     const omitted = service.filter(t => t.cancelled);
-    expect(omitted).toHaveLength(5);
+    expect(omitted).toHaveLength(3);
     expect(omitted.every(t => t.cancelReason === '加开：高峰间隔内无出段时隙')).toBe(true);
-    expect(ov.msg).toContain('5 个车次因能力或库存不足未安排');
+    expect(ov.msg).toContain('3 个车次因能力或库存不足未安排');
     const running = added.filter(t => !t.cancelled);
     expect(running.length).toBeGreaterThan(0);
     const last = Math.max(...running.map(t => t.stops.at(-1)!.arr));

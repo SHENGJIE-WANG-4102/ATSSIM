@@ -177,7 +177,8 @@ describe('driver doors and the acceleration limit', () => {
     expect(sim.command({ c: 'door', train: tr.id, side }).ok).toBe(true);
     expect(tr.doorsOpen).toBe(false);
     expect(sim.plat[p].psd).toBe('closed');
-    runFor(sim, 10, check);
+    // the closing sequence takes DOOR_CYCLE - 3 (12 s, D73) before the start
+    runFor(sim, 15, check);
     expect(tr.phase).toBe('run');
     expect(sim.command({ c: 'manual', train: tr.id, mode: 'AUTO' }).ok).toBe(true);
     expect(sim.speedCap()).toBe(Infinity);

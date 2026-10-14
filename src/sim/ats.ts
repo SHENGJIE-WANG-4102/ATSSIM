@@ -139,8 +139,10 @@ function berthBusy(sim: Sim, berth: number, self: number): boolean {
   if (b.kind === 'platform') for (const o of sim.topo.berths) {
     if (o.link !== b.link || o.id === berth) continue;
     const r = sim.berthRes.get(o.id);
-    const t0 = r !== undefined && r !== self ? sim.trains.get(r)?.tasks[0] : undefined;
-    if (t0 && ((t0.k === 'stop' && t0.berth === o.id) || (t0.k === 'reverse' && t0.chosen === o.id))) return true;
+    // (its next few tasks: it may still be standing at the station before,
+    // its wrong-direction way in already secured, 人民广场 D73 review)
+    const next = r !== undefined && r !== self ? sim.trains.get(r)?.tasks.slice(0, 3) ?? [] : [];
+    if (next.some((t) => (t.k === 'stop' && t.berth === o.id) || (t.k === 'reverse' && t.chosen === o.id))) return true;
   }
   const sec = sim.topo.links[b.link].section;
   for (const lid of sim.topo.sections[sec].links) {
@@ -1368,11 +1370,22 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
       // secured: hold the platform for this train against arrivals the normal way
       if (free && ok && topo.berths[goal].kind === 'platform') sim.berthRes.set(goal, tr.id);
       // and take down the idle automatic routes across the path, or a train
-      // following one of them would run in head-on before the chain is set
+      // following one of them would run in head-on before the chain is set.
+      // A route under approach locking is not taken down at once, and one a
+      // train is committed to stays until it has passed: the chain is not
+      // started until they are gone, or that train runs into the platform
+      // the wrong-direction move is heading for (人民广场, D73 review).
+      let held: number | undefined;
       if (free && ok) for (const sec of chainSecs) {
         const lr = sim.sec[sec].lockRoute;
         const ar = lr >= 0 && !chain.includes(lr) ? sim.routes.get(lr) : undefined;
         if (ar && ar.fleeting && !ar.manual && sim.sig[topo.routes[lr].start].ars) cancelRoute(sim, topo.routes[lr].start);
+        if (ar && sim.routes.has(lr)) held = lr;
+      }
+      if (held !== undefined) {
+        const b = routeBlocker(sim, held, tr.id);
+        setArsWait(sim, tr, 'ROUTE_CONFLICT', b.train, sig, `反向折返进路 ${b.detail}`);
+        return { train: tr, signal: sig, route: rid, prio, eta, ready: false, berthWait: false, chainSecs, dist, via };
       }
       if (!free) {
         if (ok) {
@@ -1404,7 +1417,9 @@ function reversalGuard(sim: Sim, tr: Train): { signal: number; chain: number[]; 
   // the train sets off against a running line's normal direction (it changed ends
   // on a main-line platform): such a move opposes every train following it in
   let against = false;
-  if (tr.phase === 'reversing' && t0?.k === 'reverse') { berth = t0.chosen; after = t1; }
+  // (also the step between the stop task ending and the reverse starting,
+  // when the train already stands on the reverse berth's track in phase 'run')
+  if (t0?.k === 'reverse' && (tr.phase === 'reversing' || (tr.phase === 'run' && tr.link === topo.berths[t0.chosen].link))) { berth = t0.chosen; after = t1; }
   else if ((tr.phase === 'run' || tr.phase === 'dwell') && t0?.k === 'stop' && t1?.k === 'reverse' && t1.chosen === t0.berth) {
     // A depot return must claim the reverse path before a following train
     // commits to the long junction approach (not just its final platform).

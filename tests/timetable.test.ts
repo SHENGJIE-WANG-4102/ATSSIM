@@ -8,10 +8,75 @@ import { Sim } from '../src/sim/engine';
 import { validatePlan, applyOverlay, OVERLAY_PRESETS, terminalOccupancy, TEMPLATES, dayPeriods, yardNeed, platformBerth, blockTasks } from '../src/sim/timetable';
 import type { DayType } from '../src/sim/model';
 import { SCENARIOS } from '../src/sim/scenario';
-import { STATIONS } from '../src/data/line2';
+import { STATIONS, OPERATIONS } from '../src/data/line2';
 import { FIRST_LAST } from '../src/data/firstlast';
 
 const fmtIssues = (xs: { code: string; text: string }[]) => xs.map((i) => `${i.code} ${i.text}`).join('\n');
+
+describe('D73 calibrated service anchors', () => {
+  const H = (h: number, m = 0) => h * 3600 + m * 60;
+  const clock = (s: string) => { const [h, m] = s.split(':').map(Number); return H(h, m); };
+  const sim = new Sim({ dayType: 'weekday', dateLabel: 'calibration anchors', startTime: H(4), seed: 1 });
+  const live = sim.plan.trips.filter(t => t.revenue && !t.cancelled);
+  it('fixes all three last origins and matches official end-to-end arrivals within a minute', () => {
+    for (const [dir, from, to, departure, arrival] of [
+      ['DN', 0, 30, H(21, 57), H(23, 31)],
+      ['UP', 30, 0, H(22, 30), H(24, 5)],
+      ['DN', 0, 22, H(22, 42), H(23, 44)],
+    ] as const) {
+      const trip = live.filter(t => t.dir === dir && t.from === from && t.to === to)
+        .sort((a, b) => a.stops[0].dep - b.stops[0].dep).at(-1)!;
+      expect(trip.stops[0].dep).toBe(departure);
+      expect(Math.abs(trip.stops.at(-1)!.arr - arrival)).toBeLessThanOrEqual(60);
+    }
+    expect(OPERATIONS.lastBigWestboundDep).toBe(H(22, 30));
+  });
+  it('has no westbound GLL passenger origins after the published last train', () => {
+    expect(live.filter(t => t.dir === 'UP' && t.from === 22 && t.stops[0].dep > H(23, 2))).toHaveLength(0);
+  });
+  it('stables the last revenue arrivals at all three overnight stations', () => {
+    for (const [st, count] of [[0, 4], [30, 2], [22, 2]]) {
+      const expected = live.filter(t => t.to === st).sort((a, b) => b.stops.at(-1)!.arr - a.stops.at(-1)!.arr)
+        .slice(0, count).map(t => t.id).sort((a, b) => a - b);
+      const actual = sim.plan.blocks.filter(b => b.end.kind === 'stable' && b.end.station === st)
+        .map(b => b.trips.at(-1)!).sort((a, b) => a - b);
+      expect(actual, STATIONS[st].name).toEqual(expected);
+    }
+    const gll = sim.plan.blocks.filter(b => b.end.kind === 'stable' && b.end.station === 22)
+      .sort((a, b) => sim.plan.trips[a.trips.at(-1)!].stops.at(-1)!.arr - sim.plan.trips[b.trips.at(-1)!].stops.at(-1)!.arr);
+    expect(gll[0].end).toMatchObject({ berth: sim.topo.stations[22].turnbackBerths[0] });
+    expect(gll[1].end).toMatchObject({ berth: platformBerth(sim.topo, 22, 'DN') });
+  });
+  it('matches every published first/last minute within two minutes, including terminal arrivals', () => {
+    for (const [st, row] of FIRST_LAST.entries()) {
+      for (const [key, dir, terminal, last] of [
+        ['firstE', 'DN', 30, false], ['firstW', 'UP', 0, false],
+        ['lastE', 'DN', 30, true], ['lastW', 'UP', 0, true], ['lastG', 'DN', 22, true],
+      ] as const) {
+        if (!row[key] || (row.station === '唐镇' && key === 'firstW')) continue;
+        const times = live.filter(t => t.dir === dir && (key === 'lastG' ? t.stops.some(s => s.st === 22) : t.to === terminal))
+          .flatMap(t => t.stops.filter(s => s.st === st && s.stop && (t.to === st ? st === terminal : !s.noBoard))
+            .map(s => t.to === st ? s.arr : s.dep));
+        expect(times.length, `${row.station} ${key}`).toBeGreaterThan(0);
+        const ours = last ? Math.max(...times) : Math.min(...times);
+        expect(Math.abs(ours - clock(row[key])), `${row.station} ${key}`).toBeLessThanOrEqual(120);
+      }
+    }
+  });
+  it('counts passenger-carrying trainsets against the paper, with enough AM fleet capacity', () => {
+    const count = (time: number) => new Set(live.filter(t => t.stops[0].dep <= time && t.stops.at(-1)!.arr > time).map(t => t.block)).size;
+    for (const [at, expected] of [[H(8), 67], [H(17, 30), 56], [H(12), 42]]) expect(Math.abs(count(at) - expected)).toBeLessThanOrEqual(3);
+    for (let at = H(6, 50); at < H(9, 30); at += 60) expect(count(at)).toBeLessThanOrEqual(76);
+  });
+  it('keeps each outer section on a five-minute opening grid until AM pre-positioning', () => {
+    for (const [origin, until] of [[30, H(6, 18)], [0, H(6, 32)]]) {
+      const times = live.filter(t => t.from === origin && t.stops[0].dep >= H(6) && t.stops[0].dep < until)
+        .map(t => t.stops[0].dep).sort((a, b) => a - b);
+      expect(times.length).toBeGreaterThanOrEqual(4);
+      for (let i = 1; i < times.length; i++) expect(Math.abs(times[i] - times[i - 1] - 300)).toBeLessThanOrEqual(10);
+    }
+  });
+});
 
 describe('D72 timetable structure', () => {
   const H = (h: number, m = 0) => h * 3600 + m * 60;
