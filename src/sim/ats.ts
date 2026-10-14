@@ -1191,7 +1191,9 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
     const rid = table[sig];
     if (rid < 0) {
       // the goal lies short of the next signal (e.g. a reversal berth on the current link): nothing to route
-      if (topo.berths[goal].link !== tr.link && !sim.noRouteLogged.has(tr.id * 1000 + sig)) {
+      // (just after changing ends the signal still faces the old way for a step)
+      if (topo.berths[goal].link !== tr.link && tr.phase !== 'reversing' && topo.signals[sig].dir === tr.dir
+        && !sim.noRouteLogged.has(tr.id * 1000 + sig)) {
         sim.noRouteLogged.add(tr.id * 1000 + sig);
         sim.log('C', 'ATS', `列车 ${trainLabel(tr)} 在 ${topo.signals[sig].name} 无可用进路至 ${topo.berths[goal].name}`);
       }
@@ -1319,6 +1321,9 @@ function reversalGuard(sim: Sim, tr: Train): { signal: number; chain: number[]; 
   if (tr.phase === 'reversing' && t0?.k === 'reverse') { berth = t0.chosen; after = t1; }
   else if ((tr.phase === 'run' || tr.phase === 'dwell') && t0?.k === 'stop' && t1?.k === 'reverse' && t1.chosen === t0.berth) {
     if (tr.phase === 'run' && !(Math.abs(sim.trainChain(tr) - topo.stations[t0.station].chain) < 1500)) return null;
+    // only the train next to arrive there: one still behind another would
+    // hold that one's way in
+    if (tr.phase === 'run' && trainBefore(sim, tr, t0.berth)) return null;
     berth = t0.berth; after = tr.tasks[2];
   } else if (tr.phase === 'run' && tr.tbStage === 'depart' && t0 && tr.nextSignal >= 0 && tr.nextSignalDist < 400) {
     start = tr.nextSignal; after = t0;
@@ -1336,6 +1341,22 @@ function reversalGuard(sim: Sim, tr: Train): { signal: number; chain: number[]; 
   const chain = routeChain(sim, start, goal);
   if (!chain.some((c) => topo.routes[c].wrongDir)) return null;
   return { signal: start, chain, secs: Array.from(new Set(chain.flatMap((c) => topo.routes[c].sections))) };
+}
+
+/** another train stands between `tr` and `berth` on its way there */
+function trainBefore(sim: Sim, tr: Train, berth: number): boolean {
+  const { topo } = sim;
+  if (sim.linkBodies.get(tr.link)?.some((b) => b.train !== tr.id && (tr.dir > 0 ? b.to > tr.off + 1 : b.from < tr.off - 1))) return true;
+  if (tr.nextSignal < 0 || !sim.routeTable.next.has(berth)) return false;
+  const bl = topo.berths[berth].link;
+  for (const r of routeChain(sim, tr.nextSignal, berth)) {
+    for (const s of topo.routes[r].sections) for (const lid of topo.sections[s].links) {
+      if (lid === tr.link) continue;
+      if (sim.linkBodies.get(lid)?.some((b) => b.train !== tr.id)) return true;
+      if (lid === bl) return false;
+    }
+  }
+  return false;
 }
 
 /** no other train (terminating-and-turning or passing through) is due to leave this platform before us */
