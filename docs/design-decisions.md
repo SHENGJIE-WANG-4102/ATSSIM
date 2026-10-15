@@ -621,7 +621,7 @@ D42四个受影响无故障整日中三个通过；工作日进博会仍有360.8
 - 8区间合计比值1.14085，平均多16.58秒；同为短区间的差值4.1–22.4秒，同为较长区间的比值1.061–1.187，没有足够证据证明巡航限速偏高。保留 `dynamics.ts` 的ATO规划、牵引、常用制动曲线以及ATP/EB/联锁和安全余量；只将 `OPERATIONS.runMargin` 从0.04改为0.16，计划停站区间相对原值约×1.1154。该参数是图定走行余量，不能解读为实车限速或制动性能的修改。【假设】现场区间离散差包含未掌握的控车/信号/测量条件，先用全线统一余量，不给单个区间补任意延时。
 - 停站固定部分：`DOOR_CYCLE` 8→15秒，拆为停稳/开门准备3秒与关门提示至起车12秒；后者取实测11.8秒四舍五入，前者保留原开门准备值【假设】（用户静安寺样本停稳至开门约1.5秒，仅单站，不推广成全线常数）。`MIN_DWELL` 15→22秒，为15秒门序列加最少7秒客流交换。既有门控使用 `DOOR_CYCLE - 3`，现在自然提前12秒关闭，不改门控/信号执行代码。
 - 计划停站改为 `max(22, min(上限, 15 + (交换基数 + rawDemand × 8) × factor))`；普通/繁忙交换基数27/32秒。旧公式为普通20、繁忙25加 `rawDemand × 2`，未使用模板因子；现在门序列恒定、交换部分分时段缩放。普通上限35→70秒，繁忙50→85秒【假设】，全天沿用客流最小停站及晚点恢复规则。
-- 模板因子：早高峰1.15→0.80、晚高峰1.10→0.80，晚高峰延续0.95→1.10，晚间大交路0.95→1.10；21:00–21:40由1.10线性退至深夜0.95【假设】。工作日平峰1.00、夜间平峰0.95、首末班0.95、双休日1.05保持原值，但现在实际生效。高峰因子虽小于晚间，乘以高峰更大的方向性需求后，繁忙站可到85秒；不能只比较因子判断高峰停站更短。
+- 模板因子：早高峰1.15→0.80、晚高峰1.10→0.80，晚高峰延续0.95→1.10，晚间大交路0.95→1.10；21:00–21:40由1.10线性退至深夜0.95【假设】。工作日平峰1.00、夜间平峰0.95、首末班0.95、双休日1.05保持原值，但现在实际生效。高峰因子虽小于晚间，乘以高峰更大的方向性需求后，繁忙站可到85秒；不能只比较因子判断高峰停站更短。深夜停站标定已由 D74 改为慢运行等级（普通站短停站，额外时分转入走行）。
 - 首班的方向差异【假设】：龙阳路05:20西行首班采用0.75交换因子，广兰路06:00东行首班采用1.50，其他首班按经过时段计算。官方传播表分别要求西行开班停站较短、首趟外段往机场较长，直接调整客流交换时分，不在普通中间站加定位等待。没有官方实测门时分，故不宣称上述因子是运营实值。
 
 ### 三个锚点与残差
@@ -836,4 +836,293 @@ total official 62 min, ours 62.8 min, ×0.987
 3011	广兰路/下行站台	蟠祥路·国家会计学院 22:42:00 → 23:44:51	载客	前一趟 1394 浦东1号2号航站楼→蟠祥路·国家会计学院 到 22:32:20
 1412	蟠祥路·国家会计学院	浦东1号2号航站楼 22:08:12 → 23:42:39	载客	前一趟 1399 淞虹路→浦东1号2号航站楼 到 22:00:48
 violations 0
+```
+
+## D74 按图运行等级：夜间慢走行、正常停站与首班图定修正
+
+用户决定：夜间官方末班的额外时分优先由较慢的 ATO 运行等级解释，深夜停站本身缩短；首班跟官方时刻表走，无法由正常规则解释的部分必须显式写成图定修正。
+
+### 等级、计划与实跑
+
+- 计划和实跑共用 `dynamics.ts::levelAccel()`，保留原牵引、坡道、惰行和加加速度逻辑。各等级实际算出的区间时分仍乘 `1 + runMargin = 1.16`，未改余量。等级 1 的停站/通过区间数组与 D73 逐项相同。
+- 等级参数如下；等级 1/2/3 沿用 D67，新增仅供图定使用的 4 级，避免改变已有手动选项的行为。夜间巡航减速 7.5 km/h、过渡时刻均为【假设】，依据是正常短停站下拟合官方末班的总时分；这不是已证实的实际运营等级编号。
+
+| 等级 | 巡航目标降低 | 惰行速度带 |
+| --- | ---: | ---: |
+| 1 | 0 km/h | 0 km/h |
+| 2 | 0 km/h | 5 km/h |
+| 3 | 5 km/h | 10 km/h |
+| 4（图定夜间） | 7.5 km/h | 10 km/h |
+
+低速仍使用原控制器；惰行超出制动目标时仍由原 ATO 制动，不调整制动曲线、ATP、EB、联锁或信号规则。
+
+| 日型/区间出发时刻 | 图定等级 | 停站因子 |
+| --- | ---: | --- |
+| 工作日首班至 21:10 | 1 | 日间原模板；首班 0.95；21:00 后渐变 |
+| 工作日 21:10–21:25 | 2 | 同一渐变 |
+| 工作日 21:25–21:40 | 3 | 同一渐变 |
+| 工作日 21:40 后 | 4 | 0.43 |
+| 双休日首班至 21:40 | 1 | 原模板；首班 0.95，21:00–21:40 为 0.95 |
+| 双休日 21:40 后 | 4 | 0.43 |
+
+- 工作日 21:00–21:40 停站因子由 1.10 线性降至 0.43【假设】。等级按**各区间的计划出发时刻**决定，保存到前一站 `PlanStop.runLevel`；实跑读自己的车次，跨时段时不会因当前钟点提前或推迟换等级。空车通过多个站时也按当前区间选等级，段内/折返动作保持原规则。
+- 默认 `sim.runLevel = 0`，UI 显示“按图”；手动 1/2/3 覆盖全线。晚点严格大于 20 s 时优先回 1 级，等于 20 s 仍按图/手动。补齐原命令校验遗漏的 `runLevel` 白名单，否则下拉框的命令会被拒绝；只接受 0/1/2/3。
+- 新检查点用 `runLevelMode` 区分按图和手动，恢复时保留有效的手动设置。旧检查点缺少该标记时改为按图；旧车次若没有区间等级字段，兼容回落到 1 级。D67 中默认/隐藏时强制 1 级的说明由本条更新：隐藏能耗面板不改变图定运行。
+- 计划求解会从 t=0 试算，早于开通时改取首班时段，避免误用末尾夜间模板影响白天 feeder 时刻。全线慢等级通过运行可能超过一小时，延长慢等级的计算保护上限，避免未记录的远端通过时分变成默认 20 s；1 级上限未变。
+
+### 停站与首班
+
+- 深夜 `firstLast.dwellFactor` 从 0.95 改为 0.43【假设】。短探针三列车的普通中间站计划停站约 26.7–27.4 s，换乘/繁忙站约 29–30 s。物理门循环仍 15 s、最小停站仍 22 s；省下的计划停站时分由 4 级走行补回。20:00 的 D73 独立晚间标定、早晚高峰和平峰因子保持原值；没有修改客流曲线及 RIDERSHIP_TARGET，因此目标日客流变化为 0。
+- 首班试算使用正常 0.95 停站：统一等级 1/2/3/4 的蟠祥路→机场分别约 95.29/95.75/100.67/103.05 min，龙阳路→蟠祥路约 53.43/53.49/55.87/57.10 min，广兰路→机场约 30.93/31.28/33.23/34.11 min。3 级能减小广兰路东行偏差，却让蟠祥路首班慢约 5.38 min，同时不能解释龙阳路西行需要更快。因此早间保留 1 级。
+- 删除 `firstService` 东行 1.5、龙阳路西行 0.75 的停站倍率，所有首班使用正常分时段停站。剩余部分用具名常量 `FIRST_TRAIN_DIAGRAM_RUN_ADJUST_S`【假设】：
+  - 广兰路 06:00 东行首班每区间 +15 s，共 8 段 +120 s；
+  - 龙阳路 05:20 西行首班每区间 −6 s，共 19 段 −114 s；
+  - 其他首班无修正。
+  代码明确注明“图定，非物理规则”，保存各区间 `diagramRunAdjustmentS` 供检查；不把图定预算用于修改实际 ATO 控制器。
+- 上述两趟终点残差（计划减官方）：工作日东行 −55.51 s、西行 −26.13 s；双休日东行 −68.88 s、西行 −37.13 s。逐站首末班最差是静安寺西行首班，工作日 +119.45 s、双休日 +118.24 s，仍接近 ±120 s 上限。唐镇西行首班 06:29 的既有异常按任务排除，其余全部满足要求。
+
+### 末班与用车数
+
+| 日型 | 末班方向 | 始发 | 计划终到 | 官方终到 | 残差（计划−官方） |
+| --- | --- | --- | --- | --- | ---: |
+| 工作日 | 蟠祥路→机场 | 21:57 | 23:31:39.87 | 23:31 | +39.87 s |
+| 工作日 | 机场→蟠祥路 | 22:30 | 次日 00:04:23.01 | 次日 00:05 | −36.99 s |
+| 工作日 | 蟠祥路→广兰路 | 22:42 | 23:43:44.43 | 23:44 | −15.57 s |
+| 双休日 | 蟠祥路→机场 | 21:57 | 23:31:54.08 | 23:31 | +54.08 s |
+| 双休日 | 机场→蟠祥路 | 22:30 | 次日 00:04:29.59 | 次日 00:05 | −30.41 s |
+| 双休日 | 蟠祥路→广兰路 | 22:42 | 23:43:51.33 | 23:44 | −8.67 s |
+
+两种日型三类末班均满足全程 ±60 s。D73 基线与当前图在 06:51–19:30 始发的日间车次中，21:00 前的站点时刻变化 0；工作日仅 3 趟跨入夜间的车次后半程变化。等级 1 走行数组完全一致，高峰/平峰停站规则不变。
+
+在线口径沿用 D73：车底从首趟出发前 300 s 至末趟终到，含正线空车和入出段窗口；载客口径只统计当时正在载客的车底。以下各值与 D73 相同。
+
+| 日型 | 08:00 载客/在线 | 17:30 载客/在线 | 12:00 载客/在线 | 20:30 载客/在线 | 21:30 载客/在线 | 全日总用车 |
+| --- | --- | --- | --- | --- | --- | ---: |
+| 工作日 | 68/73 | 56/62 | 39/44 | 55/60 | 43/48 | 81 |
+| 双休日 | 38/42 | 44/49 | 44/49 | 44/49 | 35/40 | 49 |
+
+### 短探针和验证
+
+- `work/probe/night-runlevel.ts` 使用真实计划的 1416（22:30）、3009（22:34）、3011（22:42），只推进这段夜间窗口。保留正常运动、CI/ATP、PSD 和车门检查；隔离其他车流及跨线末班换乘扣车，以验证准点时慢等级本身。没有取消其余计划客流窗口，避免重新归一化客流。终到后等正常车门关闭再清走列车。
+- 三列全部区间采样均为 4 级，最大运行估计晚点分别 11.68/10.49/10.49 s，未触发 1 级追点，完整性告警 0。计划到站与实跑到站相差约 −3.6 至 −8.9 s；实跑吸收早到而多停约 4–9 s，所以普通站**实停**约 31–36 s，个别站更长，不能把计划 25–30 s 当作实停上限。现有早到最多补停 10 s 的规则未改。
+- 新增 5 项测试：跨时段区间等级与 t=0 求解；手动/晚点优先级及命令校验；检查点兼容；深夜停站、慢速全线通过时分与制动优先；两段真实夜间运行无追点。没有修改既有测试预期值。
+- `npx tsc --noEmit`：通过。
+- `npx vitest run tests/timetable.test.ts tests/dispatcher.test.ts tests/core.test.ts tests/calibration.test.ts tests/features.test.ts tests/pis.test.ts tests/stationaudio.test.ts`：**Test Files 7 passed (7)，Tests 261 passed (261)**。
+- `npx tsx scripts/validate-plan.ts weekday`：717 trips，fleet 81，issues 0；`weekend`：506 trips，fleet 49，issues 0。
+- `npx tsx work/probe/night-plan.ts`：首末班秒级残差核对通过；`npx tsx work/probe/night-runlevel.ts`：三列完整到站，violations []。
+- 未运行 soak、全日实跑或 npm test；未编辑音频/PIS 文件。
+
+### scripts/firstlast.ts 完整输出
+
+以下为 `npx tsx scripts/firstlast.ts` 的工作日完整输出。脚本的展示时刻截到分钟、Δmin 单独四舍五入，边界验收以上面的秒级计算为准。
+
+```text
+station | first→airport | first→蟠祥路 | last→airport | last→蟠祥路 | last→广兰路   (official/ours Δmin)
+蟠祥路·国家会计学院 | 05:25/05:25 +0 | 06:12/06:11 +0 | 21:57/21:57 +0 | 24:05/00:04 -1 | 22:42/22:42 +0
+国家会展中心 | 05:28/05:27 +0 | 06:10/06:09 +0 | 22:00/21:59 +0 | 24:03/00:02 -1 | 22:45/22:44 +0
+虹桥火车站 | 05:31/05:30 +0 | 06:07/06:06 +0 | 22:03/22:02 +0 | 24:00/23:59 -1 | 22:48/22:47 +0
+虹桥2号航站楼 | 05:33/05:32 +0 | 06:05/06:04 +0 | 22:05/22:04 -1 | 23:58/23:57 +0 | 22:50/22:49 -1
+淞虹路 | 05:40/05:39 -1 | 05:58/05:58 +0 | 22:12/22:11 -1 | 23:51/23:50 +0 | 22:57/22:56 -1
+北新泾 | 05:42/05:41 +0 | 05:55/05:55 +1 | 22:14/22:13 +0 | 23:49/23:48 -1 | 22:59/22:58 +0
+威宁路 | 05:44/05:44 +0 | 05:53/05:53 +1 | 22:16/22:16 +0 | 23:46/23:45 +0 | 23:01/23:01 +0
+娄山关路 | 05:47/05:46 +0 | 05:50/05:50 +1 | 22:19/22:18 +0 | 23:44/23:43 -1 | 23:04/23:03 +0
+中山公园 | 05:50/05:49 +0 | 05:47/05:48 +1 | 22:22/22:21 +0 | 23:41/23:40 -1 | 23:07/23:06 +0
+江苏路 | 05:52/05:52 +0 | 05:44/05:45 +2 | 22:24/22:24 +0 | 23:38/23:37 +0 | 23:09/23:09 +0
+静安寺 | 05:55/05:55 +0 | 05:41/05:42 +2 | 22:27/22:26 +0 | 23:35/23:35 +0 | 23:12/23:11 +0
+南京西路 | 05:58/05:57 +0 | 05:39/05:40 +1 | 22:30/22:29 -1 | 23:32/23:32 +1 | 23:15/23:14 -1
+人民广场 | 06:01/06:00 +0 | 05:37/05:37 +1 | 22:33/22:31 -1 | 23:30/23:30 +0 | 23:18/23:16 -1
+南京东路 | 06:03/06:02 +0 | 05:34/05:35 +2 | 22:35/22:34 -1 | 23:27/23:28 +1 | 23:20/23:18 -1
+陆家嘴 | 06:06/06:06 +0 | 05:31/05:32 +1 | 22:38/22:37 -1 | 23:24/23:24 +1 | 23:23/23:22 -1
+浦东南路 | 06:08/06:08 +1 | 05:29/05:29 +1 | 22:40/22:39 +0 | 23:21/23:22 +1 | 23:25/23:24 +0
+世纪大道 | 06:11/06:11 +1 | 05:27/05:27 +1 | 22:43/22:42 -1 | 23:19/23:19 +1 | 23:28/23:27 -1
+上海科技馆 | 06:14/06:14 +0 | 05:24/05:24 +1 | 22:45/22:45 +0 | 23:16/23:17 +1 | 23:31/23:29 -1
+世纪公园 | 06:16/06:17 +1 | 05:21/05:22 +1 | 22:48/22:47 +0 | 23:13/23:14 +2 | 23:33/23:32 -1
+龙阳路 | 06:18/06:19 +2 | 05:20/05:20 +0 | 22:50/22:49 +0 | 23:11/23:12 +1 | 23:35/23:34 +0
+张江高科 | 06:22/06:23 +2 | 05:33/05:33 +1 | 22:54/22:53 +0 | 23:07/23:08 +1 | 23:39/23:38 +0
+金科路 | 06:25/06:26 +1 | 05:31/05:31 +0 | 22:56/22:56 +0 | 23:05/23:05 +1 | 23:42/23:41 -1
+广兰路 | 06:00/06:00 +0 | 05:28/05:28 +0 | 23:00/22:59 -1 | 23:02/23:02 +1 | 23:44/23:43 +0
+唐镇 | 06:04/06:04 +1 | 06:29/06:27 -1 | 23:04/23:03 +0 | 22:58/22:58 +0 | --
+创新中路 | 06:08/06:07 +0 | 06:26/06:24 -1 | 23:07/23:06 +0 | 22:54/22:55 +1 | --
+华夏东路 | 06:11/06:11 +0 | 06:23/06:21 -2 | 23:10/23:09 +0 | 22:51/22:52 +1 | --
+川沙 | 06:15/06:15 +0 | 06:18/06:17 +0 | 23:14/23:13 +0 | 22:47/22:48 +1 | --
+凌空路 | 06:19/06:19 +0 | 06:15/06:13 -1 | 23:17/23:17 +0 | 22:44/22:44 +1 | --
+远东大道 | 06:24/06:23 -1 | 06:10/06:09 +0 | 23:22/23:21 +0 | 22:40/22:40 +1 | --
+海天三路 | 06:31/06:30 -1 | 06:03/06:03 +0 | 23:28/23:28 +1 | 22:33/22:33 +0 | --
+浦东1号2号航站楼 | 06:34/06:33 -1 | 06:00/06:00 +0 | 23:31/23:31 +1 | 22:30/22:30 +0 | --
+
+=== last→airport: ours 1429 dep 21:57, official 21:57
+蟠祥路·国家会计学院 → 国家会展中心: official 3  ours 2.7  Δ 0.3
+国家会展中心 → 虹桥火车站: official 3  ours 2.9  Δ 0.1
+虹桥火车站 → 虹桥2号航站楼: official 2  ours 1.8  Δ 0.2
+虹桥2号航站楼 → 淞虹路: official 7  ours 7.0  Δ -0.0
+淞虹路 → 北新泾: official 2  ours 2.4  Δ -0.4
+北新泾 → 威宁路: official 2  ours 2.3  Δ -0.3
+威宁路 → 娄山关路: official 3  ours 2.7  Δ 0.3
+娄山关路 → 中山公园: official 3  ours 3.0  Δ 0.0
+中山公园 → 江苏路: official 2  ours 2.5  Δ -0.5
+江苏路 → 静安寺: official 3  ours 2.6  Δ 0.4
+静安寺 → 南京西路: official 3  ours 2.6  Δ 0.4
+南京西路 → 人民广场: official 3  ours 2.4  Δ 0.6
+人民广场 → 南京东路: official 2  ours 2.2  Δ -0.2
+南京东路 → 陆家嘴: official 3  ours 3.3  Δ -0.3
+陆家嘴 → 浦东南路: official 2  ours 2.6  Δ -0.6
+浦东南路 → 世纪大道: official 3  ours 2.3  Δ 0.7
+世纪大道 → 上海科技馆: official 2  ours 2.8  Δ -0.8
+上海科技馆 → 世纪公园: official 3  ours 2.5  Δ 0.5
+世纪公园 → 龙阳路: official 2  ours 2.3  Δ -0.3
+龙阳路 → 张江高科: official 4  ours 4.0  Δ 0.0
+张江高科 → 金科路: official 2  ours 2.4  Δ -0.4
+金科路 → 广兰路: official 4  ours 3.2  Δ 0.8
+广兰路 → 唐镇: official 4  ours 4.5  Δ -0.5
+唐镇 → 创新中路: official 3  ours 2.8  Δ 0.2
+创新中路 → 华夏东路: official 3  ours 3.2  Δ -0.2
+华夏东路 → 川沙: official 4  ours 3.9  Δ 0.1
+川沙 → 凌空路: official 3  ours 3.7  Δ -0.7
+凌空路 → 远东大道: official 5  ours 4.2  Δ 0.8
+远东大道 → 海天三路: official 6  ours 7.2  Δ -1.2
+海天三路 → 浦东1号2号航站楼: official 3  ours 2.8  Δ 0.2
+total official 94 min, ours 94.7 min, ×0.993
+
+=== last→蟠祥路: ours 1416 dep 22:30, official 22:30
+浦东1号2号航站楼 → 海天三路: official 3  ours 3.4  Δ -0.4
+海天三路 → 远东大道: official 7  ours 7.2  Δ -0.2
+远东大道 → 凌空路: official 4  ours 4.2  Δ -0.2
+凌空路 → 川沙: official 3  ours 3.7  Δ -0.7
+川沙 → 华夏东路: official 4  ours 3.9  Δ 0.1
+华夏东路 → 创新中路: official 3  ours 3.2  Δ -0.2
+创新中路 → 唐镇: official 4  ours 2.8  Δ 1.2
+唐镇 → 广兰路: official 4  ours 4.5  Δ -0.5
+广兰路 → 金科路: official 3  ours 3.1  Δ -0.1
+金科路 → 张江高科: official 2  ours 2.4  Δ -0.4
+张江高科 → 龙阳路: official 4  ours 4.0  Δ -0.0
+龙阳路 → 世纪公园: official 2  ours 2.2  Δ -0.2
+世纪公园 → 上海科技馆: official 3  ours 2.5  Δ 0.5
+上海科技馆 → 世纪大道: official 3  ours 2.9  Δ 0.1
+世纪大道 → 浦东南路: official 2  ours 2.3  Δ -0.3
+浦东南路 → 陆家嘴: official 3  ours 2.6  Δ 0.4
+陆家嘴 → 南京东路: official 3  ours 3.2  Δ -0.2
+南京东路 → 人民广场: official 3  ours 2.2  Δ 0.8
+人民广场 → 南京西路: official 2  ours 2.4  Δ -0.4
+南京西路 → 静安寺: official 3  ours 2.5  Δ 0.5
+静安寺 → 江苏路: official 3  ours 2.5  Δ 0.5
+江苏路 → 中山公园: official 3  ours 2.5  Δ 0.5
+中山公园 → 娄山关路: official 3  ours 2.9  Δ 0.1
+娄山关路 → 威宁路: official 2  ours 2.7  Δ -0.7
+威宁路 → 北新泾: official 3  ours 2.3  Δ 0.7
+北新泾 → 淞虹路: official 2  ours 2.4  Δ -0.4
+淞虹路 → 虹桥2号航站楼: official 7  ours 7.0  Δ 0.0
+虹桥2号航站楼 → 虹桥火车站: official 2  ours 1.8  Δ 0.2
+虹桥火车站 → 国家会展中心: official 3  ours 2.9  Δ 0.1
+国家会展中心 → 蟠祥路·国家会计学院: official 2  ours 2.2  Δ -0.2
+total official 95 min, ours 94.4 min, ×1.007
+
+=== last→广兰路: ours 3011 dep 22:42, official 22:42
+蟠祥路·国家会计学院 → 国家会展中心: official 3  ours 2.7  Δ 0.3
+国家会展中心 → 虹桥火车站: official 3  ours 2.9  Δ 0.1
+虹桥火车站 → 虹桥2号航站楼: official 2  ours 1.8  Δ 0.2
+虹桥2号航站楼 → 淞虹路: official 7  ours 7.0  Δ 0.0
+淞虹路 → 北新泾: official 2  ours 2.4  Δ -0.4
+北新泾 → 威宁路: official 2  ours 2.3  Δ -0.3
+威宁路 → 娄山关路: official 3  ours 2.7  Δ 0.3
+娄山关路 → 中山公园: official 3  ours 2.9  Δ 0.1
+中山公园 → 江苏路: official 2  ours 2.5  Δ -0.5
+江苏路 → 静安寺: official 3  ours 2.6  Δ 0.4
+静安寺 → 南京西路: official 3  ours 2.5  Δ 0.5
+南京西路 → 人民广场: official 3  ours 2.4  Δ 0.6
+人民广场 → 南京东路: official 2  ours 2.2  Δ -0.2
+南京东路 → 陆家嘴: official 3  ours 3.2  Δ -0.2
+陆家嘴 → 浦东南路: official 2  ours 2.6  Δ -0.6
+浦东南路 → 世纪大道: official 3  ours 2.3  Δ 0.7
+世纪大道 → 上海科技馆: official 3  ours 2.8  Δ 0.2
+上海科技馆 → 世纪公园: official 2  ours 2.5  Δ -0.5
+世纪公园 → 龙阳路: official 2  ours 2.3  Δ -0.3
+龙阳路 → 张江高科: official 4  ours 4.0  Δ 0.0
+张江高科 → 金科路: official 3  ours 2.4  Δ 0.6
+金科路 → 广兰路: official 2  ours 2.7  Δ -0.7
+total official 62 min, ours 61.7 min, ×1.004
+```
+
+### 夜间三列车探针完整输出
+
+每行给出该区间的计划/实跑秒数、采样等级及到达站的计划/实停秒数；终到站不计划下一趟发车，实停栏为“−”。
+
+```text
+=== 1416 22:30:00 worst running delay 11.68 s ===
+浦东1号2号航站楼→海天三路	plan 175.8	actual 171.3	level 4	dwell plan 26.9 actual 31.4	arrival Δ -4.4
+海天三路→远东大道	plan 405.0	actual 397.8	level 4	dwell plan 26.8 actual 34.1	arrival Δ -7.1
+远东大道→凌空路	plan 223.9	actual 219.0	level 4	dwell plan 26.9 actual 31.8	arrival Δ -4.7
+凌空路→川沙	plan 195.3	actual 190.7	level 4	dwell plan 27.2 actual 31.7	arrival Δ -4.4
+川沙→华夏东路	plan 205.0	actual 200.3	level 4	dwell plan 27.0 actual 31.7	arrival Δ -4.6
+华夏东路→创新中路	plan 163.0	actual 159.3	level 4	dwell plan 26.9 actual 30.7	arrival Δ -3.6
+创新中路→唐镇	plan 142.9	actual 138.8	level 4	dwell plan 27.2 actual 31.2	arrival Δ -3.9
+唐镇→广兰路	plan 244.1	actual 239.1	level 4	dwell plan 27.2 actual 32.2	arrival Δ -4.9
+广兰路→金科路	plan 156.7	actual 150.9	level 4	dwell plan 27.1 actual 32.9	arrival Δ -5.7
+金科路→张江高科	plan 117.5	actual 112.7	level 4	dwell plan 27.3 actual 32.1	arrival Δ -4.7
+张江高科→龙阳路	plan 211.6	actual 207.1	level 4	dwell plan 29.5 actual 34.0	arrival Δ -4.3
+龙阳路→世纪公园	plan 106.4	actual 99.8	level 4	dwell plan 27.0 actual 33.6	arrival Δ -6.4
+世纪公园→上海科技馆	plan 121.2	actual 116.4	level 4	dwell plan 27.0 actual 31.7	arrival Δ -4.6
+上海科技馆→世纪大道	plan 142.9	actual 138.4	level 4	dwell plan 29.6 actual 34.2	arrival Δ -4.4
+世纪大道→浦东南路	plan 109.2	actual 104.0	level 4	dwell plan 27.0 actual 32.2	arrival Δ -5.0
+浦东南路→陆家嘴	plan 129.1	actual 121.9	level 4	dwell plan 29.4 actual 36.6	arrival Δ -7.0
+陆家嘴→南京东路	plan 164.7	actual 158.4	level 4	dwell plan 29.3 actual 35.6	arrival Δ -6.1
+南京东路→人民广场	plan 103.8	actual 98.2	level 4	dwell plan 29.5 actual 35.1	arrival Δ -5.5
+人民广场→南京西路	plan 114.1	actual 109.0	level 4	dwell plan 29.3 actual 34.3	arrival Δ -4.9
+南京西路→静安寺	plan 123.4	actual 118.6	level 4	dwell plan 29.2 actual 34.1	arrival Δ -4.7
+静安寺→江苏路	plan 125.7	actual 119.7	level 4	dwell plan 27.0 actual 32.9	arrival Δ -5.8
+江苏路→中山公园	plan 121.9	actual 117.1	level 4	dwell plan 29.2 actual 34.0	arrival Δ -4.7
+中山公园→娄山关路	plan 147.3	actual 141.0	level 4	dwell plan 26.9 actual 33.2	arrival Δ -6.2
+娄山关路→威宁路	plan 133.9	actual 129.2	level 4	dwell plan 26.8 actual 31.6	arrival Δ -4.6
+威宁路→北新泾	plan 109.7	actual 104.7	level 4	dwell plan 26.8 actual 31.8	arrival Δ -4.8
+北新泾→淞虹路	plan 115.8	actual 111.0	level 4	dwell plan 26.8 actual 31.6	arrival Δ -4.7
+淞虹路→虹桥2号航站楼	plan 392.8	actual 386.2	level 4	dwell plan 26.8 actual 33.4	arrival Δ -6.4
+虹桥2号航站楼→虹桥火车站	plan 79.1	actual 70.0	level 4	dwell plan 29.0 actual 38.1	arrival Δ -8.9
+虹桥火车站→国家会展中心	plan 145.2	actual 141.2	level 4	dwell plan 26.7 actual 30.8	arrival Δ -3.9
+国家会展中心→蟠祥路·国家会计学院	plan 132.7	actual 127.8	level 4	dwell plan 0.0 actual -	arrival Δ -4.7
+=== 3009 22:34:00 worst running delay 10.49 s ===
+蟠祥路·国家会计学院→国家会展中心	plan 132.7	actual 127.9	level 4	dwell plan 27.2 actual 32.0	arrival Δ -4.7
+国家会展中心→虹桥火车站	plan 144.6	actual 140.1	level 4	dwell plan 30.0 actual 34.5	arrival Δ -4.4
+虹桥火车站→虹桥2号航站楼	plan 81.8	actual 73.0	level 4	dwell plan 27.4 actual 36.2	arrival Δ -8.7
+虹桥2号航站楼→淞虹路	plan 392.8	actual 386.2	level 4	dwell plan 27.2 actual 33.8	arrival Δ -6.5
+淞虹路→北新泾	plan 115.8	actual 111.0	level 4	dwell plan 27.2 actual 32.0	arrival Δ -4.6
+北新泾→威宁路	plan 109.7	actual 104.7	level 4	dwell plan 27.2 actual 32.2	arrival Δ -4.9
+威宁路→娄山关路	plan 133.9	actual 129.2	level 4	dwell plan 27.3 actual 32.0	arrival Δ -4.6
+娄山关路→中山公园	plan 147.3	actual 141.1	level 4	dwell plan 29.7 actual 35.9	arrival Δ -6.1
+中山公园→江苏路	plan 121.9	actual 117.1	level 4	dwell plan 27.3 actual 32.1	arrival Δ -4.7
+江苏路→静安寺	plan 125.1	actual 119.3	level 4	dwell plan 29.6 actual 35.5	arrival Δ -5.7
+静安寺→南京西路	plan 123.4	actual 118.6	level 4	dwell plan 29.6 actual 34.4	arrival Δ -4.6
+南京西路→人民广场	plan 113.7	actual 108.8	level 4	dwell plan 29.8 actual 34.7	arrival Δ -4.7
+人民广场→南京东路	plan 103.3	actual 97.7	level 4	dwell plan 29.6 actual 35.2	arrival Δ -5.4
+南京东路→陆家嘴	plan 165.0	actual 158.6	level 4	dwell plan 29.5 actual 35.9	arrival Δ -6.2
+陆家嘴→浦东南路	plan 130.7	actual 123.6	level 4	dwell plan 27.1 actual 34.2	arrival Δ -6.9
+浦东南路→世纪大道	plan 108.5	actual 103.4	level 4	dwell plan 29.6 actual 34.7	arrival Δ -4.9
+世纪大道→上海科技馆	plan 143.3	actual 139.3	level 4	dwell plan 26.9 actual 31.0	arrival Δ -3.9
+上海科技馆→世纪公园	plan 121.2	actual 116.4	level 4	dwell plan 26.9 actual 31.7	arrival Δ -4.6
+世纪公园→龙阳路	plan 106.6	actual 99.9	level 4	dwell plan 29.3 actual 36.0	arrival Δ -6.5
+龙阳路→张江高科	plan 212.0	actual 207.4	level 4	dwell plan 27.0 actual 31.6	arrival Δ -4.4
+张江高科→金科路	plan 117.5	actual 112.7	level 4	dwell plan 26.9 actual 31.7	arrival Δ -4.6
+金科路→广兰路	plan 162.9	actual 158.2	level 4	dwell plan 0.0 actual -	arrival Δ -4.5
+=== 3011 22:42:00 worst running delay 10.49 s ===
+蟠祥路·国家会计学院→国家会展中心	plan 132.7	actual 127.9	level 4	dwell plan 27.1 actual 32.0	arrival Δ -4.7
+国家会展中心→虹桥火车站	plan 144.6	actual 140.0	level 4	dwell plan 29.9 actual 34.5	arrival Δ -4.4
+虹桥火车站→虹桥2号航站楼	plan 81.8	actual 72.9	level 4	dwell plan 27.3 actual 36.2	arrival Δ -8.7
+虹桥2号航站楼→淞虹路	plan 392.8	actual 386.2	level 4	dwell plan 27.1 actual 33.7	arrival Δ -6.4
+淞虹路→北新泾	plan 115.8	actual 111.0	level 4	dwell plan 27.2 actual 32.0	arrival Δ -4.7
+北新泾→威宁路	plan 109.7	actual 104.7	level 4	dwell plan 27.1 actual 32.1	arrival Δ -4.8
+威宁路→娄山关路	plan 133.9	actual 129.2	level 4	dwell plan 27.2 actual 32.0	arrival Δ -4.6
+娄山关路→中山公园	plan 147.3	actual 141.0	level 4	dwell plan 29.6 actual 35.8	arrival Δ -6.1
+中山公园→江苏路	plan 121.9	actual 117.1	level 4	dwell plan 27.2 actual 32.1	arrival Δ -4.7
+江苏路→静安寺	plan 125.1	actual 119.2	level 4	dwell plan 29.5 actual 35.4	arrival Δ -5.7
+静安寺→南京西路	plan 123.4	actual 118.6	level 4	dwell plan 29.5 actual 34.3	arrival Δ -4.7
+南京西路→人民广场	plan 113.7	actual 108.8	level 4	dwell plan 29.7 actual 34.6	arrival Δ -4.7
+人民广场→南京东路	plan 103.3	actual 97.7	level 4	dwell plan 29.5 actual 35.0	arrival Δ -5.4
+南京东路→陆家嘴	plan 165.0	actual 158.7	level 4	dwell plan 29.4 actual 35.8	arrival Δ -6.2
+陆家嘴→浦东南路	plan 130.7	actual 123.8	level 4	dwell plan 27.0 actual 33.9	arrival Δ -6.7
+浦东南路→世纪大道	plan 108.5	actual 103.4	level 4	dwell plan 29.5 actual 34.6	arrival Δ -4.9
+世纪大道→上海科技馆	plan 143.3	actual 139.2	level 4	dwell plan 26.9 actual 31.0	arrival Δ -3.9
+上海科技馆→世纪公园	plan 121.2	actual 116.4	level 4	dwell plan 26.9 actual 31.6	arrival Δ -4.6
+世纪公园→龙阳路	plan 106.6	actual 100.0	level 4	dwell plan 29.2 actual 35.8	arrival Δ -6.5
+龙阳路→张江高科	plan 212.0	actual 207.4	level 4	dwell plan 27.0 actual 31.6	arrival Δ -4.5
+张江高科→金科路	plan 117.5	actual 112.7	level 4	dwell plan 26.9 actual 31.7	arrival Δ -4.7
+金科路→广兰路	plan 162.9	actual 158.3	level 4	dwell plan 0.0 actual -	arrival Δ -4.4
+violations []
 ```

@@ -89,6 +89,29 @@ export function controlAccel(v: number, vTarget: number, stopDist: number): numb
   return v > 0.1 ? -PERF.resist : 0;
 }
 
+/** Coasting band and cruise reduction (m/s); levels 1–3 retain D67 values. */
+export function levelBand(level: number): { band: number; lower: number } {
+  if (level === 4) return { band: 10 / 3.6, lower: 7.5 / 3.6 }; // 【假设】 diagram-only night level (D74)
+  if (level >= 3) return { band: 10 / 3.6, lower: 5 / 3.6 };
+  if (level === 2) return { band: 5 / 3.6, lower: 0 };
+  return { band: 0, lower: 0 };
+}
+
+/** Shared ATO level controller for diagram calculation and live motion.
+ * Above any braking target coasting stops; no braking curve is changed. */
+export function levelAccel(state: { v: number; a: number; coast: boolean }, level: number, vT: number, vCruise: number, stopAt: number): number {
+  if (level === 1 || state.v < 5) {
+    state.coast = false;
+    return controlAccel(speedAfterEasing(state.v, state.a), vT, stopAt);
+  }
+  const { band, lower } = levelBand(level);
+  const vc = vT >= vCruise - 0.1 ? vT - lower : vT;
+  if (state.coast && state.v < vc - band) state.coast = false;
+  else if (!state.coast && state.v >= vc - 0.3) state.coast = true;
+  if (state.coast && state.v <= vc) return -PERF.resist;
+  return controlAccel(speedAfterEasing(state.v, state.a), vc, stopAt);
+}
+
 // ---------------------------------------------------------------- planning run times
 
 export interface RunTimes {
@@ -99,6 +122,8 @@ export interface RunTimes {
   /** pass-through times between station centres (non-stopping runs) */
   passDn: number[];
   passUp: number[];
+  /** Calibrated ATO interval tables; level 1 remains the top-level legacy table. */
+  byLevel?: Record<number, Omit<RunTimes, 'byLevel'>>;
   /** the same for a train in passenger service, which passes platforms at
    *  OPERATIONS.platformPassKmh at most (跨站/跳停) */
 }
@@ -128,14 +153,18 @@ function limitAt(prof: LimitSeg[], ch: number): number {
  * (standstill) to `end` (standstill if stopAtEnd). Returns elapsed seconds.
  * `marks` are chainages where the pass time is recorded.
  */
-function simulateRun(prof: LimitSeg[], hp: Profile, sgn: 1 | -1, start: number, end: number, trainLen: number, stopAtEnd: boolean, marks: number[] = []): { t: number; markTimes: number[] } {
+function simulateRun(prof: LimitSeg[], hp: Profile, sgn: 1 | -1, start: number, end: number, trainLen: number, stopAtEnd: boolean, marks: number[] = [], runLevel = 1): { t: number; markTimes: number[] } {
   const dt = 0.1;
   let x = start;
   let v = 0;
   let a = 0;
   let t = 0;
+  const controller = { v: 0, a: 0, coast: false };
   const markTimes: number[] = marks.map(() => NaN);
   const totalDist = Math.abs(end - start);
+  // A whole-line pass at a slow level can legitimately take over an hour.
+  // Keep the level-1 bound unchanged; do not turn uncaptured marks into 20 s.
+  const timeLimit = runLevel === 1 ? 3600 : Math.max(3600, totalDist / 5 + 120);
   let travelled = 0;
   while (travelled < totalDist - 0.05 || (stopAtEnd && v > 0.01)) {
     // current limit: min over body
@@ -159,8 +188,9 @@ function simulateRun(prof: LimitSeg[], hp: Profile, sgn: 1 | -1, start: number, 
     }
     // effort against the grade, as in movement.ts
     const aG = gradeAccelAt(hp, x, sgn, trainLen);
-    const c = controlAccel(speedAfterEasing(v, a), Math.max(0, vT), stopDist);
-    const want = c > 0 ? Math.max(c - aG, c) : c - aG;
+    controller.v = v; controller.a = a;
+    const c = levelAccel(controller, runLevel, Math.max(0, vT), vLim - PERF.atoFastMargin, stopDist);
+    const want = controller.coast && c === -PERF.resist ? c : c > 0 ? Math.max(c - aG, c) : c - aG;
     a = jerkLimited(a, Math.max(-PERF.bService, Math.min(tractionAccel(v), want)), dt);
     const net = v === 0 && a <= Math.max(0, -aG) ? 0 : a + aG;
     v = Math.max(0, v + net * dt);
@@ -172,13 +202,13 @@ function simulateRun(prof: LimitSeg[], hp: Profile, sgn: 1 | -1, start: number, 
       if (Number.isNaN(markTimes[i]) && (sgn > 0 ? x >= marks[i] : x <= marks[i])) markTimes[i] = t;
     }
     if (stopAtEnd && remaining < 0.5 && v < 0.5) break;
-    if (t > 3600) break;
+    if (t > timeLimit) break;
   }
   return { t, markTimes };
 }
 
 /** stopping runs enter and leave the platforms at no more than `stopPlatformKmh` */
-export function computeRunTimes(topo: Topology, trainLen: number, stopPlatformKmh = OPERATIONS.platformStopKmh): RunTimes {
+export function computeRunTimes(topo: Topology, trainLen: number, stopPlatformKmh = OPERATIONS.platformStopKmh, runLevel = 1): RunTimes {
   const ch = topo.stations.map((s) => s.chain);
   const n = ch.length;
   const half = trainLen / 2;
@@ -188,12 +218,12 @@ export function computeRunTimes(topo: Topology, trainLen: number, stopPlatformKm
   const dn: number[] = [];
   const up: number[] = [];
   for (let i = 0; i + 1 < n; i++) {
-    dn.push(simulateRun(profDn, hp, 1, ch[i] + half, ch[i + 1] + half, trainLen, true).t);
-    up.push(simulateRun(profUp, hp, -1, ch[i + 1] - half, ch[i] - half, trainLen, true).t);
+    dn.push(simulateRun(profDn, hp, 1, ch[i] + half, ch[i + 1] + half, trainLen, true, [], runLevel).t);
+    up.push(simulateRun(profUp, hp, -1, ch[i + 1] - half, ch[i] - half, trainLen, true, [], runLevel).t);
   }
   const pass = (pDn: LimitSeg[], pUp: LimitSeg[]) => {
-    const passD = simulateRun(pDn, hp, 1, ch[0], ch[n - 1], trainLen, false, ch).markTimes;
-    const passU = simulateRun(pUp, hp, -1, ch[n - 1], ch[0], trainLen, false, [...ch].reverse()).markTimes.reverse();
+    const passD = simulateRun(pDn, hp, 1, ch[0], ch[n - 1], trainLen, false, ch, runLevel).markTimes;
+    const passU = simulateRun(pUp, hp, -1, ch[n - 1], ch[0], trainLen, false, [...ch].reverse(), runLevel).markTimes.reverse();
     const passDn: number[] = [];
     const passUp: number[] = [];
     for (let i = 0; i + 1 < n; i++) {
@@ -208,5 +238,7 @@ export function computeRunTimes(topo: Topology, trainLen: number, stopPlatformKm
   const [passDn, passUp] = pass(trackProfile(topo, 'DN', k), trackProfile(topo, 'UP', k));
   // planning margin over the minimum ATO run (OPERATIONS.runMargin)
   const pad = (a: number[]) => a.map((t) => Math.floor(t * (1 + OPERATIONS.runMargin) * 10) / 10);
-  return { dn: pad(dn), up: pad(up), passDn: pad(passDn), passUp: pad(passUp) };
+  const result: RunTimes = { dn: pad(dn), up: pad(up), passDn: pad(passDn), passUp: pad(passUp) };
+  if (runLevel === 1) result.byLevel = Object.fromEntries([2, 3, 4].map(level => [level, computeRunTimes(topo, trainLen, stopPlatformKmh, level)]));
+  return result;
 }

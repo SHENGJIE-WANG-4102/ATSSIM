@@ -24,6 +24,8 @@ export interface Template {
   /** headway between successive trains at the reference station (s) */
   headway: number;
   dwellFactor: number;
+  /** Planned interval ATO level; omitted = full-performance level 1. */
+  runLevel?: number;
 }
 
 export const TEMPLATES: Record<string, Template> = {
@@ -54,18 +56,18 @@ export const TEMPLATES: Record<string, Template> = {
   },
   firstLast: {
     id: 'firstLast', name: '首末班及收车', desc: '首班 05:25 起 7\'00"；21:57 后蟠祥路—广兰路 8\'00"，末班后回段/存车',
-    pattern: ['big'], headway: 420, dwellFactor: 0.95,
+    pattern: ['big'], headway: 420, dwellFactor: 0.43, runLevel: 4,
   },
 };
 
-export interface Period { from: number; to: number; template: string; headway?: number; headwayTo?: number; label: string }
+export interface Period { from: number; to: number; template: string; headway?: number; headwayTo?: number; label: string; runLevel?: number; dwellFactor?: number }
 
 const H = (h: number, m = 0) => h * 3600 + m * 60;
 
 export function dayPeriods(dayType: DayType): Period[] {
   if (dayType === 'weekday') {
     return [
-      { from: H(4), to: H(6, 5), template: 'firstLast', label: '首班/早间' },
+      { from: H(4), to: H(6, 5), template: 'firstLast', label: '首班/早间', runLevel: 1, dwellFactor: 0.95 },
       { from: H(6, 5), to: H(6, 50), template: 'weekdayOff', headway: 300, label: '早高峰前过渡' },
       { from: H(6, 50), to: H(9, 30), template: 'weekdayAM', label: '早高峰' },
       { from: H(9, 30), to: H(16, 50), template: 'weekdayOff', label: '平峰' },
@@ -82,7 +84,7 @@ export function dayPeriods(dayType: DayType): Period[] {
     ];
   }
   return [
-    { from: H(4), to: H(6, 40), template: 'firstLast', label: '首班/早间' },
+    { from: H(4), to: H(6, 40), template: 'firstLast', label: '首班/早间', runLevel: 1, dwellFactor: 0.95 },
     { from: H(6, 40), to: H(7, 40), template: 'weekend', headway: 360, label: '早间过渡' },
     { from: H(7, 40), to: H(21), template: 'weekend', label: '双休日日间' },
     { from: H(21), to: H(21, 40), template: 'weekdayEvening', label: '夜间' },
@@ -176,6 +178,11 @@ export function dwellOf(st: number, factor: number): number {
   return Math.min(30, Math.max(20, STATIONS[st].dwell * Math.min(1, factor)));
 }
 
+/** 【假设】图定，非物理规则：official opening propagation is direction-asymmetric.
+ * Uniform early level 3 makes the PXL opener several minutes late. Keep
+ * normal dwell/level 1, and state the two remaining diagram budgets (D74). */
+export const FIRST_TRAIN_DIAGRAM_RUN_ADJUST_S = { guanglanEast: 15, longyangWest: -6 };
+
 /** stations visited from a to b inclusive */
 function seq(a: number, b: number): number[] {
   const out: number[] = [];
@@ -185,12 +192,11 @@ function seq(a: number, b: number): number[] {
 }
 
 /** dwellFactor: a constant, or the factor in force at each stop's arrival time. */
-export function buildStops(ctx: PlanContext, dir: TrackDir, from: number, to: number, originDep: number, revenue: boolean, dwellFactor: number | ((t: number) => number), stopsAt?: (st: number) => boolean): PlanStop[] {
+export function buildStops(ctx: PlanContext, dir: TrackDir, from: number, to: number, originDep: number, revenue: boolean, dwellFactor: number | ((t: number) => number), stopsAt?: (st: number) => boolean, diagramRunAdjustmentS = 0): PlanStop[] {
   const sts = seq(from, to);
   const stops: PlanStop[] = [];
   let t = originDep;
   // pass times already include the platform pass limit (any train, 跨站 or empty)
-  const pass = dir === 'DN' ? ctx.rt.passDn : ctx.rt.passUp;
   for (let k = 0; k < sts.length; k++) {
     const st = sts[k];
     if (k === 0) { stops.push({ st, arr: t, dep: t, stop: true }); continue; }
@@ -199,9 +205,17 @@ export function buildStops(ctx: PlanContext, dir: TrackDir, from: number, to: nu
     const prevStops = stops[k - 1].stop;
     const isLast = k === sts.length - 1;
     const stopHere = isLast || (stopsAt ? stopsAt(st) : revenue);
+    const runLevel = plannedRunLevel(ctx.dayType, t);
+    stops[k - 1].runLevel = runLevel;
+    const rt = runLevel === 1 ? ctx.rt : ctx.rt.byLevel?.[runLevel] ?? ctx.rt;
+    const pass = dir === 'DN' ? rt.passDn : rt.passUp;
     let run: number;
-    if (prevStops && stopHere) run = dir === 'DN' ? ctx.rt.dn[idx] : ctx.rt.up[idx];
+    if (prevStops && stopHere) run = dir === 'DN' ? rt.dn[idx] : rt.up[idx];
     else run = pass[idx] + (prevStops ? 10 : 0) + (stopHere ? 12 : 0);
+    if (diagramRunAdjustmentS) {
+      run += diagramRunAdjustmentS;
+      stops[k - 1].diagramRunAdjustmentS = diagramRunAdjustmentS;
+    }
     const arr = t + run;
     const dw = stopHere && !isLast ? plannedDwell(ctx.dayType, st, dir, arr, typeof dwellFactor === 'function' ? dwellFactor(arr) : dwellFactor) : 0;
     stops.push({ st, arr, dep: arr + dw, stop: stopHere });
@@ -211,6 +225,9 @@ export function buildStops(ctx: PlanContext, dir: TrackDir, from: number, to: nu
 }
 
 function periodAt(periods: Period[], t: number): Period {
+  // Diagram solvers probe elapsed runs from t=0 before service opens.
+  // Use the opening defaults there, rather than the final night's level.
+  if (periods.length && t < periods[0].from) return periods[0];
   for (const p of periods) if (t >= p.from && t < p.to) return p;
   return periods[periods.length - 1];
 }
@@ -221,7 +238,13 @@ function dwellFactorAt(periods: Period[], t: number): number {
   // over 21:00–21:40, keeping the physical door cycle fixed (D73).
   if (p.template === 'weekdayNight' && t >= H(21))
     return 1.1 + (TEMPLATES.firstLast.dwellFactor - 1.1) * Math.min(1, (t - H(21)) / 2400);
-  return TEMPLATES[p.template].dwellFactor;
+  return p.dwellFactor ?? TEMPLATES[p.template].dwellFactor;
+}
+
+export function plannedRunLevel(dayType: DayType, departure: number): number {
+  const p = periodAt(dayPeriods(dayType), departure);
+  if (p.template === 'weekdayNight' && departure >= H(21, 10)) return departure < H(21, 25) ? 2 : 3;
+  return p.runLevel ?? TEMPLATES[p.template].runLevel ?? 1;
 }
 
 // ---------------------------------------------------------------- generation
@@ -438,10 +461,8 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
   for (const [dir, from, to, dep] of [
     ['UP', 19, W, firstLYL], ['UP', GLL, W, H(5, 28)],
     ['DN', GLL, E, H(6)],
-  ] as const) firstService.push(addTrip(dir, 'ins', from, to, buildStops(ctx, dir, from, to, dep, true,
-    // 【假设】 published opening services have direction-specific exchange:
-    // short westbound stops, longer boarding on the first airport-bound train.
-    dir === 'DN' ? 1.5 : from === 19 ? 0.75 : factorAt), true));
+  ] as const) firstService.push(addTrip(dir, 'ins', from, to, buildStops(ctx, dir, from, to, dep, true, factorAt, undefined,
+    dir === 'DN' ? FIRST_TRAIN_DIAGRAM_RUN_ADJUST_S.guanglanEast : from === 19 ? FIRST_TRAIN_DIAGRAM_RUN_ADJUST_S.longyangWest : 0), true));
 
   if (ctx.dayType === 'weekday') {
     // The last two short-route duties finish carrying passengers: the final

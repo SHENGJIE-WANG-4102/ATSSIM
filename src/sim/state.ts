@@ -61,6 +61,7 @@ export function capture(sim: Sim): Checkpoint {
   const data: Record<string, unknown> = {};
   for (const k of CLONED) data[k] = structuredClone(rec[k]);
   for (const k of SCALARS) data[k] = rec[k];
+  data.runLevelMode = sim.runLevel === 0 ? 'diagram' : 'override';
   const plan = sim.plan;
   return {
     t: sim.t,
@@ -86,6 +87,10 @@ export function restore(sim: Sim, cp: Checkpoint) {
   const rec = sim as unknown as Record<string, unknown>;
   for (const k of CLONED) rec[k] = structuredClone(cp.data[k]);
   for (const k of SCALARS) rec[k] = cp.data[k];
+  // D74: old checkpoints used a line-wide default of 1. Missing mode means
+  // migrate to diagram operation; new manual overrides retain their level.
+  sim.runLevel = cp.data.runLevelMode === 'override' && [1, 2, 3].includes(Number(cp.data.runLevel))
+    ? Number(cp.data.runLevel) : 0;
   sim.t = cp.t;
   sim.secAcc = cp.secAcc;
   sim.rngState = cp.rngState;

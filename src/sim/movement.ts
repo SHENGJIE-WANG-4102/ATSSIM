@@ -8,10 +8,10 @@ import { STANDBY_CALL } from './model';
 import { nextLink, linkChain, type Dir } from './topology';
 import { profileOf, heightAt, chainSense, gradeAccelAt, brakingSpeedH } from './gradient';
 import { adhesionLimit, LOW_ADH_BPLAN, LOW_ADH_TRACTION } from './adhesion';
-import { levelBand, trainLevel } from './energy';
+import { levelAccel, trainLevel } from './energy';
 import { swPos } from './interlocking';
 import { TRACTION_UNITS } from './vehicle';
-import { PERF, brakingSpeed, controlAccel, jerkLimited, speedAfterEasing, tractionAccel } from './dynamics';
+import { PERF, brakingSpeed, jerkLimited, tractionAccel } from './dynamics';
 import { routeLeadsTo } from './ats';
 import type { HaltCode } from './halt';
 import { applyEB } from './onboard';
@@ -533,18 +533,10 @@ function spad(sim: Sim, tr: Train, sigId: number) {
  * curves are never relaxed: coasting stops as soon as the train is above them.
  */
 function runLevelAccel(sim: Sim, tr: Train, vT: number, vCruise: number, stopAt: number, regulated: boolean): number {
-  const level = regulated ? trainLevel(sim, tr) : 1;
-  if (level === 1 || tr.v < 5) {
-    tr.coast = false;
-    return controlAccel(speedAfterEasing(tr.v, tr.a), vT, stopAt);
-  }
-  const { band, lower } = levelBand(level);
-  const cruising = vT >= vCruise - 0.1;
-  const vc = cruising ? vT - lower : vT;
-  if (tr.coast && tr.v < vc - band) tr.coast = false;
-  else if (!tr.coast && tr.v >= vc - 0.3) tr.coast = true;
-  if (tr.coast && tr.v <= vc) return -PERF.resist;
-  return controlAccel(speedAfterEasing(tr.v, tr.a), vc, stopAt);
+  const trip = sim.plan.trips[tr.tripId];
+  const plannedEmpty = !tr.manual && (tr.mode === 'DTO' || tr.mode === 'AM') && trip && !trip.revenue
+    && tr.tasks[0]?.k === 'stop' && sim.topo.links[tr.link].track === trip.dir;
+  return levelAccel(tr, regulated || plannedEmpty ? trainLevel(sim, tr) : 1, vT, vCruise, stopAt);
 }
 
 export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {

@@ -8,7 +8,7 @@ const COMMANDS = new Set([
   'axleReset', 'sectionUnlock', 'setTsr', 'cancelTsr', 'platformHold', 'platformSkip', 'platformEsp', 'psdBypass',
   'trainHold', 'trainSkip', 'turnback', 'withdraw', 'recoverService', 'exchangeDuty', 'standby', 'authRM', 'ebRelease', 'trainLevel', 'trainDto', 'lineAto', 'door', 'rescue', 'addTrain',
   'overlay', 'zoneLevel', 'ack', 'fault', 'repair', 'trainMaintenance', 'sectionBlock', 'switchBlock', 'manual', 'radio', 'radioAuto',
-  'env', 'randomFaults', 'scenarioEnd', 'bookmark',
+  'env', 'runLevel', 'randomFaults', 'scenarioEnd', 'bookmark',
 ]);
 
 export function validateCommand(sim: Sim, cmd: Command): string | null {
@@ -24,7 +24,7 @@ export function validateCommand(sim: Sim, cmd: Command): string | null {
     rescue: ['failed', 'rescuer'], addTrain: ['depot', 'dir', 'to', 'time'], overlay: ['id', 'from', 'to', 'headway'],
     zoneLevel: ['zones', 'level'], ack: ['ids'], fault: ['kind', 'target', 'duration'], repair: ['fault'], trainMaintenance: ['fault'],
     sectionBlock: ['sections', 'on'], switchBlock: ['sw', 'on'], manual: ['train', 'mode'], radio: ['call', 'option'],
-    radioAuto: ['on'], env: ['duration'], randomFaults: ['level'], bookmark: ['label'],
+    radioAuto: ['on'], env: ['duration'], runLevel: ['level'], randomFaults: ['level'], bookmark: ['label'],
   };
   for (const field of required[cmd.c] ?? []) if (!(field in c)) return `命令缺少参数：${field}`;
   for (const field of ['id', 'option', 'label', 'reason']) if (field in c && (typeof c[field] !== 'string' || !(c[field] as string).trim())) return `无效文本：${field}`;
@@ -61,6 +61,7 @@ export function validateCommand(sim: Sim, cmd: Command): string | null {
   if (cmd.c === 'manual' && !['CM', 'RM', 'AUTO'].includes(cmd.mode)) return '无效驾驶模式';
   if (cmd.c === 'door' && !['L', 'R'].includes(cmd.side)) return '无效车门侧';
   if (cmd.c === 'randomFaults' && ![0, 1, 2, 3].includes(cmd.level)) return '故障等级须为0–3';
+  if (cmd.c === 'runLevel' && ![0, 1, 2, 3].includes(cmd.level)) return '运行等级须为按图(0)或1–3';
   if (cmd.c === 'env' && cmd.wind !== undefined && ![0, 1, 2, 3].includes(cmd.wind)) return '大风等级须为0–3';
   if (cmd.c === 'addTrain' && !['DN', 'UP'].includes(cmd.dir)) return '无效行车方向';
   if (cmd.c === 'addTrain' && !validId(cmd.to, sim.topo.stations.length)) return '无效终到站';

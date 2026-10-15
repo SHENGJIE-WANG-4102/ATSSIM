@@ -27,6 +27,10 @@ export interface PlanStop {
   st: number;
   arr: number;
   dep: number;
+  /** ATO level on the interval departing this stop (D74); absent in old plans = 1. */
+  runLevel?: number;
+  /** Diagram-only interval time adjustment, not a physical controller rule. */
+  diagramRunAdjustmentS?: number;
   /** stops (doors) here; false = passes */
   stop: boolean;
   /** set-down only: passengers may alight but not board (定点班车) */

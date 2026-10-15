@@ -1,16 +1,82 @@
 import {describe,it,expect} from 'vitest';
 import {Sim} from '../src/sim/engine';
-import {platformBerth,dayPeriods,OUTER_BAND_MARGIN,TEMPLATES} from '../src/sim/timetable';
+import {platformBerth,dayPeriods,OUTER_BAND_MARGIN,TEMPLATES,buildStops,tripTasks} from '../src/sim/timetable';
 import {DOOR_CYCLE, MIN_DWELL, MAX_DWELL_BUSY, plannedDwell, passengerMinimum, RIDERSHIP_TARGET} from '../src/sim/calibration';
 import {RIDE_LOG} from '../src/data/ridelog';
 import {STATIONS} from '../src/data/line2';
-import {updateTrainTasks} from '../src/sim/ats';
+import {updateTrainTasks,newTrain} from '../src/sim/ats';
 import {releaseRoute} from '../src/sim/interlocking';
 import {computeBody,indexBodies} from '../src/sim/movement';
 import {classify} from '../src/sim/halt';
 import {computeDmi} from '../src/sim/dmi';
+import {trainLevel,LEVEL_LATE,levelAccel} from '../src/sim/energy';
+import {PERF} from '../src/sim/dynamics';
+import {capture,restore} from '../src/sim/state';
 
 const advance=(s:Sim,t:number)=>{const end=s.t+t;while(s.t<end-1e-6)s.step();};
+
+describe('D74 diagram ATO levels',()=>{
+ const make=()=>new Sim({dayType:'weekday',dateLabel:'night levels',startTime:14400,seed:1,noPossessions:true});
+ it('chooses levels at interval departure, including a trip crossing into the night band',()=>{
+  const s=make(),departure=21*3600+39*60+55;
+  expect(buildStops(s.planCtx,'DN',0,2,0,true,.95)[0].runLevel).toBe(1); // elapsed-time solver probe, not night service
+  const stops=buildStops(s.planCtx,'DN',22,26,departure,true,.45);
+  expect(stops[0].runLevel).toBe(3);expect(stops[1].runLevel).toBe(4);
+  expect(stops[1].arr-stops[0].dep).toBeCloseTo(s.rt.byLevel![3].dn[22],5);
+  expect(stops[2].arr-stops[1].dep).toBeCloseTo(s.rt.byLevel![4].dn[23],5);
+  const trip={...s.plan.trips[0],id:s.plan.trips.length,from:22,to:26,stops};s.plan.trips.push(trip);
+  const tr=s.trainList[0];tr.tripId=trip.id;tr.delay=0;
+  tr.tasks=[];tripTasks(s.topo,trip,tr.tasks,false);tr.tasks.shift();
+  s.t=22*3600;expect(trainLevel(s,tr)).toBe(3); // interval retains its departure grade
+  tr.tasks.shift();expect(trainLevel(s,tr)).toBe(4);
+ });
+ it('defaults to diagram operation, supports a whole-line manual override and keeps late recovery',()=>{
+  const s=make(),night=s.plan.trips.find(t=>t.from===30&&t.stops[0].dep===22.5*3600)!;
+  expect(s.runLevel).toBe(0);expect(s.snapshot().runLevel).toBe(0);
+  for(const level of [NaN,Infinity,-1,1.5,4]){expect(s.command({c:'runLevel',level}).ok).toBe(false);expect(s.runLevel).toBe(0);}
+  for(const tr of s.trainList){tr.tripId=night.id;tr.tasks=[];tripTasks(s.topo,night,tr.tasks,false);tr.tasks.shift();tr.delay=0;expect(trainLevel(s,tr)).toBe(4);}
+  expect(s.command({c:'runLevel',level:1}).ok).toBe(true);
+  for(const tr of s.trainList)expect(trainLevel(s,tr)).toBe(1);
+  expect(s.command({c:'runLevel',level:0}).ok).toBe(true);
+  const tr=s.trainList[0];tr.delay=LEVEL_LATE;expect(trainLevel(s,tr)).toBe(4);
+  tr.delay=LEVEL_LATE+.01;expect(trainLevel(s,tr)).toBe(1);
+  expect(s.command({c:'runLevel',level:3}).ok).toBe(true);expect(trainLevel(s,tr)).toBe(1);
+ });
+ it('preserves new overrides in checkpoints and migrates old saves to diagram operation',()=>{
+  const s=make();s.command({c:'runLevel',level:2});const cp=capture(s);
+  s.command({c:'runLevel',level:0});restore(s,cp);expect(s.runLevel).toBe(2);
+  const old:typeof cp={...cp,data:{...cp.data,runLevel:3}};delete old.data.runLevelMode;
+  restore(s,old);expect(s.runLevel).toBe(0);
+  restore(s,capture(s));expect(s.runLevel).toBe(0);
+ });
+ it('plans short night dwells and completes slow whole-line pass timings without truncation',()=>{
+  const s=make(),night=s.plan.trips.find(t=>t.from===30&&t.stops[0].dep===22.5*3600)!;
+  for(const [i,stop] of night.stops.entries()){
+   if(i<night.stops.length-1)expect(stop.runLevel).toBe(4);
+   if(i>0&&i<night.stops.length-1&&STATIONS[stop.st].demand<1.4){expect(stop.dep-stop.arr).toBeGreaterThanOrEqual(25);expect(stop.dep-stop.arr).toBeLessThanOrEqual(30);}
+  }
+  expect(s.rt.byLevel![4].passDn[28]).toBeGreaterThan(s.rt.passDn[28]);
+  expect(s.rt.byLevel![4].passDn[29]).toBeGreaterThan(100);
+  const state={v:15,a:0,coast:true};
+  expect(levelAccel(state,4,5,20,100)).toBeLessThan(-PERF.resist); // braking target cancels motor-off coasting
+ });
+ it('runs the first two night intervals on the slow grade without inventing lateness',()=>{
+  const s=make();advance(s,.2);
+  for(const tr of [...s.trainList])s.removeTrain(tr);
+  for(const id of [...s.routes.keys()])releaseRoute(s,id);
+  for(const block of s.plan.blocks)s.blockDone.add(block.id);
+  s.connections=[];s.t=22.5*3600-60;
+  const full=s.plan.trips.find(t=>t.from===30&&t.stops[0].dep===22.5*3600)!;
+  const trip={...full,to:28,stops:full.stops.slice(0,3)};s.plan.trips[trip.id]=trip;
+  const b=s.topo.berths[platformBerth(s.topo,30,'UP')];
+  const tr=newTrain(s,s.plan.blocks[trip.block],b.link,b.offset,b.dir,[{link:b.link,dir:b.dir}],'0200');
+  tr.tripId=trip.id;tr.tripNo=trip.no;tr.inService=true;tripTasks(s.topo,trip,tr.tasks,false);computeBody(s,tr);indexBodies(s);
+  let samples=0,worst=0;const end=s.t+900;
+  while(tr.stopsMade<3&&s.t<end){s.step();if(tr.phase==='run'&&tr.v>.1){samples++;worst=Math.max(worst,tr.delay);expect(trainLevel(s,tr)).toBe(4);}}
+  expect(tr.stopsMade).toBe(3);expect(samples).toBeGreaterThan(100);expect(worst).toBeLessThan(LEVEL_LATE);
+  expect(s.integrity.violations).toHaveLength(0);
+ });
+});
 function fixture(station:number,delay:number,dwell:number,waiting=0,load=0){
  const s=new Sim({dayType:'weekday',dateLabel:'calibration',startTime:14400,seed:7,noPossessions:true});advance(s,2);const tr=s.trainList[0];
  for(const other of [...s.trainList])if(other!==tr)s.removeTrain(other);

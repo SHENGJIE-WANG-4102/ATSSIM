@@ -222,7 +222,8 @@ export class Header {
       kpi(`${st.tripsDone}/${st.tripsPlanned}`, '完成车次'),
     );
     if (this.energy) {
-      const lvl = h('select', { title: '全线 ATO 运行等级：1 全性能；2 惰行节能；3 低速惰行（节能最多，运行时分增加）。晚点超过 20 秒的列车自动按等级 1 运行' },
+      const lvl = h('select', { title: 'ATO 运行等级：按图逐区间选择；1/2/3全线手动覆盖。1全性能、2惰行节能、3低速惰行。晚点超过20秒自动回1级' },
+        h('option', { value: 0 }, '按图'),
         ...[1, 2, 3].map((v) => h('option', { value: v }, String(v)))) as HTMLSelectElement;
       lvl.value = String(s.runLevel);
       lvl.onchange = async () => { const r = await this.store.command({ c: 'runLevel', level: Number(lvl.value) }); toast(r.msg, r.ok); };

@@ -1,6 +1,6 @@
 /**
  * Traction energy and ATO run levels (D67). Shown only with 设置 › 能耗与运行等级
- * on; with run level 1 (the default) the trains run exactly as without it.
+ * on; diagram operation is the default, with level 1 during daytime (D74).
  *
  * Energy: the motors' power m·F·v at the wheels, through the drive's
  * efficiency to the pantograph. Electric braking feeds power back into the
@@ -10,14 +10,14 @@
  * substations assumed). Traction only: auxiliaries (air conditioning,
  * lighting) are not counted. All figures 【假设】.
  *
- * Run levels (运行等级): 1 runs at the full ATO performance the timetable is
- * planned with; 2 and 3 cruise by coasting down a speed band and powering up
- * again, and 3 also cruises lower. A train running late falls back to level 1
- * by itself to catch up.
+ * Run levels (运行等级): 1 is full ATO performance; 2/3 cruise by coasting
+ * down a speed band, and 3 cruises lower. Diagram-only level 4 is slower at
+ * night. A train over 20 s late falls back to level 1 to catch up.
  */
 import type { Sim } from './engine';
 import type { Train } from './model';
 import { PERF } from './dynamics';
+export { levelBand, levelAccel } from './dynamics';
 import { linkChain } from './topology';
 
 /** empty 8-car A-type train (kg) and a passenger */
@@ -46,16 +46,23 @@ export function newEnergy(): EnergyState {
   return { drawn: 0, regen: 0, reused: 0, km: 0 };
 }
 
-/** the coasting band below the cruise target and the cruise reduction, per run level (m/s) */
-export function levelBand(level: number): { band: number; lower: number } {
-  if (level >= 3) return { band: 10 / 3.6, lower: 5 / 3.6 };
-  if (level === 2) return { band: 5 / 3.6, lower: 0 };
-  return { band: 0, lower: 0 };
-}
-
 /** the run level a train actually runs: late trains run level 1 */
 export function trainLevel(sim: Sim, tr: Train): number {
-  return tr.delay > LEVEL_LATE ? 1 : sim.runLevel;
+  if (tr.delay > LEVEL_LATE) return 1;
+  if (sim.runLevel > 0) return sim.runLevel;
+  const trip = sim.plan.trips[tr.tripId];
+  const task = tr.tasks[0];
+  if (!trip || task?.k !== 'stop' || task.trip !== trip.id) return 1;
+  if (!trip.revenue) {
+    const chain = linkChain(sim.topo, tr.link, tr.off);
+    const half = tr.len / 2;
+    const ahead = trip.stops.findIndex(s => trip.dir === 'DN'
+      ? sim.topo.stations[s.st].chain + half > chain
+      : sim.topo.stations[s.st].chain - half < chain);
+    return trip.stops[Math.max(0, (ahead < 0 ? trip.stops.length : ahead) - 1)]?.runLevel ?? 1;
+  }
+  const index = trip.stops.findIndex(s => s.st === task.station);
+  return trip.stops[Math.max(0, index - 1)]?.runLevel ?? 1;
 }
 
 const draw = new Map<number, number>();
