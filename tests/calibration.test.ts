@@ -183,7 +183,9 @@ describe('calibrated plan structure',()=>{
     intervals++;
     expect(Math.abs(times[i]-times[i-1]-hw),`${dir} station ${st} at ${(times[i]/3600).toFixed(3)}`).toBeLessThanOrEqual(tolerance);
    }
-   if(st===(dir==='DN'?4:22)){const transition=times.filter(t=>t<peak.from-2400&&t>peak.from-4200);
+   // the westbound ramp is complete at 龙阳路, where its origins there and at
+   // GLL merge; GLL alone is held to one middle-track cycle (D75)
+   if(st===(dir==='DN'?4:19)){const transition=times.filter(t=>t<peak.from-2400&&t>peak.from-4200);
     const gaps=transition.slice(1).map((t,i)=>t-transition[i]);
     expect(gaps.length).toBeGreaterThan(3);expect(gaps.at(-1)!).toBeLessThan(gaps[0]);}
   }

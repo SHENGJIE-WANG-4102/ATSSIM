@@ -288,12 +288,28 @@ describe('timetable validator', () => {
     for (const id of block.trips) sim.plan.trips[id].cancelled=false;
     expect(validatePlan(sim.planCtx,sim.plan).some(issue => issue.code==='DEPOT_CONFLICT' && issue.blocks?.includes(block.id))).toBe(true);
   });
+  it('keeps a throat clearance between turns on the GLL middle-track platform', () => {
+    const sim = new Sim({ dayType: 'weekday', dateLabel: 'throat', startTime: 14400, seed: 1 });
+    const plan = sim.plan;
+    const turns = terminalOccupancy(plan).get(22)!.sort((a,b) => a.from-b.from);
+    const clear = OPERATIONS.platformTurnClear.GLL;
+    for (let i = 1; i < turns.length; i++) expect(turns[i].from - turns[i-1].to).toBeGreaterThanOrEqual(clear);
+    // the D72 opening built up 40 s gaps here: arrive 20 s after the previous turn leaves
+    const i = turns.findIndex((x, k) => k > 0 && x.from > 6 * 3600 && x.from - turns[k-1].to > 40);
+    const first = turns[i-1], second = turns[i];
+    const arriving = plan.blocks[second.block].trips.map(id => plan.trips[id]).find(t => !t.cancelled && t.to === 22 && t.stops.at(-1)!.arr === second.from)!;
+    const shift = second.from - (first.to + 20);
+    for (const stop of arriving.stops) { stop.arr -= shift; stop.dep -= shift; }
+    expect(validatePlan(sim.planCtx, plan).some(issue => issue.code === 'TURN_HEADWAY'
+      && issue.blocks?.includes(second.block) && issue.blocks.includes(first.block))).toBe(true);
+  });
   it('rejects an early feeder that traps an earlier departure on the single GLL turnback platform', () => {
     const sim = new Sim({ dayType: 'weekday', dateLabel: 'order', startTime: 14400, seed: 1 });
     const occupancy = terminalOccupancy(sim.plan).get(22)!.sort((a,b) => a.from-b.from);
     // (one train turns there at a time: move a feeder ahead of the train before it)
     const index = occupancy.findIndex((item,i) => i > 0
-      && sim.plan.trips[sim.plan.blocks[item.block].trips[0]].kind === 'empty');
+      && !sim.plan.trips[sim.plan.blocks[item.block].trips[0]].revenue
+      && sim.plan.trips[sim.plan.blocks[item.block].trips[0]].to === 22);
     expect(index).toBeGreaterThan(0);
     const first = occupancy[index-1], second = occupancy[index];
     const feeder = sim.plan.trips[sim.plan.blocks[second.block].trips[0]];

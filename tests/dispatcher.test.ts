@@ -124,7 +124,7 @@ describe('dispatcher commands', () => {
     const last = Math.max(...running.map(t => t.stops.at(-1)!.arr));
     runFor(sim, last + 600 - sim.t, stepCheck);
     expect(running.filter(t => t.completed).length).toBeGreaterThanOrEqual(Math.ceil(.9 * running.length));
-  });
+  }, 240_000); // the added services run until about 11:15: some 8600 simulated seconds
 
   it('R4 exchanges the duty of a late train with the on-time same-route trip behind it', () => {
     const sim = makeSim('weekday', H);

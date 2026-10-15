@@ -416,6 +416,13 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     // Explicit origin first trains below supply the early western section;
     // the airport stream starts with the published 06:00 departure.
     firstService.push(addTrip('UP', 'big', E, W, buildStops(ctx, 'UP', E, W, OPERATIONS.firstEastTerminusDep, true, factorAt), true));
+    // Opening trains from GLL are fed by depot trains changing ends on its
+    // single middle-track platform; one cycle there takes minTurn plus the
+    // throat clearance. A slot that comes sooner starts at 龙阳路 instead,
+    // where the depot train enters westbound service directly (the published
+    // 05:20 first train does the same).
+    const gllCycle = minTurn(GLL) + (OPERATIONS.platformTurnClear.GLL ?? 0) + 10;
+    let lastGllOpening = -Infinity;
     let t = (peaks.length ? Math.min(firstThrough, peaks[0].from - coreLead.get(peaks[0])! - 1200) : firstThrough) + (ctx.dayType === 'weekday' ? upPhase : 0);
     for (let guard = 0; guard < 2000; guard++) {
       const p = streamAt(t);
@@ -446,7 +453,13 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
         // first-service trains run to PXL. This supplies west-end turns
         // without queueing dozens of early depot feeders at PXL.
         const opening = t < firstThrough;
-        addTrip('UP', opening ? 'ins' : 'small', GLL, opening ? W : SHR, buildStops(ctx, 'UP', GLL, opening ? W : SHR, t, true, factorAt), true);
+        if (opening && t - lastGllOpening < gllCycle) {
+          const atLYL = buildStops(ctx, 'UP', GLL, W, t, true, factorAt).find(s => s.st === 19)!.dep;
+          addTrip('UP', 'ins', 19, W, buildStops(ctx, 'UP', 19, W, atLYL, true, factorAt), true);
+        } else {
+          if (opening) lastGllOpening = t;
+          addTrip('UP', opening ? 'ins' : 'small', GLL, opening ? W : SHR, buildStops(ctx, 'UP', GLL, opening ? W : SHR, t, true, factorAt), true);
+        }
       }
       idx++;
       t = nextSlot(t, 'UP');
@@ -1307,10 +1320,11 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
   for (let qi = 0; qi < sinkQueue.length; qi++) {
     const A = sinkQueue[qi];
     if (endOf.has(A.id) || A.cancelled || A.next !== undefined) continue; // (queued twice: already sent on)
-    // A surplus opening train from GLL can finish at SHR and enter BZL
-    // directly. Going all the way to PXL and returning would insert a depot
-    // withdrawal into the AM core slots and the outer alternation.
-    if (!overlay && A.dir === 'UP' && A.from === 22 && A.to === W && A.kind === 'ins' && A.stops[0].dep > H(5, 28)) {
+    // A surplus opening train from GLL (or 龙阳路, when GLL's middle track
+    // is busy) can finish at SHR and enter BZL directly. Going all the way to
+    // PXL and returning would insert a depot withdrawal into the AM core
+    // slots and the outer alternation.
+    if (!overlay && A.dir === 'UP' && (A.from === 22 || A.from === 19) && A.to === W && A.kind === 'ins' && A.stops[0].dep > H(5, 28)) {
       A.to = 4; A.kind = 'wd'; A.stops = A.stops.filter(s => s.st >= 4);
       A.stops.at(-1)!.dep = A.stops.at(-1)!.arr;
       const index = new DepIndex(allForGaps().filter(t => t.id !== A.id && t.id !== A.prev));
@@ -2339,7 +2353,7 @@ export interface PlanIssue {
   /** Circulations contributing to this conflict; used by pure overlay fitting. */
   blocks?: number[];
   severity: 'error' | 'warn';
-  code: 'TURN_SHORT' | 'BLOCK_BREAK' | 'TERMINAL_FULL' | 'TAIL_ORDER' | 'FRONT_CONFLICT' | 'LAYOVER_LONG' | 'DEPOT_CONFLICT' | 'HEADWAY' | 'FLEET' | 'TIME_ORDER' | 'UNASSIGNED' | 'STABLE_CONFLICT';
+  code: 'TURN_SHORT' | 'BLOCK_BREAK' | 'TERMINAL_FULL' | 'TAIL_ORDER' | 'FRONT_CONFLICT' | 'LAYOVER_LONG' | 'DEPOT_CONFLICT' | 'HEADWAY' | 'FLEET' | 'TIME_ORDER' | 'UNASSIGNED' | 'STABLE_CONFLICT' | 'TURN_HEADWAY';
   t: number;
   text: string;
 }
@@ -2515,6 +2529,19 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
       const ordered = list.slice().sort((a,b) => a.from-b.from);
       for (let i=1;i<ordered.length;i++) if (ordered[i-1].to > ordered[i].to + .01)
         out.push({severity:'error',code:'TAIL_ORDER',t:ordered[i].from,blocks:[ordered[i-1].block,ordered[i].block],text:`${name(st)} 单一折返线到达次序与发车次序相反`});
+    }
+    // A platform turnback track is entered and left through one throat: the
+    // next turning train arrives only after the previous one has left and
+    // cleared it (OPERATIONS.platformTurnClear).
+    const tb = topo.stations[st].turnbackBerths;
+    const clear = OPERATIONS.platformTurnClear[STATIONS[st].id];
+    if (clear !== undefined && tb.length === 1 && topo.berths[tb[0]].kind === 'platform') {
+      const ordered = list.slice().sort((a,b) => a.from-b.from);
+      for (let i=1;i<ordered.length;i++) {
+        const gap = ordered[i].from - ordered[i-1].to;
+        if (gap < clear - 1e-6) out.push({severity:'error',code:'TURN_HEADWAY',t:ordered[i].from,blocks:[ordered[i-1].block,ordered[i].block],
+          text:`${name(st)} 站台折返线前车发车到后车到达仅 ${gap.toFixed(0)} s（最小 ${clear} s）`});
+      }
     }
     let reported = -Infinity;
     for (const { t, cur, cap } of terminalOverflows(topo, st, list)) {

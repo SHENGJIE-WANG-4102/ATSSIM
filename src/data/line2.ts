@@ -495,6 +495,15 @@ export const OPERATIONS = {
   // GLL reverses on its middle-track platform (配线图 PDF): a change of ends
   // on the platform without a run into a tail.
   minTurnback: { PXL: 240, PDA: 240, SHR: 240, GLL: 100 } as Record<string, number>,
+  /** platform turnback track: minimum time from one turning train's departure
+   *  to the next turning train's arrival on the same track (s). The leaving
+   *  train must clear the shared west throat before the next entry route
+   *  sets, and the next train then runs over the turnout at about 25 km/h.
+   *  【假设】 from the simulator (2026-10-15), real values are not published:
+   *  turns 68 s and 90 s apart run clean with the next train arriving at
+   *  speed; the D72 morning plan's 40 s gaps lost about 60 s per turn,
+   *  and once queued (next train standing at the signal) a cycle took 3'30". */
+  platformTurnClear: { GLL: 60 } as Record<string, number>,
   /** overnight stabling at terminal tails (approx) */
   // (蟠祥路: its two turnback tracks and the two places in the DN storage tail)
   terminalStabling: { PXL: 4, PDA: 2 } as Record<string, number>,
