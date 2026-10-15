@@ -1309,6 +1309,17 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
       return { train: tr, signal: sig, route: rid, prio, eta, ready: false, dist, via };
     }
     let ok = ready && (level === 0 || dist < 1500);
+    // A train going in over a shared lead (远东大道) stops on the very platform
+    // a depot exit standing on that lead changes ends on: neither could move.
+    // It waits short of the platform until the exit has come out.
+    if (ok && goalTask.k === 'stop' && topo.berths[goal].kind === 'platform') {
+      const d = topo.depots.findIndex((x) => x.station === goalTask.station);
+      const exit = d >= 0 && goingIn(sim, tr, d) ? exitOnLead(sim, tr, d) : undefined;
+      if (exit) {
+        ok = false;
+        setArsWait(sim, tr, 'REGULATION', exit.id, sig, '回段车让出段换端车先出');
+      }
+    }
     // do not route into a berth occupied by another train
     let berthWait = false;
     if (r.berths.includes(goal) && berthBusy(sim, goal, tr.id)
@@ -1354,7 +1365,9 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
         // through trains (arriving with a dwell); other exits through this
         // platform are already spaced among themselves
         const D = own.dep!;
-        const before = sim.trainList.find((o) => o !== tr && !o.failed && o.tasks.some((t) => t.k === 'stop' && t.berth === own.berth
+        // (not one going in over the shared lead this train stands on: it cannot pass)
+        const lead = sharedLeadUnder(sim, tr);
+        const before = sim.trainList.find((o) => o !== tr && !o.failed && !(lead >= 0 && goingIn(sim, o, lead)) && o.tasks.some((t) => t.k === 'stop' && t.berth === own.berth
           && t.arr !== null && t.dep !== null && t.dep - t.arr > 1 && t.dep < D - 1 && t.dep > D - 900));
         if (before) {
           ok = false;
@@ -1544,6 +1557,26 @@ function earlierDeparture(sim: Sim, self: Train, berth: number, dep: number): Tr
     }
   }
   return undefined;
+}
+
+/** depot whose shared in/out lead (links or stub) the train's body stands on, -1 if none */
+function sharedLeadUnder(sim: Sim, tr: Train): number {
+  return sim.topo.depots.findIndex((dp) => dp.transferPaths.some((p) => p.flow === 'shared'
+    && tr.body.some((b) => b.link === p.stub || p.links.includes(b.link))));
+}
+
+/** the train goes into `depot` after its remaining stops at the depot's station */
+function goingIn(sim: Sim, tr: Train, depot: number): boolean {
+  const i = tr.tasks.findIndex((t) => t.k === 'depot');
+  if (i < 0 || i > 3 || (tr.tasks[i] as DepotTask).depot !== depot) return false;
+  return tr.tasks.slice(0, i).every((t) => (t.k === 'stop' || t.k === 'reverse') && t.station === sim.topo.depots[depot].station);
+}
+
+/** a depot exit standing on the shared lead, still to change ends at the depot's station */
+function exitOnLead(sim: Sim, self: Train, depot: number): Train | undefined {
+  const station = sim.topo.depots[depot].station;
+  return sim.trainList.find((o) => o !== self && !o.failed && sharedLeadUnder(sim, o) === depot
+    && o.tasks.some((t) => t.k === 'stop' && t.note === '出段换端' && t.station === station));
 }
 
 /** all turnback berths at the station are occupied and another train is queued to turn back */

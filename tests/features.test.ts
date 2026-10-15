@@ -413,10 +413,14 @@ describe('DMI logic: movement authority, permitted speed, fleet, message log', (
         const ma = scanAhead(sim, tr, goalBerth(tr)).maDist;
         expect(Number.isFinite(ma)).toBe(true);
         // within the per-step supervision range tr.maDist comes from this step's scan,
-        // taken before the step's movement (own and preceding train: ≤ 25 m/s × 0.1 s)
-        if (ma < MA_NEAR - 50) expect(Math.abs(ma - tr.maDist)).toBeLessThan((tr.v + 25) * 0.1 + 1);
+        // taken before the step's movement (own and preceding train: ≤ 25 m/s × 0.1 s);
+        // a train not yet moving off keeps the 1 Hz refresh (movement.ts), up to a second old
+        if (ma < MA_NEAR - 50) expect(Math.abs(ma - tr.maDist)).toBeLessThan((tr.v + 25) * (tr.v > 0 ? 0.1 : 1) + 1);
         // other protections (occupied non-CBTC sections, platform doors…) can only shorten it
         expect(ma).toBeLessThanOrEqual(Math.max(0, e.d) + 0.01);
+        // a turnback waiting for its departure platform is held short by a
+        // protection this model leaves out; the bound above still applies
+        if (scanAhead(sim, tr, goalBerth(tr)).maReason === '折返发车站台有车，等待平台出清') { checked--; continue; }
         if (Math.abs(ma - Math.max(0, e.d)) < 0.01) matched++;
         lengths.add(Math.round(ma));
         if (ma > 1400) beyondOld++;

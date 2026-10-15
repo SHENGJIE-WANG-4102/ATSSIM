@@ -1023,8 +1023,9 @@ describe('standby trains (D45)', () => {
     expect(errors(sim).filter(e => !before.includes(e))).toEqual([]);
     expect(sim.planRev).toBe(rev + 1);
     expect(sim.events.some(e => e.text.startsWith('备车顶替'))).toBe(true);
-    // the standby leaves the yard and runs its first taken trip
-    advance(sim, (sb.start.kind === 'depot' ? sb.start.time : sim.t) - sim.t + 120);
+    // the standby leaves the yard and runs its first taken trip (the exit may
+    // wait on the lead behind planned exits, D79: by the trip's departure)
+    advance(sim, Math.max(...sb.trips.slice(0, 2).map(id => sim.plan.trips[id].stops[0].dep)) - sim.t);
     expect(sb.train).toBeDefined();
     expect(sim.integrity.violations).toHaveLength(0);
   });
