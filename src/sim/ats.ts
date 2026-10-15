@@ -707,11 +707,23 @@ function arriveAtBerth(sim: Sim, tr: Train, task: Task) {
     if (task.arr !== null) tr.delay = sim.t - task.arr;
     // the trip's own final call only: a depot exit's change of ends carries the
     // trip number with no departure time but is not a passenger stop
-    if (task.dep === null && task.revenue && task.trip >= 0 && sim.plan.trips[task.trip].revenue && !sim.plan.trips[task.trip].completed) {
+    const complete = (trip: Trip, arr: number | null) => {
       sim.tripsDone++;
       sim.metrics.tripsCompleted++;
-      sim.plan.trips[task.trip].completed = true;
-      sim.metrics.tripDelays.push(task.arr !== null ? sim.t - task.arr : 0);
+      trip.completed = true;
+      sim.metrics.tripDelays.push(arr !== null ? sim.t - arr : 0);
+    };
+    if (task.dep === null && task.revenue && task.trip >= 0 && sim.plan.trips[task.trip].revenue && !sim.plan.trips[task.trip].completed)
+      complete(sim.plan.trips[task.trip], task.arr);
+    // A depot-exit passenger trip that runs on into its next trip in the same
+    // direction ends here as a pass (the next trip's first call stands for it)
+    if (task.dep !== null && task.trip >= 0) {
+      const trip = sim.plan.trips[task.trip];
+      const ids = sim.plan.blocks[trip.block]?.trips ?? [];
+      const prev = ids.slice(0, ids.indexOf(trip.id)).map((id) => sim.plan.trips[id]).filter((t) => !t.cancelled).at(-1);
+      const end = prev?.stops.at(-1);
+      if (prev && end && prev.revenue && !prev.completed && !end.stop && end.st === task.station && trip.stops[0].st === task.station)
+        complete(prev, end.arr);
     }
     recordTrace(sim, tr, true);
     if (tr.manual && stopNeedsDoors(tr, task) && !tr.doorsOpen) {

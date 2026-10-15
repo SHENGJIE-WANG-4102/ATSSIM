@@ -14,7 +14,12 @@ const stem = `${output}/${options.dayType}-${options.template}-${options.level}-
 const saveDiagnostics = (suffix: string) => {
   const path = `${stem}-${suffix}.json`;
   writeFileSync(`${path}.tmp`, stringifyDiagnostics(exportDiagnostics(sim)));
-  renameSync(`${path}.tmp`, path);
+  // Windows refuses the rename while a reader or the virus scanner holds the
+  // target open: retry briefly rather than failing the case
+  for (let i = 0; ; i++) {
+    try { renameSync(`${path}.tmp`, path); return; }
+    catch (e) { if (i >= 50 || !['EPERM', 'EBUSY', 'EACCES'].includes((e as NodeJS.ErrnoException).code ?? '')) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); }
+  }
 };
 if (options.level) sim.command({ c: 'randomFaults', level: options.level });
 // Retain a replayable state even if the worker is killed or times out.
