@@ -705,7 +705,9 @@ function arriveAtBerth(sim: Sim, tr: Train, task: Task) {
     tr.stopsMade++;
     ps.lastArr = sim.t;
     if (task.arr !== null) tr.delay = sim.t - task.arr;
-    if (task.dep === null && task.trip >= 0 && sim.plan.trips[task.trip].revenue) {
+    // the trip's own final call only: a depot exit's change of ends carries the
+    // trip number with no departure time but is not a passenger stop
+    if (task.dep === null && task.revenue && task.trip >= 0 && sim.plan.trips[task.trip].revenue && !sim.plan.trips[task.trip].completed) {
       sim.tripsDone++;
       sim.metrics.tripsCompleted++;
       sim.plan.trips[task.trip].completed = true;

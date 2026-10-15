@@ -17,7 +17,13 @@ export function selectCases(seeds, levels, filter) {
 const caseName = c => `${c.dayType}-${c.template}-${c.level}-${c.seed}`;
 const atomicJSON = (path, value) => {
   const pending = `${path}.tmp`;
-  writeFileSync(pending, JSON.stringify(value, null, 2)); renameSync(pending, path);
+  writeFileSync(pending, JSON.stringify(value, null, 2));
+  // Windows refuses the rename while another process (a reader, the virus
+  // scanner) holds the target open: retry briefly instead of losing the run.
+  for (let i = 0; ; i++) {
+    try { renameSync(pending, path); return; }
+    catch (e) { if (i >= 50 || !['EPERM', 'EBUSY', 'EACCES'].includes(e.code)) throw e; Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100); }
+  }
 };
 
 export async function runSoak({ cases, output, model, hashCurrent, workers, timeoutMs, resume = false,
