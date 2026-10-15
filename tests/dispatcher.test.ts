@@ -59,10 +59,9 @@ describe('dispatcher commands', () => {
   });
 
   it('manual turnback and withdraw', () => {
-    // D72 changes the 08:00 opposing-train phase. Exercise the command in
-    // the 5-minute off-peak gaps, after the last peak wave clears the core.
+    // D79 extends the AM wave; exercise the command after it clears the core.
     const sim = makeSim('weekday', 9 * 3600 + 55 * 60, { seed: 5 });
-    runFor(sim, 25 * 60, stepCheck);
+    runFor(sim, 13*3600-sim.t, stepCheck);
     const rm = st(sim, '人民广场');
     // Wait for a real approaching train rather than requiring this
     // incidental snapshot to contain one.
@@ -81,13 +80,14 @@ describe('dispatcher commands', () => {
     const end = sim.t + 3600;
     while (sim.trains.has(w.id) && sim.t < end) runFor(sim, 10, stepCheck);
     expect(sim.trains.has(w.id)).toBe(false);
-  });
+  },240_000);
 
   it('add train', () => {
     // the shared 09:55 checkpoint: the peak bands are at capacity (no slot
     // keeps the minimum headway), so the extra train runs in the first
     // off-peak hour, on an undisturbed line and to time
     const sim = makeSim('weekday', 9 * 3600 + 55 * 60, { seed: 5 });
+    runFor(sim,13*3600-sim.t,stepCheck);
     const lyd = sim.topo.depots.findIndex((d) => d.key === 'LYD');
     const add = sim.command({c:'addTrain',depot:lyd,dir:'DN',to:st(sim,'广兰路').index,time:Math.max(sim.t+600,10*3600)});
     expect(add.ok,add.msg).toBe(true);
@@ -101,7 +101,7 @@ describe('dispatcher commands', () => {
     while (!done() && sim.t < end + 3600) runFor(sim, 30, track);
     expect(done()).toBe(true);
     expect(worst).toBeLessThanOrEqual(120);
-  });
+  },240_000);
 
   it('reports the CIIE opening-window capacity shortfall and runs the feasible services', () => {
     const sim = makeSim('weekday', 9 * 3600);
@@ -110,15 +110,14 @@ describe('dispatcher commands', () => {
     const ov = sim.command({ c: 'overlay', id: 'ciie', ...preset });
     expect(ov.ok, ov.msg).toBe(true);
     const added = sim.plan.trips.slice(before).filter(t => t.revenue && t.overlay?.startsWith('ciie'));
-    // D72 changes AM circulation and its return wave. Six departures are
-    // requested at 09:00; report those without a feeder
-    // slot, while the feasible services still complete in the simulation.
+    // D79 keeps the base peak until 10:00. Only one candidate pair fits
+    // this opening request; its return lacks a depot slot and is reported.
     const service = added.filter(t => (t.from === 1 && t.to === 22) || (t.from === 22 && t.to === 1));
-    expect(service.length).toBe(6);
+    expect(service.length).toBe(2);
     const omitted = service.filter(t => t.cancelled);
-    expect(omitted).toHaveLength(3);
+    expect(omitted).toHaveLength(1);
     expect(omitted.every(t => t.cancelReason === '加开：高峰间隔内无出段时隙')).toBe(true);
-    expect(ov.msg).toContain('3 个车次因能力或库存不足未安排');
+    expect(ov.msg).toContain('1 个车次因能力或库存不足未安排');
     const running = added.filter(t => !t.cancelled);
     expect(running.length).toBeGreaterThan(0);
     const last = Math.max(...running.map(t => t.stops.at(-1)!.arr));
@@ -161,7 +160,7 @@ describe('dispatcher commands', () => {
     const sim = makeSim('weekday', 9 * 3600 + 55 * 60, { seed: 5 });
     const E = sim.topo.stations.length - 1;
     const hots = () => sim.trainList.filter(t => hotStandby(sim, t));
-    const until = sim.t + 2400;
+    const until = 13*3600;
     while (hots().length < 2 && sim.t < until) runFor(sim, 30, stepCheck);
     expect(hots().map(t => hotStandby(sim, t)!.station).sort((a, b) => a - b)).toEqual([0, E]);
     expect(sim.snapshot().trains.filter(t => t.hot).length).toBe(2);
@@ -202,7 +201,7 @@ describe('dispatcher commands', () => {
     expect(left - Dw.dep!).toBeLessThan(90);
     runFor(sim, 900, stepCheck);
     expect(hotStandby(sim, late)?.station).toBe(0);
-  });
+  },240_000);
 
   it('manual route cancel / set at a signal', () => {
     const sim = makeSim('weekday', H);

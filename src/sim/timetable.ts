@@ -37,6 +37,10 @@ export const TEMPLATES: Record<string, Template> = {
     id: 'weekdayPM', name: '工作日晚高峰', desc: '大小交路交替：大—大—小，淞虹路—广兰路 3\'00"，外段 4\'30"',
     pattern: ['big', 'big', 'small'], headway: 180, dwellFactor: 0.8,
   },
+  weekdayAMTail: {
+    id: 'weekdayAMTail', name: '早高峰退出', desc: '2:1 交路逐步退出早高峰【假设】',
+    pattern: ['big', 'big', 'small'], headway: 210, dwellFactor: 0.8,
+  },
   weekdayOff: {
     id: 'weekdayOff', name: '工作日平峰', desc: '单一大交路 5\'00"', pattern: ['big'], headway: 300, dwellFactor: 1.0,
   },
@@ -68,10 +72,11 @@ export function dayPeriods(dayType: DayType): Period[] {
   if (dayType === 'weekday') {
     return [
       { from: H(4), to: H(6, 5), template: 'firstLast', label: '首班/早间', runLevel: 1, dwellFactor: 0.95 },
-      { from: H(6, 5), to: H(6, 50), template: 'weekdayOff', headway: 300, label: '早高峰前过渡' },
-      { from: H(6, 50), to: H(9, 30), template: 'weekdayAM', label: '早高峰' },
-      { from: H(9, 30), to: H(16, 50), template: 'weekdayOff', label: '平峰' },
-      { from: H(16, 50), to: H(19, 30), template: 'weekdayPM', label: '晚高峰' },
+      { from: H(6, 5), to: H(7, 40), template: 'weekdayOff', headway: 300, label: '早高峰前过渡' },
+      { from: H(7, 40), to: H(10), template: 'weekdayAM', label: '早高峰' },
+      { from: H(10), to: H(10, 40), template: 'weekdayAMTail', headway: 190, headwayTo: 270, label: '早高峰退出【假设】' },
+      { from: H(10, 40), to: H(18, 15), template: 'weekdayOff', label: '平峰' },
+      { from: H(18, 15), to: H(19, 30), template: 'weekdayPM', label: '晚高峰' },
       // D72: 19:44 observed ~165 s, 20:43 observed ~240 s. The
       // interpolation between observations is 【假设】, with a 12-min 2:1
       // cycle by 20:45. This band does not pre-position a second peak wave.
@@ -79,8 +84,8 @@ export function dayPeriods(dayType: DayType): Period[] {
       { from: H(19, 45), to: H(20, 45), template: 'weekdayPMTail', headway: 165, headwayTo: 240, label: '晚高峰间隔渐长' },
       { from: H(20, 45), to: H(20, 55), template: 'weekdayPMTail', headway: 240, label: '小交路收车前' },
       { from: H(20, 55), to: H(21), template: 'weekdayNight', headway: 240, headwayTo: 180, label: '机场车接替时隙【假设】' },
-      { from: H(21), to: H(21, 40), template: 'weekdayNight', headway: 180, headwayTo: 480, label: '晚间间隔插值【假设】' },
-      { from: H(21, 40), to: H(28), template: 'firstLast', headway: 480, label: '末班/收车' },
+      { from: H(21), to: H(21, 40), template: 'weekdayNight', headway: 240, label: '晚间大交路【假设】' },
+      { from: H(21, 40), to: H(28), template: 'firstLast', headway: 240, label: '末班/收车' },
     ];
   }
   return [
@@ -143,7 +148,7 @@ const MAX_LAYOVER = 1500;
 interface StandbyWindow { from: number; need: number; to: number }
 function standbyWindows(dayType: DayType): StandbyWindow[] {
   return dayType === 'weekday'
-    ? [{ from: H(9, 30), need: H(15), to: H(19, 30) }, { from: H(20, 55), need: H(21, 40), to: H(21, 40) }]
+    ? [{ from: H(11,30), need: H(16), to: H(20, 30) }]
     : [{ from: H(9), need: H(21), to: H(21) }];
 }
 /** longest an added train running on in its own direction may stand at an
@@ -233,6 +238,11 @@ function periodAt(periods: Period[], t: number): Period {
 }
 
 function dwellFactorAt(periods: Period[], t: number): number {
+  // D79 moves service slots only; preserve D73's clock-based exchange factors.
+  if (periods.some(p => p.template === 'weekdayAMTail')) {
+    if (t >= H(6, 5) && t < H(16, 50)) return t >= H(6, 50) && t < H(9, 30) ? 0.8 : 1;
+    if (t >= H(16, 50) && t < H(19, 30)) return 0.8;
+  }
   const p = periodAt(periods, t);
   // 【假设】 fade the observed evening exchange to the late-train level
   // over 21:00–21:40, keeping the physical door cycle fixed (D73).
@@ -242,6 +252,7 @@ function dwellFactorAt(periods: Period[], t: number): number {
 }
 
 export function plannedRunLevel(dayType: DayType, departure: number): number {
+  if(dayType==='weekday')return departure>=H(21,40)?4:departure>=H(21,25)?3:departure>=H(21,10)?2:1;
   const p = periodAt(dayPeriods(dayType), departure);
   if (p.template === 'weekdayNight' && departure >= H(21, 10)) return departure < H(21, 25) ? 2 : 3;
   return p.runLevel ?? TEMPLATES[p.template].runLevel ?? 1;
@@ -325,12 +336,26 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     // an off-grid first train which disrupts the western 1:2 alternation.
     upPhase = ((first - anchor) % hw + hw) % hw;
   }
+  const morningUpStart = H(6, 55) + upPhase;
+  // 【假设】 D79/D80: reference waves mapped from the checked station bins.
+  const peakStart=(p:Period,dir:TrackDir)=>p.template==='weekdayPM'?(dir==='DN'?H(17):H(17,24))
+    :dir==='UP'?morningUpStart:p.from-coreLead.get(p)!;
   /** the steady peak stream from its leading wave, after a 20 min run-in from the headway before */
-  const streamAt = (t: number): Period & { steady?: boolean } => {
+  const streamAt = (t: number, dir: TrackDir): Period & { steady?: boolean } => {
+    if (ctx.dayType === 'weekday' && dir === 'DN' && t >= H(20,15) && t < H(20,45))
+      return { from: H(20,15), to: H(20,45), template: 'weekdayPMTail', headway: 180, label: '东行三分钟延续【假设】' };
+    if (ctx.dayType === 'weekday' && dir === 'DN' && t >= H(9, 45) && t < H(10, 40))
+      return { from: H(9, 45), to: H(10, 40), template: 'weekdayAMTail', headway: 200, headwayTo: 300, label: '东行早高峰退出【假设】' };
+    if (ctx.dayType === 'weekday' && t < morningUpStart) {
+      if (dir === 'UP') return { from: H(5, 35), to: morningUpStart, template: 'weekdayOff', headway: 450, label: '西行开班疏班【假设】' };
+      const start = peaks[0].from - coreLead.get(peaks[0])!;
+      if (t < start) return { from: 0, to: start, template: 'weekdayAM', headway: t < H(6, 10) ? 225 : 180, label: '东行开班过渡【假设】' };
+    }
     for (const peak of peaks) {
       const hw = peakHw(peak);
-      const start = peak.from - coreLead.get(peak)!, transition = start - 1200;
-      if (t >= start && t < peak.to) return { ...peak, from: start, headway: hw, steady: true };
+      const start = peakStart(peak,dir), transition = start - 1200;
+      const end=peak.template==='weekdayPM'&&dir==='UP'?H(20,20):peak.to;
+      if (t >= start && t < end) return { ...peak, from: start, headway: hw, steady: true };
       if (t >= transition && t < start) {
         const before = periodAt(periods, transition);
         const prev = Math.max(hw, before.headway ?? TEMPLATES[before.template].headway);
@@ -339,8 +364,8 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     }
     return periodAt(periods, t);
   };
-  const headwayAt = (t: number) => {
-    const p = streamAt(t);
+  const headwayAt = (t: number, dir: TrackDir) => {
+    const p = streamAt(t, dir);
     const start = p.headway ?? TEMPLATES[p.template].headway;
     return p.headwayTo === undefined ? start : start + (p.headwayTo - start) * Math.max(0, Math.min(1, (t - p.from) / (p.to - p.from)));
   };
@@ -362,10 +387,11 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
   const firstReference = (dir: TrackDir, from: number, to: number, ref: number, first: number) =>
     buildStops(ctx, dir, from, to, first, true, factorAt).find(x => x.st === ref)!.dep;
   const nextSlot = (t: number, dir: TrackDir) => {
-    const p = streamAt(t);
-    const candidate = t + headwayAt(p.steady ? t : t + headwayAt(t) / 2);
+    const p = streamAt(t, dir);
+    const candidate = t + headwayAt(p.steady ? t : t + headwayAt(t, dir) / 2, dir);
+    if (ctx.dayType === 'weekday' && dir === 'UP' && t < morningUpStart && candidate >= morningUpStart) return morningUpStart;
     // Join the leading peak wave without a short insertion or a long gap.
-    const join = peaks.map(p => ({ b: p.from - coreLead.get(p)! + (dir === 'UP' ? (p.template === 'weekdayPM' ? 0 : upPhase) : 0), hw: peakHw(p) })).find(x => x.b > t && x.b <= candidate);
+    const join = peaks.map(p => ({ b: peakStart(p,dir), hw: peakHw(p) })).find(x => x.b > t && x.b <= candidate);
     if (join) return join.b - t >= 90 ? join.b : join.b + join.hw;
     return candidate;
   };
@@ -376,14 +402,14 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     let lastPeriod = '';
     let t = firstReference('DN', W, E, SHR, OPERATIONS.firstWestTerminusDep);
     for (let guard = 0; guard < 2000; guard++) {
-      const p = streamAt(t);
+      const p = streamAt(t, 'DN');
       const tpl = TEMPLATES[p.template];
       if (p.label !== lastPeriod) { if (p.template !== 'weekdayPMTail') idx = p.template === 'weekdayAM' ? 2 : 0; lastPeriod = p.label; }
       if (p.steady) idx = Math.round((t - p.from) / peakHw(p)) + (p.template === 'weekdayAM' ? 2 : 0);
       let kind = tpl.pattern[idx % tpl.pattern.length] as 'big' | 'small' | 'late';
       // Pre-position the core with short routes, while the west outer
       // section still has one departure every 5 minutes (D73).
-      if (p.template === 'weekdayAM' && t < peaks[0].from) kind = idx % 2 === 0 ? 'big' : 'small';
+      if (p.template === 'weekdayAM' && t < H(7, 10)) kind = idx % 2 === 0 ? 'big' : 'small';
       if (guard === 0) kind = 'big'; // preserve the published PXL 05:25 opener
       if (kind === 'big' || kind === 'late') {
         const originDep = atReference('DN', W, E, SHR, t)[0].dep;
@@ -423,9 +449,9 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     // 05:20 first train does the same).
     const gllCycle = minTurn(GLL) + (OPERATIONS.platformTurnClear.GLL ?? 0) + 10;
     let lastGllOpening = -Infinity;
-    let t = (peaks.length ? Math.min(firstThrough, peaks[0].from - coreLead.get(peaks[0])! - 1200) : firstThrough) + (ctx.dayType === 'weekday' ? upPhase : 0);
+    let t = ctx.dayType === 'weekday' ? H(5, 35) + 30 : firstThrough;
     for (let guard = 0; guard < 2000; guard++) {
-      const p = streamAt(t);
+      const p = streamAt(t, 'UP');
       const tpl = TEMPLATES[p.template];
       if (p.label !== lastPeriod) { if (p.template !== 'weekdayPMTail') idx = 0; lastPeriod = p.label; }
       if (p.steady) idx = Math.round((t - p.from - (p.template === 'weekdayAM' ? upPhase : 0)) / peakHw(p));
@@ -458,7 +484,8 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
           addTrip('UP', 'ins', 19, W, buildStops(ctx, 'UP', 19, W, atLYL, true, factorAt), true);
         } else {
           if (opening) lastGllOpening = t;
-          addTrip('UP', opening ? 'ins' : 'small', GLL, opening ? W : SHR, buildStops(ctx, 'UP', GLL, opening ? W : SHR, t, true, factorAt), true);
+          const to=opening?W:SHR;
+          addTrip('UP', opening ? 'ins' : 'small', GLL, to, buildStops(ctx, 'UP', GLL, to, t, true, factorAt), true);
         }
       }
       idx++;
@@ -478,12 +505,49 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     dir === 'DN' ? FIRST_TRAIN_DIAGRAM_RUN_ADJUST_S.guanglanEast : from === 19 ? FIRST_TRAIN_DIAGRAM_RUN_ADJUST_S.longyangWest : 0), true));
 
   if (ctx.dayType === 'weekday') {
+    // 【假设】 D79: LYL supplies the western opening wave while GLL/ZJG
+    // still have 7–8 minute service. The official LYL opener uses this portal.
+    for (let round = 0; round < 30; round++) {
+      const calls = trips.filter(t => t.dir === 'UP' && t.revenue && t.to <= SHR)
+        .flatMap(t => t.stops.filter(s => s.st === 19).map(s => s.dep)).sort((a,b)=>a-b);
+      let added = false;
+      for (let i=0;i+1<calls.length;i++) {
+        const at=calls[i], gap=at < H(6, 10) ? (at>=H(5,35)&&at<H(5,50)?225:450) : at < H(6, 40) ? 225 : 150;
+        if (at>=H(7, 10) || calls[i+1]-at < gap+MIN_HEADWAY) continue;
+        const dep=at+gap, to=dep<H(6, 30)?W:SHR;
+        const stops=buildStops(ctx,'UP',19,to,dep,true,factorAt);
+        if (!new DepIndex(trips).clear(stops,'UP')) continue;
+        addTrip('UP','ins',19,to,stops,true);added=true;break;
+      }
+      if(!added)break;
+    }
+    for(let dep=H(17,7);dep<=H(17,20);dep+=30){
+      const stops=buildStops(ctx,'UP',19,SHR,dep,true,factorAt);
+      if(new DepIndex(trips).clear(stops,'UP')){addTrip('UP','ins',19,SHR,stops,true);break;}
+    }
+    // Do not take surplus opening trains all the way into PXL's full tails.
+    // 【假设】 finish carrying at SHR and use its existing BZL portal/turn.
+    const events = trips.filter(t => t.revenue && (t.from === W || t.to === W))
+      .flatMap(t => t.to === W ? [{t,time:t.stops.at(-1)!.arr,arr:true}] : [{t,time:t.stops[0].dep,arr:false}])
+      .filter(e=>e.time<H(9)).sort((a,b)=>a.time-b.time);
+    const waiting: GenTrip[]=[];
+    for(const e of events){
+      if(!e.arr){const i=waiting.findIndex(t=>t.stops.at(-1)!.arr+minTurn(W)<=e.time);if(i>=0)waiting.splice(i,1);continue;}
+      waiting.push(e.t);
+      if(waiting.length<=MAX_PRESENT[W])continue;
+      const i=waiting.findIndex(t=>!firstService.includes(t));
+      if(i<0)continue;
+      const t=waiting.splice(i,1)[0];t.to=SHR;t.kind='wd';t.stops=t.stops.filter(s=>s.st>=SHR);t.stops.at(-1)!.dep=t.stops.at(-1)!.arr;
+    }
+  }
+
+  if (ctx.dayType === 'weekday') {
     // The last two short-route duties finish carrying passengers: the final
     // westbound one goes to 蟠祥路 and the eastbound one to 龙阳路 depot.
-    const closingSlot = trips.filter(t => t.dir === 'UP' && (t.stops.find(s => s.st === GLL)?.dep ?? -Infinity) >= H(20, 52)
-      && t.stops.find(s => s.st === GLL)!.dep < H(20, 55)).at(-1);
+    const closingSlot = trips.filter(t => t.dir === 'UP' && Math.abs((t.stops.find(s => s.st === GLL)?.dep ?? -Infinity)-H(20,55))<=180)
+      .sort((a,b)=>Math.abs(a.stops.find(s=>s.st===GLL)!.dep-H(20,55))-Math.abs(b.stops.find(s=>s.st===GLL)!.dep-H(20,55)))[0];
     if (closingSlot) {
-      const dep = closingSlot.stops.find(s => s.st === GLL)!.dep;
+      const dep = H(20,55);
       closingSlot.kind = 'wd'; closingSlot.from = GLL; closingSlot.to = W;
       closingSlot.stops = buildStops(ctx, 'UP', GLL, W, dep, true, factorAt);
     }
@@ -540,9 +604,93 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
   // its final slot is independently fixed at 22:42 (D73).
   const closingDN = trips.filter(t => t.dir === 'DN' && t.from === W && t.to === GLL && t.revenue)
     .sort((a, b) => a.stops[0].dep - b.stops[0].dep);
+  if(ctx.dayType==='weekday')while(closingDN.length>1&&OPERATIONS.lastLateEastboundDep-(closingDN.length-1)*240<OPERATIONS.lastBigEastboundDep+MIN_HEADWAY)
+    cancelTrip(closingDN.shift()!,'末班衔接：首趟广兰路终到车须与机场末班保持间隔');
   for (let i = closingDN.length - 2; i >= 0; i--)
-    closingDN[i].stops = buildStops(ctx, 'DN', W, GLL, OPERATIONS.lastLateEastboundDep - (closingDN.length - 1 - i) * 480, true, factorAt);
-  const blocks = circulate(ctx, trips, [W, E, SHR, GLL, 19, 28], periods, undefined, undefined, 0, undefined, undefined, shift, stock);
+    closingDN[i].stops = buildStops(ctx, 'DN', W, GLL, OPERATIONS.lastLateEastboundDep - (closingDN.length - 1 - i) * (ctx.dayType==='weekday'?240:480), true, factorAt);
+  if(ctx.dayType==='weekday'){
+    // 【假设】 D81: alternate late DN carrying returns at LYL and use a
+    // limited number of UP LYL depot origins, preserving all official lasts.
+    const nightDN=trips.filter(t=>t.dir==='DN'&&t.from===W&&t.revenue&&t.stops.find(p=>p.st===19)!.arr>=H(22,30)).sort((a,b)=>a.stops[0].dep-b.stops[0].dep);
+    for(const [i,t]of nightDN.entries())if(i%2===0&&t.stops[0].dep!==OPERATIONS.lastBigEastboundDep&&t.stops[0].dep!==OPERATIONS.lastLateEastboundDep){
+      t.to=19;t.kind='wd';t.stops=t.stops.filter(p=>p.st<=19);t.stops.at(-1)!.dep=t.stops.at(-1)!.arr;
+    }
+    const nightUP=trips.filter(t=>t.dir==='UP'&&t.from===E&&t.revenue&&t.stops.find(p=>p.st===19)!.dep>=H(22)).sort((a,b)=>a.stops[0].dep-b.stops[0].dep);
+    for(const [i,t]of nightUP.entries())if(i%4===0&&t.stops.find(p=>p.st===19)!.dep>=H(22,10)
+      &&t.stops.find(p=>p.st===19)!.dep<H(22,30)&&t.stops[0].dep!==OPERATIONS.lastBigWestboundDep){
+      t.from=19;t.kind='ins';t.stops=t.stops.filter(p=>p.st<=19);t.stops[0].arr=t.stops[0].dep;
+    }
+  }
+  let blocks: Block[];
+  if(ctx.dayType==='weekday') {
+    const originals=[...trips], primary=structuredClone(trips);
+    const protectedFirst=new Set([...firstService.map(t=>t.id),...trips.filter(t=>
+      (t.dir==='DN'&&t.from===W&&[OPERATIONS.firstWestTerminusDep,OPERATIONS.lastBigEastboundDep,OPERATIONS.lastLateEastboundDep].includes(t.stops[0].dep))
+      ||(t.dir==='UP'&&t.from===E&&t.stops[0].dep===OPERATIONS.lastBigWestboundDep)).map(t=>t.id)]);
+    for(let attempt=0;;attempt++){
+      trips.splice(0,trips.length,...primary.map((t,i)=>{
+        const original=originals[i];for(const key of Object.keys(original))delete (original as unknown as Record<string,unknown>)[key];
+        return Object.assign(original,structuredClone(t));
+      }));
+      blocks=circulate(ctx,trips,[W,E,SHR,GLL,1,19,28],periods,undefined,undefined,0,undefined,undefined,shift,stock);
+      if(attempt>=20)break;
+      const probe:Plan={dayType:ctx.dayType,trips,blocks,periods:[],overlays:[],fleetPeak:0};
+      const issue=validatePlan(ctx,probe).find(i=>i.severity==='error'&&['TERMINAL_FULL','HEADWAY','TURN_HEADWAY','DEPOT_CONFLICT'].includes(i.code));
+      if(!issue)break;
+      let repaired=false;
+      if(issue.code==='DEPOT_CONFLICT'){
+        const b=blocks[issue.blocks![0]],last=trips[b.trips.at(-1)!];
+        if(last.id<primary.length&&last.dir==='UP'&&last.from===GLL&&last.to===SHR){
+          const p=primary[last.id];p.to=19;p.kind='wd';p.stops=p.stops.filter(s=>s.st>=19);p.stops.at(-1)!.dep=p.stops.at(-1)!.arr;repaired=true;
+        }
+      }else if(issue.code==='TERMINAL_FULL'){
+        const feederDuty=(issue.blocks??[]).map(id=>blocks[id])
+          .filter(b=>b.start.kind==='depot'&&b.trips.length>1&&b.trips[0]>=primary.length&&b.trips[1]<primary.length)
+          .map(b=>primary[b.trips[1]]).filter(t=>!protectedFirst.has(t.id))
+          .sort((a,b)=>b.stops[0].dep-a.stops[0].dep)[0];
+        if(feederDuty){
+          // 【假设】 Use the adjacent NECC tails before omitting the entire western
+          // leg: they already turn the hub overlay (D67), clear of PXL.
+          const from=feederDuty.dir==='DN'?(feederDuty.from===W?1:SHR):19;
+          feederDuty.from=from;feederDuty.kind='ins';
+          feederDuty.stops=feederDuty.stops.filter(p=>feederDuty.dir==='DN'?p.st>=from:p.st<=from);
+          feederDuty.stops[0].arr=feederDuty.stops[0].dep;
+          continue;
+        }
+        const T=issue.text.startsWith(STATIONS[W].name)?W:E,dir=T===W?'DN':'UP',ref=T===W?SHR:GLL;
+        const arrivals=(terminalOccupancy(probe).get(T)??[]).filter(o=>o.from<=issue.t&&o.to>issue.t);
+        const choices=primary.filter(t=>t.revenue&&t.dir===dir&&t.from===ref&&!protectedFirst.has(t.id))
+          .map(p=>({p,stops:atReference(dir,T,T===W?E:W,ref,p.stops[0].dep)}))
+          .filter(({stops})=>(dir==='DN'||stops[0].dep>=OPERATIONS.firstEastTerminusDep)&&stops[0].dep<=issue.t-HOLD_CLEAR&&stops[0].dep>issue.t-1800
+            &&arrivals.some(o=>o.from+minTurn(T)<=stops[0].dep))
+          .sort((a,b)=>b.stops[0].dep-a.stops[0].dep);
+        const choice=choices[0];
+        if(choice){
+          // Keep previously withdrawn opening duties withdrawn: otherwise a
+          // new terminal slot resurrects one of them and brings the crowd back.
+          for(const t of trips.slice(0,primary.length))if(t.dir==='UP'&&primary[t.id].to===W&&t.to===SHR&&t.kind==='wd'){
+            Object.assign(primary[t.id],{to:SHR,kind:'wd',stops:structuredClone(t.stops)});
+          }
+          // 【假设】 extend a short slot to the terminal and turn an existing
+          // train into it. The core slot stays put; no additional core train.
+          Object.assign(choice.p,{from:T,to:T===W?E:W,kind:'big',stops:choice.stops});repaired=true;
+        }
+      }else{
+        const choices=(issue.blocks??[]).flatMap(id=>blocks[id].trips.map(t=>trips[t]))
+          .filter(t=>t.id<primary.length&&!protectedFirst.has(t.id)&&t.stops[0].dep<issue.t&&t.stops.at(-1)!.arr>=issue.t-120);
+        for(const t of choices){
+          const others=new DepIndex(primary.filter(p=>p.id!==t.id));
+          for(const delta of [1,-1,5,-5,10,-10,15,-15]){
+            const shifted=primary[t.id].stops.map(p=>({...p,arr:p.arr+delta,dep:p.dep+delta}));
+            if(!others.clear(shifted,t.dir,MIN_HEADWAY+.01))continue;
+            primary[t.id].stops=shifted;repaired=true;break;
+          }
+          if(repaired)break;
+        }
+      }
+      if(!repaired)break;
+    }
+  }else blocks=circulate(ctx, trips, [W, E, SHR, GLL, 19, 28], periods, undefined, undefined, 0, undefined, undefined, shift, stock);
   addFixedRuns(ctx, trips, blocks, ctx.fixedRuns ?? FIXED_LATE_TRAINS);
 
   // Trains before a station opens cannot board there (positioning and depot
@@ -1345,7 +1493,8 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
         });
       if (next) {
         const feeder = trips[next.prev!];
-        feeder.cancelled = true; feeder.next = undefined; startOf.delete(feeder.id);
+        if(ctx.dayType==='weekday')cancelTrip(feeder,'车底接续：回流车接替定位或回段车次');else feeder.cancelled = true;
+        feeder.next = undefined; startOf.delete(feeder.id);
         A.next = next.id; next.prev = A.id;
         continue;
       }
@@ -1489,9 +1638,42 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
   spacePortalExits(ctx, blocks, trips, new Set(pool.map(t => t.id)));
   if (!overlay) relieveTerminals(ctx, blocks, trips, new Set(pool.map(t => t.id)));
   if (!overlay) fitOpeningFeeders(ctx, blocks, trips, new Set(pool.map(t => t.id)));
+  if (!overlay && ctx.dayType === 'weekday') relieveTerminals(ctx, blocks, trips, new Set(pool.map(t => t.id)));
+  if (!overlay && ctx.dayType === 'weekday') reuseTerminalReturns(ctx, blocks, trips);
   if (!overlay) reorderTerminalTurns(blocks, trips, [0, topo.stations.length - 1]);
   void periods;
   return blocks;
+}
+
+/** A returning service replaces an earlier depot feeder for the same duty.
+ * Run after feeder fitting/FIFO assignment as well: their order may change.
+ * 【假设】 D79: keep the arriving train in service instead of a needless yard swap. */
+function reuseTerminalReturns(ctx: PlanContext, blocks: Block[], trips: GenTrip[]) {
+  for (let round=0;round<blocks.length;round++) {
+    let changed=false;
+    for(const incoming of blocks){
+      if(incoming.end.kind!=='depot'||incoming.trips.length<2)continue;
+      let k=incoming.trips.length-1;
+      while(k>=0&&!(trips[incoming.trips[k]].revenue&&[0,ctx.topo.stations.length-1].includes(trips[incoming.trips[k]].to)))k--;
+      if(k<0||k===incoming.trips.length-1)continue;
+      const a=trips[incoming.trips[k]],arr=a.stops.at(-1)!.arr,T=a.to;
+      const tail=incoming.trips.slice(k+1).map(id=>trips[id]);
+      if(tail[0].from!==T||tail.some(t=>t.kind!=='wd'&&t.kind!=='empty'))continue;
+      const candidate=blocks.filter(b=>b!==incoming&&b.start.kind==='depot'&&b.trips.length>1)
+        .map(b=>({b,feeder:trips[b.trips[0]],d:trips[b.trips[1]]}))
+        .filter(({feeder,d})=>['ins','empty'].includes(feeder.kind)&&feeder.to===T&&d.from===T&&d.dir!==a.dir
+          &&feeder.stops.at(-1)!.arr<=arr&&d.stops[0].dep>=arr+minTurn(T)&&d.stops[0].dep<=arr+MAX_LAYOVER)
+        .sort((x,y)=>x.d.stops[0].dep-y.d.stops[0].dep)[0];
+      if(!candidate)continue;
+      const {b,feeder,d}=candidate;
+      for(const t of [...tail,feeder]){cancelTrip(t,'车底接续：回流车接替定位或回段车次');t.prev=undefined;t.next=undefined;t.block=-1;}
+      a.next=d.id;d.prev=a.id;
+      incoming.trips=[...incoming.trips.slice(0,k+1),...b.trips.slice(1)];incoming.end=b.end;
+      blocks.splice(blocks.indexOf(b),1);changed=true;break;
+    }
+    if(!changed)break;
+  }
+  for(const [id,b]of blocks.entries()){b.id=id;for(const t of b.trips)trips[t].block=id;}
 }
 
 /** Depot feeder times can change after the initial FIFO matching. Reassign
@@ -1527,23 +1709,30 @@ function fitOpeningFeeders(ctx: PlanContext, blocks: Block[], trips: GenTrip[], 
   const plan = { trips, blocks } as Plan;
   const periods = dayPeriods(ctx.dayType);
   const factor = (t: number) => dwellFactorAt(periods, t);
-  for (const b of blocks) {
+  const until=ctx.dayType==='weekday'?H(26):H(10);
+  const pending=new Set(ctx.dayType==='weekday'?blocks.filter(b=>b.start.kind==='depot'&&b.trips.length>1&&!fixed.has(b.trips[0])
+    &&trips[b.trips[0]].to===trips[b.trips[1]].from&&trips[b.trips[0]].stops[0].dep<until).map(b=>b.trips[0]):[]);
+  const ordered=ctx.dayType==='weekday'?[...blocks].sort((a,b)=>(trips[b.trips[1]]?.stops[0].dep??0)-(trips[a.trips[1]]?.stops[0].dep??0)):blocks;
+  for (const b of ordered) {
     if (b.start.kind !== 'depot' || b.trips.length < 2) continue;
     const first = trips[b.trips[0]], next = trips[b.trips[1]];
-    if (fixed.has(first.id) || first.to !== next.from || first.stops[0].dep >= H(10)) continue;
+    if (fixed.has(first.id) || first.to !== next.from || first.stops[0].dep >= until) continue;
     const target = next.from, departure = next.stops[0].dep;
-    const others = trips.filter(t => t !== first && !t.cancelled);
+    pending.delete(first.id);
+    const others = trips.filter(t => t !== first && !t.cancelled && !pending.has(t.id));
     const index = new DepIndex(others.filter(t => t !== next));
-    const occupied = (terminalOccupancy(plan).get(target) ?? []).filter(o => o.block !== b.id);
+    const occupied = (terminalOccupancy(plan).get(target) ?? []).filter(o => o.block !== b.id && !pending.has(blocks[o.block].trips[0]));
     const depots = topo.depots.map((_, d) => d).sort((a, z) =>
       Math.abs(topo.depots[a].junctionChain - topo.stations[target].chain) - Math.abs(topo.depots[z].junctionChain - topo.stations[target].chain));
     let fitted = false;
+    const need=ctx.dayType==='weekday'?yardNeed(topo,plan):[];
     for (const depot of depots) {
+      if(ctx.dayType==='weekday'&&b.start.kind==='depot'&&depot!==b.start.depot&&need[depot]>=topo.depots[depot].capacity)continue;
       const dir: TrackDir = topo.stations[target].chain < topo.depots[depot].junctionChain ? 'UP' : 'DN';
       const origin = exitStation(topo, depot, dir);
       if (origin === target) continue;
       const reverse = dir !== next.dir, turn = reverse ? minTurn(target) : 0;
-      for (const revenue of [true, false]) {
+      for (const revenue of first.stops[0].dep>=H(20)?[false,true]:[true,false]) {
         const latest = departure - turn - (reverse ? 10 : 0);
         let start = latest - buildStops(ctx, dir, origin, target, 0, revenue, factor).at(-1)!.arr;
         for (let k = 0; k < 8; k++) {
@@ -1558,10 +1747,14 @@ function fitOpeningFeeders(ctx: PlanContext, blocks: Block[], trips: GenTrip[], 
           const gll = stops.find(s => s.st === 22);
           if (dir === 'DN' && target > 22 && gll && gll.arr < H(6) + MIN_HEADWAY) continue;
           const conflicts = occupied.filter(o => o.from < departure && o.to > arrival);
-          if (reverse && conflicts.length >= (TERMINAL_CAP[target] ?? 1)) continue;
-          if (reverse && occupied.some(o => o.from > arrival && o.to < departure)) continue;
+          if(ctx.dayType==='weekday'){
+            if(reverse&&terminalOverflows(topo,target,[...occupied,{from:arrival,to:departure}]).some(o=>o.t>=arrival&&o.t<departure+HOLD_CLEAR))continue;
+          }else{
+            if (reverse && conflicts.length >= (TERMINAL_CAP[target] ?? 1)) continue;
+            if (reverse && occupied.some(o => o.from > arrival && o.to < departure)) continue;
+          }
           const portal = topo.depots[depot].portals.exit[dir];
-          if (portal.reverse && blocks.some(other => other !== b && other.start.kind === 'depot' && other.start.depot === depot
+          if (portal.reverse && blocks.some(other => other !== b && !pending.has(other.trips[0]) && other.start.kind === 'depot' && other.start.depot === depot
             && trips[other.trips[0]].dir === dir && trips[other.trips[0]].from === origin
             && Math.abs(trips[other.trips[0]].stops[0].dep - stops[0].dep) < PORTAL_CYCLE)) continue;
           const candidate = { ...first, dir, from: origin, to: target, stops, revenue };
@@ -1676,6 +1869,9 @@ function relieveTerminals(ctx: PlanContext, blocks: Block[], trips: GenTrip[], f
     b.start = { kind: 'stable', station: st };
   };
   const stableInstead = (st: number, present: { from: number; block: number }[]): boolean => {
+    // D79: a daytime NECC origin must be supplied by its depot feeder;
+    // it cannot silently create another overnight train beyond the fixed 8.
+    if(ctx.dayType==='weekday'&&st!==0&&st!==topo.stations.length-1)return false;
     if (placesLeft(st) <= 0) return false;
     for (const o of present.slice().sort((x, y) => y.from - x.from)) {
       const b = blocks.find((x) => x.id === o.block)!;
@@ -2229,7 +2425,22 @@ export function blockTasks(topo: Topology, plan: Plan, block: Block, fromTrip = 
     if (before?.standby && dep) dep.standby = true;
     const next = ids.slice(k + 1).map((i) => plan.trips[i]).find((t) => !t.cancelled);
     if (next) {
-      if (next.dir !== trip.dir) addTurnback(topo, trip, tasks);
+      if (next.dir !== trip.dir) {
+        addTurnback(topo, trip, tasks);
+        // D79: SHR1/2 are BZL's two leads (layout-pdf.md), not isolated
+        // storage tails. 【假设】 assign SHR2 while an UP return needs SHR1;
+        // the existing route/occupancy checks still decide when it can enter.
+        const reverse=tasks.at(-1);
+        if(plan.dayType==='weekday'&&trip.to===4&&trip.dir==='UP'&&reverse?.k==='reverse'){
+          const depot=topo.depots.find(d=>d.key==='BZL')!;
+          const stub=depot.transferPaths[depot.portals.entry.UP.path].stub;
+          const returnSoon=plan.blocks.some(b=>b!==block&&b.end.kind==='depot'&&b.end.depot===depot.id&&(()=>{
+            const t=plan.trips[b.trips.at(-1)!];return t&&!t.cancelled&&t.dir==='UP'&&t.to===4
+              &&t.stops.at(-1)!.arr>=trip.stops.at(-1)!.arr-120&&t.stops.at(-1)!.arr<=next.stops[0].dep+240;
+          })());
+          if(returnSoon){reverse.berths=reverse.berths.filter(b=>topo.berths[b].link!==stub);reverse.chosen=reverse.berths[0];}
+        }
+      }
     }
     else if (block.end.kind === 'depot') depotTasks(topo, block.end.depot, trip.dir, tasks);
     else if (block.end.kind === 'stable') {
@@ -2577,6 +2788,19 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
           out.push({severity:'error',code:'DEPOT_CONFLICT',t:Math.max(approach,outbound.start.time),blocks:[inbound.id,outbound.id],
             text:`${depot.name} 加开回段接近与图定出段共用转换轨时隙冲突`});
       }
+    }
+  }
+  // 【假设】 D79: an UP return into BZL uses SHR's west throat while a
+  // reversing train leaves it. Separate their planned station events by
+  // 120 s; a same-direction station headway alone does not cover this move.
+  if(ctx.dayType==='weekday')for(const b of plan.blocks){
+    if(b.end.kind!=='depot'||topo.depots[b.end.depot].key!=='BZL')continue;
+    const last=plan.trips[b.trips.at(-1)!];if(!last||last.dir!=='UP'||last.to!==4||last.cancelled)continue;
+    for(const other of plan.blocks)if(other!==b)for(let k=1;k<other.trips.length;k++){
+      const a=plan.trips[other.trips[k-1]],d=plan.trips[other.trips[k]];
+      if(!a||!d||a.cancelled||d.cancelled||a.to!==4||d.from!==4||a.dir!=='UP'||d.dir!=='DN')continue;
+      const arr=last.stops.at(-1)!.arr,dep=d.stops[0].dep;
+      if(Math.abs(arr-dep)<120&&a.stops.at(-1)!.arr<arr)out.push({severity:'error',code:'DEPOT_CONFLICT',t:arr,blocks:[b.id,other.id],text:'淞虹路回段到达与折返发车共用咽喉不足120 s'});
     }
   }
   // station headways per direction (passing / departing)

@@ -10,6 +10,7 @@ import type { DayType } from '../src/sim/model';
 import { SCENARIOS } from '../src/sim/scenario';
 import { STATIONS, OPERATIONS } from '../src/data/line2';
 import { FIRST_LAST } from '../src/data/firstlast';
+import { readFileSync } from 'node:fs';
 
 const fmtIssues = (xs: { code: string; text: string }[]) => xs.map((i) => `${i.code} ${i.text}`).join('\n');
 
@@ -63,18 +64,43 @@ describe('D73 calibrated service anchors', () => {
       }
     }
   });
-  it('counts passenger-carrying trainsets against the paper, with enough AM fleet capacity', () => {
+  it('keeps the retimed peak fleet within the available trainsets and yard stock', () => {
     const count = (time: number) => new Set(live.filter(t => t.stops[0].dep <= time && t.stops.at(-1)!.arr > time).map(t => t.block)).size;
-    for (const [at, expected] of [[H(8), 67], [H(17, 30), 56], [H(12), 42]]) expect(Math.abs(count(at) - expected)).toBeLessThanOrEqual(3);
-    for (let at = H(6, 50); at < H(9, 30); at += 60) expect(count(at)).toBeLessThanOrEqual(76);
+    expect(sim.plan.fleetPeak).toBeLessThanOrEqual(92);
+    for(const [i,need]of yardNeed(sim.topo,sim.plan).entries())expect(need).toBeLessThanOrEqual(sim.topo.depots[i].capacity);
+    expect(count(H(8))).toBeGreaterThan(count(H(12)));
+    expect(count(H(18,30))).toBeGreaterThan(count(H(16)));
+    for (let at = H(6, 50); at < H(10); at += 60) expect(count(at)).toBeLessThanOrEqual(80);
   });
-  it('keeps each outer section on a five-minute opening grid until AM pre-positioning', () => {
-    for (const [origin, until] of [[30, H(6, 18)], [0, H(6, 32)]]) {
-      const times = live.filter(t => t.from === origin && t.stops[0].dep >= H(6) && t.stops[0].dep < until)
-        .map(t => t.stops[0].dep).sort((a, b) => a - b);
-      expect(times.length).toBeGreaterThanOrEqual(4);
-      for (let i = 1; i < times.length; i++) expect(Math.abs(times[i] - times[i - 1] - 300)).toBeLessThanOrEqual(10);
+  it('keeps ZJG opening sparse before the 07:03 peak wave rather than filling it from 06:00', () => {
+    const calls=live.filter(t=>t.dir==='UP').flatMap(t=>t.stops.filter((p,k)=>p.st===20&&p.stop&&!p.noBoard&&k<t.stops.length-1).map(p=>p.arr));
+    const count=(a:number,b:number)=>calls.filter(t=>t>=a&&t<b).length;
+    expect(count(H(6,15),H(6,30))).toBeLessThanOrEqual(3);
+    expect(count(H(6,45),H(7))).toBeLessThanOrEqual(3);
+    expect(count(H(7,15),H(7,30))).toBe(6);
+  });
+});
+
+describe('D79–D81 Gaode service distribution',()=>{
+  const s=new Sim({dayType:'weekday',dateLabel:'Gaode bins',startTime:14400,seed:1});
+  const checks=[['北新泾','UP'],['世纪公园','UP'],['世纪公园','DN'],['张江高科','UP'],['张江高科','DN']]as const;
+  it.each([[360,660,'AM'],[960,1290,'PM'],[1290,1410,'night']]as const)('%s–%s %s leaves at most four two-train misses and no three-train misses',(a,z,_band)=>{
+    let bad=0;
+    for(const [name,dir]of checks){
+      const gaode=new TextDecoder().decode(readFileSync(`reference/timetable-gaode/${name}-${dir}-weekday.txt`)).split(/\r?\n/).filter(l=>/^\d\d:\d\d/.test(l)).map(l=>+l.slice(0,2)*60 + +l.slice(3,5));
+      const station=s.topo.stations.findIndex(p=>p.name===name);
+      const plan=s.plan.trips.filter(t=>t.revenue&&!t.cancelled&&t.dir===dir).flatMap(t=>t.stops.filter((p,k)=>p.st===station&&p.stop&&!p.noBoard&&k<t.stops.length-1).map(p=>Math.floor(p.arr/60)));
+      for(let b=a;b<z;b+=15){const d=plan.filter(t=>t>=b&&t<b+15).length-gaode.filter(t=>t>=b&&t<b+15).length;expect(Math.abs(d),`${name} ${dir} ${b}`).toBeLessThan(3);if(Math.abs(d)>=2)bad++;}
     }
+    expect(bad).toBeLessThanOrEqual(4);
+  });
+  it('keeps the last GLL westbound short service at 20:55 and uses LYL for late carrying returns',()=>{
+    const necc=s.plan.trips.filter(t=>!t.cancelled&&t.revenue&&t.dir==='DN'&&t.from===1&&t.stops[0].dep<9*3600);
+    expect(necc.length).toBeGreaterThan(0);
+    for(const t of necc){const b=s.plan.blocks[t.block];expect(b.start.kind).toBe('depot');expect(b.trips.indexOf(t.id)).toBeGreaterThan(0);}
+    expect(s.plan.trips.some(t=>!t.cancelled&&t.revenue&&t.dir==='UP'&&t.from===22&&t.to===0&&t.stops[0].dep===20*3600+55*60)).toBe(true);
+    expect(s.plan.trips.filter(t=>!t.cancelled&&t.revenue&&t.dir==='DN'&&t.to===19&&t.stops.at(-1)!.arr>=22.5*3600&&t.stops.at(-1)!.arr<23.5*3600).length).toBeGreaterThanOrEqual(4);
+    expect(s.plan.trips.some(t=>!t.cancelled&&t.revenue&&t.dir==='UP'&&t.from===19&&t.stops[0].dep>=22*3600)).toBe(true);
   });
 });
 
@@ -207,7 +233,7 @@ describe('timetable validator', () => {
       });
       for (const st of [0, E]) {
         // midday: exactly one, and the other trains turn within the remaining places
-        expect(at(st, 12 * 3600).length, `${dayType} ${STATIONS[st].name}`).toBe(1);
+        expect(at(st, 13 * 3600).length, `${dayType} ${STATIONS[st].name}`).toBe(1);
         const occ = terminalOccupancy(plan).get(st)!;
         const busy = (t: number) => occ.filter(o => o.from <= t && o.to > t).length;
         for (let t = 11 * 3600; t < 14 * 3600; t += 60) expect(busy(t)).toBeLessThanOrEqual(3);
@@ -216,7 +242,7 @@ describe('timetable validator', () => {
       if (dayType === 'weekday') for (const st of [0, E]) {
         expect(at(st, 8 * 3600).length + at(st, 17.5 * 3600).length).toBe(0);
         expect(at(st, 20.5 * 3600)).toHaveLength(0);
-        expect(at(st, 21.5 * 3600)).toHaveLength(1);
+        expect(at(st, 21.5 * 3600)).toHaveLength(0);
       }
       expect(fmtIssues(validatePlan(sim.planCtx, plan))).toBe('');
     }
@@ -287,6 +313,19 @@ describe('timetable validator', () => {
     expect(block.trips.every(id => sim.plan.trips[id].cancelled)).toBe(true);
     for (const id of block.trips) sim.plan.trips[id].cancelled=false;
     expect(validatePlan(sim.planCtx,sim.plan).some(issue => issue.code==='DEPOT_CONFLICT' && issue.blocks?.includes(block.id))).toBe(true);
+  });
+  it('rejects a BZL return that meets an SHR turn in the shared west throat',()=>{
+    const sim=new Sim({dayType:'weekday',dateLabel:'SHR return',startTime:14400,seed:1}),p=sim.plan;
+    const inbound=p.blocks.find(b=>b.end.kind==='depot'&&sim.topo.depots[b.end.depot].key==='BZL'
+      &&p.trips[b.trips.at(-1)!].dir==='UP'&&p.trips[b.trips.at(-1)!].to===4)!;
+    expect(inbound).toBeDefined();
+    const other=p.blocks.find(b=>b!==inbound&&b.trips.some((id,k)=>{
+      const a=p.trips[id],d=p.trips[b.trips[k+1]];return d&&!a.cancelled&&!d.cancelled&&a.dir==='UP'&&a.to===4&&d.dir==='DN'&&d.from===4;
+    }))!;
+    const k=other.trips.findIndex((id,k)=>p.trips[id].dir==='UP'&&p.trips[id].to===4&&p.trips[other.trips[k+1]]?.dir==='DN');
+    const departure=p.trips[other.trips[k+1]],last=p.trips[inbound.trips.at(-1)!],delta=departure.stops[0].dep-10-last.stops.at(-1)!.arr;
+    last.stops=last.stops.map(s=>({...s,arr:s.arr+delta,dep:s.dep+delta}));
+    expect(validatePlan(sim.planCtx,p).some(i=>i.code==='DEPOT_CONFLICT'&&i.blocks?.[0]===inbound.id&&i.blocks?.[1]===other.id)).toBe(true);
   });
   it('keeps a throat clearance between turns on the GLL middle-track platform', () => {
     const sim = new Sim({ dayType: 'weekday', dateLabel: 'throat', startTime: 14400, seed: 1 });

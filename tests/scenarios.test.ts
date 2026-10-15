@@ -54,8 +54,12 @@ describe('faults', () => {
     expect(sim.trainList.filter((t) => sim.topo.links[t.link].zone === zone).every((t) => t.level === 'TBTC')).toBe(true);
     runFor(sim, 400, stepCheck);
     expect(sim.command({ c: 'zoneLevel', zones: [zone], level: 'CBTC' }).ok).toBe(true);
-    runFor(sim, 30, stepCheck);
-    expect(sim.trainList.filter((t) => sim.topo.links[t.link].zone === zone && t.comm).every((t) => t.level === 'CBTC')).toBe(true);
+    // Re-localisation needs another section, a stop or a beacon (onboard.ts).
+    // The retimed stream can still be between beacons at a fixed 30 s sample.
+    const restored=()=>sim.trainList.filter(t=>sim.topo.links[t.link].zone===zone&&t.comm).every(t=>t.level==='CBTC');
+    const recoveryDeadline=sim.t+120;
+    while(!restored()&&sim.t<recoveryDeadline)runFor(sim,5,stepCheck);
+    expect(restored()).toBe(true);
   });
 
   it('axle counter failure → trains stop → reset fails before repair → preset + RM sweep clears', () => {
