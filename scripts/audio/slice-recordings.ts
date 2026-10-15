@@ -5,7 +5,7 @@
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { SOUND_BANK, SOUNDBANK_DIRECTORY } from '../../src/data/soundbank';
+import { SOUND_BANK, SOUNDBANK_DIRECTORY, SOURCE_GAIN_REFERENCES } from '../../src/data/soundbank';
 import { VOICE_PARTS, VOICE_CROSSFADE_S, VOICE_SOURCES } from '../../src/data/onboardbank';
 import { RECORDING_SOURCES } from '../../src/data/ridelog';
 
@@ -23,6 +23,6 @@ mkdirSync(analysis, { recursive: true });
 const onlyAt = process.argv.indexOf('--only');
 const only = onlyAt < 0 ? undefined : process.argv[onlyAt + 1].split(',');
 const manifest = join(analysis, 'render-manifest.json');
-writeFileSync(manifest, JSON.stringify({ sourceRoot, out, only, clips: SOUND_BANK, parts: VOICE_PARTS, sources: [...RECORDING_SOURCES, ...VOICE_SOURCES], crossfadeS: VOICE_CROSSFADE_S }));
+writeFileSync(manifest, JSON.stringify({ sourceRoot, out, only, clips: SOUND_BANK, parts: VOICE_PARTS, gainReferences: SOURCE_GAIN_REFERENCES, sources: [...RECORDING_SOURCES, ...VOICE_SOURCES], crossfadeS: VOICE_CROSSFADE_S }));
 execFileSync(process.env.AUDIO_PYTHON ?? 'python', ['scripts/audio/render-soundbank.py', manifest], { stdio: 'inherit' });
-console.log(`Cut, loudnorm and verified ${SOUND_BANK.length} local mono MP3 clips in ${out}`);
+console.log(`Rendered and verified ${only?.length ?? SOUND_BANK.length} local mono MP3 clips in ${out}`);

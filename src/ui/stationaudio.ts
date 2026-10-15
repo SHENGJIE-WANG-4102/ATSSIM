@@ -251,6 +251,8 @@ export class RecordedSoundPlayer {
         .then(b => this.ctx.decodeAudioData(b)).then(b => this.buffers.set(clip.id, b)).catch(() => { /* no local recording: silent */ });
     }
   }
+  /** Asset readiness only; door warnings can fall back without replaying late. */
+  protected hasClip(id: string): boolean { return this.buffers.has(id); }
   reset() {
     this.waitingLoops.clear();
     for (const key of [...this.voices.keys()]) this.stop(key);
@@ -331,7 +333,7 @@ export class StationAudio extends RecordedSoundPlayer {
   private context = '';
   private time = NaN;
   constructor(ctx: AudioContext, dest: AudioNode, bank: readonly SoundClip[] = SOUND_BANK) {
-    const platform = bank.filter(c => !c.kind.startsWith('interior-'));
+    const platform = bank.filter(c => !c.kind.startsWith('interior-') && !c.kind.startsWith('door-'));
     super(ctx, dest, platform); this.planner = new StationSoundPlanner(platform);
   }
   override reset() { this.planner.reset(); super.reset(); this.context = ''; this.time = NaN; }

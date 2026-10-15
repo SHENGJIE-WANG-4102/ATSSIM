@@ -446,3 +446,109 @@ npx vitest run tests/stationaudio.test.ts
 A文件和模型基线沿用前述清单。B新增`src/data/onboardbank.ts`及`scripts/audio/render-soundbank.py`，更新`src/data/soundbank.ts`、切片／元数据检查／占位脚本。C新增`src/ui/onboardaudio.ts`、`scripts/stationaudio-probe.ts`；更新`stationaudio.ts`、`audio.ts`、`side.ts`、`header.ts`、`app.ts`、`vvvf.ts`和音效测试。只读快照标志在`src/sim/model.ts`／`engine.ts`各增加一小处；D71与README同步。
 
 未触碰另外对话负责的`src/data/line2.ts`、`src/sim/timetable.ts`、`src/ui/pisview.ts`、`src/sim/pis.ts`，未改运动、运行图或末班表。其他对话改动保留；没有commit、push、切分支、全量／soak／simday。当前待审的是实现及3个拼接样本；江苏路借站台名／英文混合来源、英文蟠祥路终点词等缺项和短句纯净度局限已明确。
+
+
+## 2026-10-15 D71续修：站台串音、同源增益、独立门声
+
+本节覆盖前述站台每片loudnorm的做法和三个旧切点。只改工作区，未提交／推送／切分支。车内报站、句库、VVVF和既有噪声循环不重切；哈希核对191个原有非站台音频全部未变。新增的是独立门声。
+
+### 站台边界逐条检查
+
+原音时钟均为秒。检查采用原始频谱、分声道／分频段识别及重复句式匹配；不把识别幻觉当成真实乘客说话。带乘客转写的诊断仍只放ignore的work/。
+
+- arrive-up：platform-01原8–34改成 **8–25.10**；尾部0.40秒淡出（24.70–25.10）。前一轮末句约25.04秒结束，新一轮对面进站前缀约25.20秒开始；识别可辨重复的“乘客／列车／进站”，800–3500Hz句式匹配也支持后续33.0秒附近的“先下后上”与36.4秒附近安全提示。机场终点由用户听辨提供，自动识别未可靠恢复该终点全词，不冒称逐字识别成功。起点置信度**中**，近邻两句余音很近，采用提前切断和渐弱。原停稳在32秒，stopAt仍24；成片17.10秒，比停稳早6.90秒结束。anchorAfterTail明确保留原预测时钟，不能把停稳挪到片尾来凑锚点。
+- arrive-both：platform-01 **8–68**。两侧广播均保留；对面新一轮约25.2–43秒在片内完整。旧尾66秒会截断约61–67.31秒的固定出站提示，现留到68秒再40ms淡出，下一轮约70秒才开始。stopAt24、otherAt54不变。尾部完整性的置信度中。
+- platform-suffix：18.53–24.96改成 **18.53–25.10**，补全“注意脚下安全”的尾音，避开25.2秒下一轮。
+- platform-close：14.92–18.68改成 **15.35–18.80**；头部避开上一句安全提示的尾音，尾部给“上下车”的末字留余量。该片是原有语言提醒，不冒充机械关门声；不改它的既有触发规则。
+- arrive-dn 26–42：没有可靠可辨的站台PA，主要为扫频／走行声；尾部在45秒附近下一轮固定播报之前，范围不变。
+- depart-dn 109–133.32、depart-both 72.5–109.96：头尾未检出可信的额外PA，保留原范围；源文件尾截断仍如实标记。识别出现的无关套话不作为删改依据。
+- prefix 10.65–16.05与name 16.05–18.53的边界在句间停顿内，范围不变。ambience platform-03 58.5–70.5位于57.06秒固定播报结束之后，未检出可辨人声，范围和1秒循环接缝不变。
+- 所有站台片段首尾40ms淡入淡出；arrive-up尾部专用400ms。没有改StationSoundPlanner、预测、容差、advanceS或startAt。只有切掉的尾巴变短、原文件尾端的两句补全。
+
+### 同源增益与实测响度
+
+platform-01参考10.78–25.04秒，platform-03参考15.40–18.62秒。先以广播人声积分响度定−16LUFS目标，再用**整条源录音**的峰值给该源统一留0.1dB余量；没有每片压缩／限制／再次归一化。两源峰值余量限制后，参考分别为−17.24、−17.21LUFS，相差0.03LU，比名义目标低约1.2LU。所有本源片段连同ambience共用同一个增益；MP3有约0.4–0.5LU编码电平差，表内均为重新解码的实际值。
+
+| 源 | 统一增益 dB | 原参考 I | 增益后参考 I（编码前） |
+|---|---:|---:|---:|
+| platform-01 | -0.81 | -16.43 | -17.24 |
+| platform-03 | -0.45 | -16.76 | -17.21 |
+| ride-east | -1.20 | -14.80 | -16.00 |
+
+单位LUFS。I为整段积分响度；S为已定位人声段的**3秒短时响度最大值**，短于3秒的站名仅测量时补静音至3秒，不重复词、不改变成片。人声段仍含现场背景，不宣称分离出纯人声。—表示没有可靠人声可测，不以列车噪声冒充人声。
+
+| 片段 | I 改前 | I 改后 | 人声 S 改前 | 人声 S 改后 |
+|---|---:|---:|---:|---:|
+| arrive-dn | -16.45 | -16.14 | — | — |
+| arrive-up | -16.49 | -17.91 | -15.00 | -16.60 |
+| arrive-both | -16.47 | -17.47 | -14.80 | -16.60 |
+| depart-dn | -16.42 | -17.39 | — | — |
+| depart-both | -16.44 | -17.17 | — | — |
+| ambience | -20.43 | -19.56 | — | — |
+| platform-prefix | -16.33 | -17.62 | -16.00 | -17.30 |
+| platform-name-pxl | -16.62 | -17.04 | -17.30 | -17.70 |
+| platform-suffix | -16.58 | -17.90 | -15.60 | -16.90 |
+| platform-close | -16.45 | -17.63 | -16.30 | -17.60 |
+
+platform-01可测人声S为−16.6至−17.7，最大差**1.1LU**；platform-03的close为−17.6，两源的已测人声也处于同一1.1LU范围。满足相差不超过1.5LU；不承诺现场远处、被列车完全盖住的声音也有同样人声响度。积分I不再被强行拉平，列车声／广播／底噪的现场差别保留。
+
+### 门动作和提示音分开
+
+静安寺采用用户基准：开门“咚”127.5；关门提示164.5；动作开始167.2；关好170.2。再检查南京西路、陆家嘴、上海科技馆的开关门及西行金科路的开门边缘：南京西路300.5附近开门、375.2附近提示虽可辨，但底噪／碰撞混杂，未选为成片；西行金科路145–148.2秒只有文件尾边缘，无法完整覆盖开门和到位，拒绝使用。上海科技馆未检出可信人声、机械声相对较干净，作为主片；静安寺、陆家嘴作为已登记备选，当前不随机切换。
+
+【假设】上海科技馆、陆家嘴的动作起止由宽带能量上升／电机声和闭合撞击估计，约±0.2秒，不将“未识别出文字”等同于绝对没人声。上海科技馆闭合撞击在1434.5–1434.9秒附近，取1434.8，尾部留到1435.35。静安寺闭合用用户170.2秒。
+
+新门声均按ride-east的**同一个−1.20dB增益**处理，保持与该源广播的相对电平，没有将弱提示音单独抬到−16。关门提示从2600–3000Hz频带提取原录音；机械关门使用2750和2843Hz窄带陷波，抑制同一片中的蜂鸣，保留宽带动作和到位撞击。首尾40ms淡入淡出，无广播句。三个机械关门片的提示音频带分别降低约21.0、19.1、23.9dB（包含同源增益与编码差），并非宣称无背景的音源分离。
+
+| 文件（.mp3） | 类型 | 原范围 s | 时长 s | 置信度 | 成片 I LUFS |
+|---|---|---|---:|---|---:|
+| door-motion-open-kjg.mp3 | 开门动作 | 1372.16–1374.90 | 2.74 | medium | -23.25 |
+| door-warn-close-kjg.mp3 | 关门提示 | 1429.10–1435.35 | 6.25 | medium | -27.62 |
+| door-motion-close-kjg.mp3 | 关门动作 | 1431.80–1435.35 | 3.55 | medium | -22.56 |
+| door-motion-open-jas.mp3 | 开门动作 | 127.46–130.05 | 2.59 | high | -21.77 |
+| door-warn-close-jas.mp3 | 关门提示 | 164.50–170.70 | 6.20 | high | -22.51 |
+| door-motion-close-jas.mp3 | 关门动作 | 167.20–170.70 | 3.50 | high | -22.75 |
+| door-motion-open-ljz.mp3 | 开门动作 | 846.78–849.48 | 2.70 | medium | -23.26 |
+| door-warn-close-ljz.mp3 | 关门提示 | 884.12–890.65 | 6.53 | medium | -22.49 |
+| door-motion-close-ljz.mp3 | 关门动作 | 886.82–890.65 | 3.83 | medium | -22.29 |
+
+**没有可用的独立door-warn-open**：127.5秒的“咚”属于锁释放／开门机械动作，不能重复切成提示音再与动作叠两遍。它保留在door-motion-open；正常有真实开门动作时不再额外合成提示。四种kind均已支持，缺的开门提示不硬造。
+
+**没有加入站台机械门声**：platform-01停稳32／62秒后的候选与对面PA／车内固定提示重叠；platform-03约40秒停稳后声能变化仍混有制动／走行残声，开到位不能可靠独立定位；出站前也没有可确认且干净的完整闭门动作。没有用广播片或车内近录顶替站台机械门声。kind open／close-motion及对应门变化触发已支持，但未登记任何不可靠成片。
+
+### 时钟拆分、误差和兜底
+
+只读现有DOOR_CYCLE=15，不修改worker或列车状态。现有停站预算是停稳／开门3秒＋关门提示至起车12秒。【假设】worker只提供doors布尔量，没有“门正在动／关好”单独时钟，因此把doors true→false作为关门序列提示起点，UI拆为：**2.70秒提示提前量＋3.00秒动作＋6.30秒锁闭确认／起步等待**。这个拆分不是新增的物理状态。三个录音的提示→动作间隔均约2.70秒，和UI拆分差**0.00秒**；后两站的动作起点为频谱估计。静安寺关好在提示后5.70秒，尾声延续0.50秒，不能把整段6.20秒误当门运动时长。
+
+选中列车时，开门动作对准false→true；关门提示对准true→false，动作在2.70个仿真秒后单独播，暂停、静音、切换选择、回放跳时和>5×会取消当前及待播门声，重新开门会取消待关门声。与“车站音效”共用开关、三档音量。门物理声音保留人工操作可听；人工／RM仍不播自动报站。既有车内报站逻辑不变。站台机械门声缺时静音。
+
+rate=1与5、每档20组相位探针：提示事件到动作起播分别为2.80秒、3.00秒，相对目标晚0.10、0.30仿真秒，同时从片内对应偏移接播；此外门状态本身还有最多一个快照的观测延迟。这是UI离散快照粒度，不宣称与未发布的worker机械状态零误差。
+
+真实MP3解码的独立浏览器接线测试：提示到动作两次AudioBufferSource.start相差 **2.7093秒**，相对2.70秒差 **+0.0093秒**；没有触发合成兜底。该项验证音频接线，不是全车次仿真统计，也没有声卡听感验证。
+
+合成doorChime保留为缺文件／解码未完成的提示兜底，只在实际门变化时用一次；晚加载不补播旧事件。暂停／静音／换车也取消已排的合成音，倍速按仿真时钟缩短提示间隔。已加载真实开门动作时不会因“无独立开门提示”而额外响合成音。
+
+### 验证、预期变化、只抽听两条
+
+类型检查通过；音效单测94/94通过。原有测试只改一处语义预期：过去要求所有停稳锚点必须在音频内部，现在arrive-up明确允许音频提前结束、原32秒停稳时钟仍保留；其余startAt／otherAt边界检查不变。新加15项用例覆盖分段起播、重开取消、暂停／倍率／静音／换车、缺文件兜底及晚加载不重播。没有修改原ATO预测、触发时间或车内PA测试预期。
+
+Browser插件不可用，按前端测试规则用现有Playwright＋本机Edge，1920×1080：页面身份／非空／无覆盖、音效开关、静音、9条真实门声解码、提示／动作独立播放、暂停及重开取消通过，无console error。浏览器测试用独立音频对象注入门状态，未宣称跑过整日运营或实际扬声器试听。
+
+```powershell
+$env:AUDIO_PYTHON='C:\Python314\python.exe'
+npx --no-install vite-node scripts/audio/slice-recordings.ts work/recordings --only arrive-dn,arrive-up,arrive-both,depart-dn,depart-both,ambience,platform-prefix,platform-name-pxl,platform-suffix,platform-close
+npx --no-install vite-node scripts/audio/slice-recordings.ts work/recordings --only door-motion-open-kjg,door-warn-close-kjg,door-motion-close-kjg,door-motion-open-jas,door-warn-close-jas,door-motion-close-jas,door-motion-open-ljz,door-warn-close-ljz,door-motion-close-ljz
+python scripts/audio/platform-slice-report.py
+npx --no-install vite-node scripts/audio/soundbank-report.ts
+npx tsc --noEmit
+npx vitest run tests/stationaudio.test.ts
+```
+
+前后比较脚本依赖work/recordings/analysis/platform-recut中的改前MP3及before.json；切片重复生成不覆盖这批基准。当前共173个登记文件（新增9个门声），所有音频均在已ignore的public/sounds/field-20261014/。git status不出现音频。
+
+只抽听：
+
+1. `arrive-up.mp3`：尾部约最后2秒逐渐消失，不应进入对面那轮机场进站播报；接受片段早于停稳结束。
+2. `door-motion-close-kjg.mp3`：应是机械运行和闭合撞击，不应再清楚听到整串关门蜂鸣或广播；这条专门检查陷波有没有伤到门声。
+
+本轮文件：src/data/soundbank.ts、新src/data/doorbank.ts；scripts/audio/render-soundbank.py、slice-recordings.ts、soundbank-report.ts、新platform-slice-report.py；新src/ui/dooraudio.ts、src/ui/audio.ts、src/ui/side.ts；stationaudio.ts仅加解码就绪查询和排除车内门素材预载，没有改站台调度；tests/stationaudio.test.ts、本文及D71。未碰line2.ts、timetable.ts、pisview.ts、pis.ts、onboardbank.ts／onboardaudio.ts、worker、物理门循环或其他会话改动。

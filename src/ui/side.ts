@@ -16,7 +16,7 @@ import type { Audio } from './audio';
 import { speedIndication } from './dmi';
 import type { VvvfMode } from './vvvf';
 import { PERF, tractionAccel } from '../sim/dynamics';
-import { stationFrame, VVVF_MAX_RATE } from './stationaudio';
+import { stationFrame, audioTrain, VVVF_MAX_RATE } from './stationaudio';
 import { onboardFrame } from './onboardaudio';
 
 const CAT_FILTERS = ['全部', '报警', '调度', '通话', '信号', '列车', '车站', '客流', '施工', '教员'];
@@ -65,7 +65,6 @@ export class SidePanel {
   private seenCalls = new Set<number>();
   /** the restriction last announced in the manual cab (chime once per restriction) */
   private indication = '';
-  private doorKey = '';
   private hooks: PanelHooks & { rewind(t: number, replay: boolean): void; locateSel(sel: Selection): void };
 
   constructor(store: Store, audio: Audio, hooks: PanelHooks & { rewind(t: number, replay: boolean): void; locateSel(sel: Selection): void }) {
@@ -203,12 +202,13 @@ export class SidePanel {
     this.audio.setTraction(mode, (heard?.v ?? 0) * wheel, level);
     // a selected platform hears its own station
     const heardStation = sel?.kind === 'station' ? sel.id : sel?.kind === 'platform' ? this.store.topo.platforms[sel.id]?.station ?? null : null;
-    this.audio.setStationAudio(stationFrame(snap, heardStation, this.store.topo));
+    const platformFrame = stationFrame(snap, heardStation, this.store.topo);
+    this.audio.setStationAudio(platformFrame);
     this.audio.setOnboardAudio(onboardFrame(snap, heard ?? null, this.store.topo, this.store.plan));
-    // its door warning, once per opening and closing
-    const doorKey = heard && !snap.paused && snap.speed <= VVVF_MAX_RATE ? `${heard.id}|${heard.doors}` : '';
-    if (doorKey && this.doorKey && doorKey !== this.doorKey && doorKey.split('|')[0] === this.doorKey.split('|')[0]) this.audio.doorChime(!heard!.doors);
-    this.doorKey = doorKey;
+    this.audio.setDoorAudio({ t: snap.t, rate: snap.speed, paused: snap.paused,
+      perspective: heard ? 'onboard' : 'platform', station: heardStation,
+      selectionKey: heard ? `train|${heard.id}` : heardStation === null ? '' : `station|${heardStation}`,
+      trains: heard ? [audioTrain(heard, heard.nextStation, this.store.topo)] : platformFrame.trains.filter(tr => tr.atStation) });
     // and a chime once for each coming restriction announced on its DMI
     const ind = cab && speedIndication(cab) ? `${cab.id}|${Math.round(cab.tgtV * 3.6)}|${cab.tgtReason}` : '';
     if (ind && ind !== this.indication) this.audio.chime();

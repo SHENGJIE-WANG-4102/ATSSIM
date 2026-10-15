@@ -17,7 +17,7 @@ for (const clip of SOUND_BANK) {
   if (!source || clip.range[0] < 0 || clip.range[1] > source.durationS + .01 || clipDuration(clip) <= 0) throw new Error(`Invalid range: ${clip.id}`);
   if (!STATIONS.some(s => s.name === clip.station)) throw new Error(`Unknown station: ${clip.station}`);
   if (!existsSync(join('public', SOUNDBANK_DIRECTORY, clip.file))) throw new Error(`Missing local slice: ${clip.file}`);
-  for (const at of [clip.stopAt, clip.startAt, clip.otherAt]) if (at !== undefined && (at < 0 || at >= clipDuration(clip))) throw new Error(`Invalid anchor: ${clip.id}`);
+  for (const at of [clip.stopAt, clip.startAt, clip.otherAt]) if (at !== undefined && (at < 0 || at >= clipDuration(clip) && !(clip.anchorAfterTail && at === clip.stopAt && clip.range[0] + at < source.durationS))) throw new Error(`Invalid anchor: ${clip.id}`);
   for (const part of clip.composition ?? []) if (!VOICE_PARTS.some(p => p.id === part)) throw new Error(`Missing composition part: ${part}`);
 }
 for (const entry of ONBOARD_ANNOUNCEMENTS) for (const id of [entry.next?.clipId, entry.arrived?.clipId]) {

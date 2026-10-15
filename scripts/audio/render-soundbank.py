@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
 """Render the numeric soundbank manifest: numpy, ffmpeg and ffprobe required.
 
-All analysis/cache remains under ignored work/. Speech is two-pass loudnorm
-at -16 LUFS. Noise preserves its measured difference from the source PA.
+All analysis/cache remains under ignored work/. Carriage PA is two-pass
+loudnorm at -16 LUFS. Platform slices and new door sounds share source gains;
+noise in existing carriage loops preserves its measured difference from PA.
 Library cuts snap to a zero crossing within 15 ms, then receive the same
 loudness target BEFORE a 30 ms crossfade. No transcript or audio is uploaded.
 """
 import argparse
 import json
 import pathlib
+import re
 import subprocess
 
 import numpy as np
@@ -20,14 +22,25 @@ def run(args, data=None):
     return subprocess.run(args, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
 
 
-def measure(a, target=-16):
+def measure(a, target=-16, repeat_short=True):
     # Short words need several complete 400 ms measurement blocks. Repetition
     # affects only the analyser input, never the rendered word duration.
-    samples = np.tile(a, max(1, int(np.ceil(3.2 * RATE / len(a)))))
+    samples = np.tile(a, max(1, int(np.ceil(3.2 * RATE / len(a))))) if repeat_short else a
     result = run(['ffmpeg', '-hide_banner', '-f', 'f32le', '-ar', str(RATE), '-ac', '1', '-i', 'pipe:0',
                   '-af', f'loudnorm=I={target}:TP=-1.5:LRA=11:print_format=json', '-f', 'null', '-'], samples.astype('<f4').tobytes())
     log = result.stderr.decode(errors='replace')
     return json.JSONDecoder().raw_decode(log[log.rfind('{'):])[0]
+
+
+def short_loudness(a):
+    """Peak 3 s short-term loudness; shorter name clips are zero-padded only
+    for this measurement, never repeated or padded in the rendered asset."""
+    a = np.pad(a, (0, max(0, 3 * RATE - len(a))))
+    result = run(['ffmpeg', '-hide_banner', '-nostats', '-f', 'f32le', '-ar', str(RATE), '-ac', '1', '-i', 'pipe:0',
+                  '-af', 'ebur128', '-f', 'null', '-'], a.astype('<f4').tobytes())
+    values = [float(v) for v in re.findall(r'\bS:\s*(-?[\d.]+)', result.stderr.decode(errors='replace'))]
+    values = [v for v in values if v > -100]
+    return max(values) if values else None
 
 
 def normalise(a, target):
@@ -90,6 +103,8 @@ def main():
         margin = 1.5 if effects and effects.startswith('clean-speech') else .015 if snap else 0
         actual_begin = max(0, begin - margin)
         filters = {'cabin-floor': 'highpass=f=25,lowpass=f=180', 'rolling-noise': 'highpass=f=30,lowpass=f=800',
+                   'door-warning': 'highpass=f=2600,lowpass=f=3000',
+                   'door-mechanism': 'bandreject=f=2750:t=h:w=130,bandreject=f=2843:t=h:w=130',
                    'clean-speech-zh': 'highpass=f=350,lowpass=f=5500,anlmdn=s=0.001:p=0.002:r=0.006',
                    'clean-speech-en': 'highpass=f=180,lowpass=f=5500,afftdn=nr=18:nf=-25:tn=1:gs=10'}
         command = ['ffmpeg', '-v', 'error', '-ss', str(actual_begin), '-t', str(end + margin - actual_begin), '-i', str(sources[source])]
@@ -125,9 +140,27 @@ def main():
     print(f'Original carriage PA reference: {voice_reference:.2f} LUFS', flush=True)
     library = {}
     needed = {id for c in clips for id in c.get('composition', [])}
-    active_parts = [p for p in manifest['parts'] if not selected or p['id'] in needed or p.get('file')]
+    active_parts = [p for p in manifest['parts'] if not selected or p['id'] in needed]
     replacing = {c['id'] for c in clips} | {p['id'] for p in active_parts}
     measurements = [m for m in previous['measurements'] if m['id'] not in replacing] if previous else []
+    # Constant source gains are deliberately independent of clip selection.
+    # Platform references use the whole source for headroom, with no limiter,
+    # compressor or individual loudnorm on any of its slices (including loops).
+    source_gains = {}
+    def gain_source(c):
+        return c.get('sourceGain') or (c['source'] if c['source'].startswith('platform-') and not c.get('provenance') else None)
+    for ref in manifest.get('gainReferences', []):
+        source = ref['source']
+        if not any(gain_source(c) == source for c in clips):
+            continue
+        reference = measure(decode(source, ref['range']), repeat_short=False)
+        duration = next(s['durationS'] for s in manifest['sources'] if s['id'] == source)
+        peak = float(measure(decode(source, [0, duration]), repeat_short=False)['input_tp']) if source.startswith('platform-') else float(reference['input_tp'])
+        gain = min(ref['targetLUFS'] - float(reference['input_i']), -.1 - peak)
+        source_gains[source] = {'gainDB': gain, 'referenceLUFS': float(reference['input_i']),
+                                'referenceRange': ref['range'], 'referenceAfterLUFS': float(reference['input_i']) + gain,
+                                'sourcePeakDBTP': peak, 'nominalTargetLUFS': ref['targetLUFS']}
+        print(f'{source}: common gain {gain:+.2f} dB; reference {float(reference["input_i"]):.2f} -> {float(reference["input_i"])+gain:.2f} LUFS', flush=True)
     for p in active_parts:
         a = decode(p['source'], p['range'], snap=True, effects=p.get('effects'))
         a, before = normalise(a, -16)
@@ -139,6 +172,11 @@ def main():
         measurements.append({'id': p['id'], 'class': 'library-' + p['language'], 'before': before,
                              'after': float(measure(a)['input_i']), 'target': -16})
     for clip in clips:
+        fixed_source = gain_source(clip)
+        path = out / clip['file']
+        old = None
+        if fixed_source and path.exists():
+            old = np.frombuffer(run(['ffmpeg', '-v', 'error', '-i', str(path), '-ar', str(RATE), '-ac', '1', '-f', 'f32le', '-']).stdout, dtype='<f4')
         composed = bool(clip.get('composition'))
         a = crossfade([library[id] for id in clip['composition']], manifest['crossfadeS']) if composed else decode(clip['source'], clip['range'], effects=clip.get('effects'))
         before = float(measure(a)['input_i'])
@@ -151,29 +189,44 @@ def main():
             a = crossfade([a[-count:], a[:count]], clip['loopCrossfadeS'])
             original = decode(clip['source'], clip['range'], effects=clip.get('effects'))
             a = np.concatenate((a, original[count:-count]))
-        a, _ = normalise(a, target)
-        fade = min(round((1.5 if clip.get('truncatedTail') else .015) * RATE), len(a) // 4)
-        if not clip.get('loopCrossfadeS'):
-            a[:min(720, fade)] *= np.linspace(0, 1, min(720, fade))
-            a[-fade:] *= np.linspace(1, 0, fade)
+        if fixed_source:
+            a *= 10 ** (source_gains[fixed_source]['gainDB'] / 20)
+            fade_in = min(round(clip.get('fadeInS', .04) * RATE), len(a) // 4)
+            fade_out = min(round(clip.get('fadeOutS', .04) * RATE), len(a) // 4)
+            a[:fade_in] *= np.linspace(0, 1, fade_in)
+            a[-fade_out:] *= np.linspace(1, 0, fade_out)
+        else:
+            a, _ = normalise(a, target)
+            fade = min(round((1.5 if clip.get('truncatedTail') else .015) * RATE), len(a) // 4)
+            if not clip.get('loopCrossfadeS'):
+                a[:min(720, fade)] *= np.linspace(0, 1, min(720, fade))
+                a[-fade:] *= np.linspace(1, 0, fade)
         if pathlib.Path(clip['file']).name != clip['file'] or not clip['file'].endswith('.mp3'):
             raise ValueError('Unsafe clip filename')
-        path = out / clip['file']
         run(['ffmpeg', '-v', 'error', '-y', '-f', 'f32le', '-ar', str(RATE), '-ac', '1', '-i', 'pipe:0',
              '-c:a', 'libmp3lame', '-b:a', '112k', str(path)], a.astype('<f4').tobytes())
         decoded = np.frombuffer(run(['ffmpeg', '-v', 'error', '-i', str(path), '-ar', str(RATE), '-ac', '1', '-f', 'f32le', '-']).stdout, dtype='<f4')
-        after = float(measure(decoded)['input_i'])
+        after = float(measure(decoded, repeat_short=not fixed_source)['input_i'])
         meta = json.loads(run(['ffprobe', '-v', 'error', '-show_entries', 'format=duration:stream=channels', '-of', 'json', str(path)]).stdout)
         expected = clip.get('durationS', clip['range'][1] - clip['range'][0] - clip.get('loopCrossfadeS', 0))
         if meta['streams'][0]['channels'] != 1 or abs(float(meta['format']['duration']) - expected) > .14:
             raise ValueError(f'Unexpected channels/duration: {clip["id"]}')
-        if abs(after - target) > .8:
+        if not fixed_source and abs(after - target) > .8:
             raise ValueError(f'Loudness mismatch: {clip["id"]} {after} target {target}')
-        measurements.append({'id': clip['id'], 'class': clip['kind'], 'provenance': clip.get('provenance'),
-                             'before': before, 'after': after, 'target': target, 'durationS': len(decoded) / RATE})
+        row = {'id': clip['id'], 'class': clip['kind'], 'provenance': clip.get('provenance'),
+               'before': before, 'after': after, 'target': None if fixed_source else target, 'durationS': len(decoded) / RATE}
+        if fixed_source:
+            row['sourceGainDB'] = source_gains[fixed_source]['gainDB']
+            row['previousIntegratedLUFS'] = float(measure(old, repeat_short=False)['input_i']) if old is not None else None
+            if clip.get('voiceRange'):
+                lo, hi = [round((t - clip['range'][0]) * RATE) for t in clip['voiceRange']]
+                row['voiceShortBeforeLUFS'] = short_loudness(old[max(0,lo):hi]) if old is not None else None
+                row['voiceShortAfterLUFS'] = short_loudness(decoded[max(0,lo):hi])
+        measurements.append(row)
         print(f'{clip["id"]}: {before:.2f} -> {after:.2f} LUFS', flush=True)
     report = {'voiceReferenceLUFS': voice_reference, 'crossfadeS': manifest['crossfadeS'],
-              'measurements': measurements, 'boundaries': boundaries}
+              'measurements': measurements, 'boundaries': boundaries,
+              'sourceGains': {**(previous.get('sourceGains', {}) if previous else {}), **source_gains}}
     (work / 'loudness.json').write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding='utf-8')
     print(f'Rendered {len(clips)} mono clips; metadata in {work / "loudness.json"}', flush=True)
 

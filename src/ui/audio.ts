@@ -9,6 +9,7 @@ import { RECORDED_VOLUME_GAINS, type RecordedVolume } from '../data/onboardbank'
 import { VvvfSound, type VvvfMode } from './vvvf';
 import { StationAudio, type StationAudioFrame } from './stationaudio';
 import { OnboardAudio, type OnboardAudioFrame } from './onboardaudio';
+import { DoorAudio, type DoorAudioFrame } from './dooraudio';
 
 export class Audio {
   private ctx: AudioContext | null = null;
@@ -24,6 +25,8 @@ export class Audio {
   private vvvf: VvvfSound | null = null;
   private station: StationAudio | null = null;
   private onboard: OnboardAudio | null = null;
+  private doors: DoorAudio | null = null;
+  private doorFallbackNodes = new Set<OscillatorNode>();
 
   constructor() {
     const unlock = () => {
@@ -44,6 +47,7 @@ export class Audio {
       this.vvvf = new VvvfSound(this.ctx, this.master);
       this.station = new StationAudio(this.ctx, this.master);
       this.onboard = new OnboardAudio(this.ctx, this.master);
+      this.doors = new DoorAudio(this.ctx, this.master, (closing, rate) => this.doorChime(closing, rate), undefined, () => this.stopDoorFallback());
       this.applyRecordedVolume();
     } catch {
       this.ctx = null;
@@ -65,12 +69,13 @@ export class Audio {
     o.type = type;
     o.frequency.value = freq;
     g.gain.setValueAtTime(0, t0);
-    g.gain.linearRampToValueAtTime(vol, t0 + 0.012);
-    g.gain.setValueAtTime(vol, t0 + dur - 0.03);
+    g.gain.linearRampToValueAtTime(vol, t0 + Math.min(.012, dur / 4));
+    g.gain.setValueAtTime(vol, t0 + dur - Math.min(.03, dur / 3));
     g.gain.linearRampToValueAtTime(0, t0 + dur);
     o.connect(g).connect(this.master);
     o.start(t0);
     o.stop(t0 + dur + 0.02);
+    return o;
   }
 
   /** one alarm sound by level */
@@ -152,18 +157,24 @@ export class Audio {
   }
 
   /**
-   * Door warning of the train listened to (synthesised 【假设】):
-   * a few short beeps as the doors open, a beep train while they
-   * close. Goes with the traction sound setting (the sounds on board).
+   * Missing-file fallback only. Recorded warning / motion use separate clocks.
+   * 【假设】 retain the former beeps if the relevant recording is unavailable.
    */
-  doorChime(closing: boolean) {
-    if (!this.traction) return;
+  doorChime(closing: boolean, rate = 1) {
+    if (!this.stationSound || this.muted) return;
     this.ensure();
+    this.stopDoorFallback();
     const n = closing ? 12 : 3;
     for (let i = 0; i < n; i++) {
-      this.tone(2300, i * 0.25, 0.13, 'triangle', 0.22);
-      this.tone(4600, i * 0.25, 0.13, 'sine', 0.05);
+      for (const [freq, type, gain] of [[2300, 'triangle', .22], [4600, 'sine', .05]] as const) {
+        const node = this.tone(freq, i * .25 / rate, .13 / rate, type, gain * RECORDED_VOLUME_GAINS[this.recordedVolume]);
+        if (node) { this.doorFallbackNodes.add(node); node.onended = () => this.doorFallbackNodes.delete(node); }
+      }
     }
+  }
+  private stopDoorFallback() {
+    for (const node of this.doorFallbackNodes) { try { node.stop(); } catch { /* already ended */ } node.disconnect(); }
+    this.doorFallbackNodes.clear();
   }
 
   setTractionOn(on: boolean) {
@@ -181,14 +192,17 @@ export class Audio {
   }
   private applyRecordedVolume() {
     const gain = RECORDED_VOLUME_GAINS[this.recordedVolume];
-    this.station?.setVolume(gain); this.onboard?.setVolume(gain); this.vvvf?.setVolume(gain);
+    this.station?.setVolume(gain); this.onboard?.setVolume(gain); this.doors?.setVolume(gain); this.vvvf?.setVolume(gain);
   }
-  stopStationAudio() { this.station?.reset(); this.onboard?.reset(); }
+  stopStationAudio() { this.station?.reset(); this.onboard?.reset(); this.doors?.reset(); this.stopDoorFallback(); }
   setStationAudio(frame: Omit<StationAudioFrame, 'muted' | 'enabled'>) {
     this.station?.update({ ...frame, muted: this.muted, enabled: this.stationSound });
   }
   setOnboardAudio(frame: Omit<OnboardAudioFrame, 'muted' | 'enabled'>) {
     this.onboard?.update({ ...frame, muted: this.muted, enabled: this.stationSound });
+  }
+  setDoorAudio(frame: Omit<DoorAudioFrame, 'muted' | 'enabled'>) {
+    this.doors?.update({ ...frame, muted: this.muted, enabled: this.stationSound });
   }
 
   /** the inverter sound of the train listened to (see vvvf.ts) */

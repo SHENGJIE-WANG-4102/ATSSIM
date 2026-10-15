@@ -5,6 +5,8 @@ import { StationAudio, StationSoundPlanner, compatibleBoth, platformAnnouncement
 import { OnboardAudio, OnboardSoundPlanner, cabinVolumes, onboardFrame, type OnboardAudioFrame } from '../src/ui/onboardaudio';
 import { VOICE_PARTS, ORIGINAL_ONBOARD, ONBOARD_DESTINATIONS, onboardAnnouncement, onboardDoorSide, VOICE_CROSSFADE_S, RECORDED_VOLUME_GAINS } from '../src/data/onboardbank';
 import { Audio } from '../src/ui/audio';
+import { DoorAudio, DoorSoundPlanner, doorCycleSplit, type DoorAudioFrame } from '../src/ui/dooraudio';
+import { DOOR_TAKES } from '../src/data/doorbank';
 import type { OnboardAnnouncement, SoundClip } from '../src/data/soundbank';
 import { STATIONS } from '../src/data/line2';
 import type { Snapshot, PisData } from '../src/sim/model';
@@ -183,12 +185,72 @@ describe('recorded platform scheduling', () => {
     const projected = stationFrame(snap, station, topo);
     expect(projected.trains[0].direction).toBe('UP'); expect(projected.trains[0].atStation).toBe(true);
   });
-  it('metadata anchors are inside clips, ambience stays at least ten seconds', () => {
+  it('metadata anchors retain valid clocks after foreign-PA trimming, ambience stays at least ten seconds', () => {
     for (const clip of SOUND_BANK) {
       expect(clipDuration(clip)).toBeGreaterThan(0);
-      for (const at of [clip.startAt, clip.stopAt, clip.otherAt]) if (at !== undefined) { expect(at).toBeGreaterThanOrEqual(0); expect(at).toBeLessThan(clipDuration(clip)); }
+      for (const at of [clip.startAt, clip.stopAt, clip.otherAt]) if (at !== undefined) {
+        expect(at).toBeGreaterThanOrEqual(0);
+        if (clip.anchorAfterTail && at === clip.stopAt) expect(clip.range[0] + at).toBe(32);
+        else expect(at).toBeLessThan(clipDuration(clip));
+      }
       if (clip.kind === 'ambience') expect(clipDuration(clip)).toBeGreaterThanOrEqual(10);
     }
+  });
+});
+
+describe('separate recorded door clocks', () => {
+  const df = (t: number, doors: boolean, patch: Partial<DoorAudioFrame> = {}): DoorAudioFrame => ({
+    t, rate: 1, paused: false, muted: false, enabled: true, selectionKey: 'train|1', perspective: 'onboard', station: null,
+    trains: [tr({ v: 0, atStation: true, phase: 'dwell', doors })], ...patch });
+  it('retains the pre-trim arrival start clock even when sound ends before the stop', () => {
+    const p = new StationSoundPlanner(), up = (s: number) => countdown(s, { direction: 'UP' });
+    p.update(frame(100, [up(24.2)]));
+    const command = motion(p.update(frame(100.2, [up(24)])))[0];
+    expect(command.clips[0].id).toBe('arrive-up'); expect(command.offsetS).toBe(0);
+    const c = command.clips[0]; expect(c.range[1]).toBeLessThan(25.2);
+    expect(c.range[0] + c.stopAt!).toBe(32); expect(clipDuration(c)).toBeLessThan(c.stopAt!);
+    expect(c.fadeOutS).toBe(.4); expect(c.anchorAfterTail).toBe(true);
+    expect(SOUND_BANK.find(c => c.id === 'arrive-both')!.range[1]).toBeGreaterThan(67.31);
+  });
+  it('splits the existing 15 s door budget without changing train operation', () => {
+    const split = doorCycleSplit();
+    expect(split.opening).toBe(3); expect(split.warning).toBe(2.7); expect(split.motion).toBe(3);
+    expect(split.confirmation).toBeCloseTo(6.3);
+    for (const take of DOOR_TAKES) expect(take.close[0] - take.warn[0]).toBeCloseTo(2.7, 2);
+  });
+  it('opens with one mechanical recording and no fabricated warning', () => {
+    const p = new DoorSoundPlanner(); p.update(df(100, false));
+    const commands = plays(p.update(df(100.2, true)).commands);
+    expect(commands.map(c => c.clips[0].kind)).toEqual(['door-motion-open']);
+    expect(commands[0].offsetS).toBe(0);
+  });
+  it.each([1, 5])('aligns warning now and motion 2.7 simulation seconds later at rate %s', rate => {
+    const p = new DoorSoundPlanner(); p.update(df(100, true, { rate }));
+    const warning = plays(p.update(df(100.2, false, { rate })).commands);
+    expect(warning.map(c => c.clips[0].kind)).toEqual(['door-warn-close']);
+    expect(plays(p.update(df(102.8, false, { rate })).commands)).toEqual([]);
+    const movement = plays(p.update(df(102.9, false, { rate })).commands);
+    expect(movement.map(c => c.clips[0].kind)).toEqual(['door-motion-close']);
+    expect(movement[0].offsetS).toBeCloseTo(0); expect(movement[0].rate).toBe(rate);
+  });
+  it('cancels the pending close mechanism if the door reopens', () => {
+    const p = new DoorSoundPlanner(); p.update(df(100, true)); p.update(df(100.2, false));
+    const reopening = p.update(df(101, true));
+    expect(reopening.commands.some(c => c.kind === 'stop')).toBe(true);
+    expect(plays(reopening.commands)[0].clips[0].kind).toBe('door-motion-open');
+    expect(plays(p.update(df(103, true)).commands)).toEqual([]);
+  });
+  it.each([{ paused: true }, { muted: true }, { enabled: false }, { rate: 0 }, { rate: 10 }, { selectionKey: 'train|2' }])('cancels pending door clocks on %j', patch => {
+    const p = new DoorSoundPlanner(); p.update(df(100, true)); p.update(df(100.2, false));
+    expect(p.update(df(100.4, false, patch)).commands.some(c => c.kind === 'stop')).toBe(true);
+    expect(plays(p.update(df(103, false)).commands)).toEqual([]);
+  });
+  it('does not invent an initial transition or substitute cabin motion for missing platform motion', () => {
+    const p = new DoorSoundPlanner();
+    expect(plays(p.update(df(100, true)).commands)).toEqual([]);
+    const q = new DoorSoundPlanner();
+    const patch = { perspective: 'platform' as const, selectionKey: 'station|jsl', station };
+    q.update(df(100, false, patch)); expect(plays(q.update(df(100.2, true, patch)).commands)).toEqual([]);
   });
 });
 
@@ -204,6 +266,25 @@ describe('Web Audio lifecycle', () => {
     return { ctx: ctx as unknown as AudioContext, sources, gains };
   }
   async function ready() { await new Promise(resolve => setTimeout(resolve, 0)); }
+  const doorFrame = (t: number, doors: boolean, patch: Partial<DoorAudioFrame> = {}): DoorAudioFrame => ({
+    t, rate: 1, paused: false, muted: false, enabled: true, selectionKey: 'train|1', perspective: 'onboard', station: null,
+    trains: [tr({ v: 0, atStation: true, phase: 'dwell', doors })], ...patch });
+  it('plays recorded door motion without inventing an opening warning or synthetic chime', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, arrayBuffer: async () => new ArrayBuffer(1) })));
+    const { ctx, sources } = context(), fallback = vi.fn(), audio = new DoorAudio(ctx, {} as AudioNode, fallback);
+    await ready(); audio.update(doorFrame(100, false)); audio.update(doorFrame(100.2, true));
+    expect(sources).toHaveLength(1); expect(fallback).not.toHaveBeenCalled();
+  });
+  it('falls back once for a missing door file, cancels on pause, never replays after late loading', async () => {
+    let finish!: (value: unknown) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise(resolve => { finish = resolve; })));
+    const { ctx, sources } = context(), fallback = vi.fn(), cancel = vi.fn(), audio = new DoorAudio(ctx, {} as AudioNode, fallback, undefined, cancel);
+    audio.update(doorFrame(100, true)); audio.update(doorFrame(100.2, false));
+    expect(fallback).toHaveBeenCalledExactlyOnceWith(true, 1); expect(sources).toHaveLength(0);
+    audio.update(doorFrame(100.4, false, { paused: true })); expect(cancel).toHaveBeenCalled();
+    finish({ ok: true, arrayBuffer: async () => new ArrayBuffer(1) }); await ready();
+    audio.update(doorFrame(101, false)); expect(sources).toHaveLength(0); expect(fallback).toHaveBeenCalledTimes(1);
+  });
   it.each([false, true])('missing fetch/decode stays silent (HTTP failure=%s)', async httpFailure => {
     vi.stubGlobal('fetch', vi.fn(async () => { if (httpFailure) return { ok: false, status: 404 }; throw new Error('offline'); }));
     const { ctx, sources } = context(), audio = new StationAudio(ctx, {} as AudioNode);
