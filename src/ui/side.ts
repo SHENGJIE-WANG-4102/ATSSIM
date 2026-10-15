@@ -201,7 +201,9 @@ export class SidePanel {
     const hunt = Math.sin(performance.now() / 120);
     const wheel = heard?.slip === 'slip' ? 1.12 + 0.06 * hunt : heard?.slip === 'slide' ? 0.85 + 0.05 * hunt : 1;
     this.audio.setTraction(mode, (heard?.v ?? 0) * wheel, level);
-    this.audio.setStationAudio(stationFrame(snap, sel?.kind === 'station' ? sel.id : null, this.store.topo));
+    // a selected platform hears its own station
+    const heardStation = sel?.kind === 'station' ? sel.id : sel?.kind === 'platform' ? this.store.topo.platforms[sel.id]?.station ?? null : null;
+    this.audio.setStationAudio(stationFrame(snap, heardStation, this.store.topo));
     this.audio.setOnboardAudio(onboardFrame(snap, heard ?? null, this.store.topo, this.store.plan));
     // its door warning, once per opening and closing
     const doorKey = heard && !snap.paused && snap.speed <= VVVF_MAX_RATE ? `${heard.id}|${heard.doors}` : '';
