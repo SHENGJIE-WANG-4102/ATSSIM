@@ -101,6 +101,8 @@ export const SOURCES: SourceRef[] = [
 ];
 
 export interface StationData {
+  /** Platform display hardware; omitted stations use the classic vertical information column. */
+  pisLayout?: 'classic' | 'wide';
   /** short stable id used in code */
   id: string;
   /** current official Chinese name */
@@ -131,8 +133,8 @@ export interface StationData {
  * terminus versus 61 940 m in the table (1 m rounding).
  */
 export const STATIONS: StationData[] = [
-  { id: 'PXL', name: '蟠祥路·国家会计学院', interM: null, transfers: [], dwell: 20, demand: 0.35 },
-  { id: 'GJH', name: '国家会展中心', formerName: '徐泾东', interM: 1640, transfers: ['17'], dwell: 20, demand: 0.7 },
+  { id: 'PXL', name: '蟠祥路·国家会计学院', interM: null, transfers: [], dwell: 20, demand: 0.35, pisLayout: 'wide' },
+  { id: 'GJH', name: '国家会展中心', formerName: '徐泾东', interM: 1640, transfers: ['17'], dwell: 20, demand: 0.7, pisLayout: 'wide' },
   { id: 'HQZ', name: '虹桥火车站', interM: 1842, transfers: ['10', '17', '机场联络线', '国铁'], dwell: 25, demand: 1.6 },
   { id: 'HQ2', name: '虹桥2号航站楼', interM: 690, transfers: ['10', '机场联络线'], dwell: 20, demand: 1.0 },
   { id: 'SHR', name: '淞虹路', interM: 5921, transfers: [], dwell: 20, demand: 0.8 },
@@ -171,7 +173,7 @@ export const STATION_EN: Record<string, string> = {
   ZSG: 'Zhongshan Park', JSL: 'Jiangsu Rd.', JAS: "Jing'an Temple", NJX: 'West Nanjing Rd.', RMG: "People's Square",
   NJD: 'East Nanjing Rd.', LJZ: 'Lujiazui', PDN: 'South Pudong Rd.', SJD: 'Century Avenue', KJG: 'Shanghai Science & Technology Museum',
   SJG: 'Century Park', LYL: 'Longyang Rd.', ZJG: 'Zhangjiang Hi-Tech Park', JKL: 'Jinke Rd.', GLL: 'Guanglan Rd.', TZ: 'Tangzhen',
-  CXZ: 'Middle Chuangxin Rd.', HXD: 'East Huaxia Rd.', CS: 'Chuansha', LKL: 'Lingkong Rd.', YDD: 'Yuandong Avenue',
+  CXZ: 'Middle Chuangxin Rd.', HXD: 'East Huaxia Rd.', CS: 'Chuansha', LKL: 'Lingkong Rd.', YDD: 'Yuandong Ave.',
   HTS: 'Haitian 3rd Rd.', PDA: 'Pudong Airport Terminal 1&2',
 };
 

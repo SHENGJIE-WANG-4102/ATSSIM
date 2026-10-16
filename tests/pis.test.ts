@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { formatPisCountdown, selectPisFirstLast, timeToStop } from '../src/sim/pis';
+import { advancePisCycle, computePis, formatPisCountdown, PIS_TIMING, selectPisFirstLast, timeToStop } from '../src/sim/pis';
 import { PERF } from '../src/sim/dynamics';
 import { STATIONS, STATION_EN } from '../src/data/line2';
 import type { PisRow, TrackDir } from '../src/sim/model';
+import type { Sim } from '../src/sim/engine';
 
 const train = (destination: string, eta = 36, status: PisRow['status'] = 'eta'): PisRow => ({
   destSt: STATIONS.findIndex((s) => s.id === destination),
@@ -83,7 +84,8 @@ describe('PIS published first / last times', () => {
     const expected = selectPisFirstLast('江苏路', 'UP', train('PXL'));
     expect(selectPisFirstLast('江苏路', 'UP')).toEqual(expected);
     expect(selectPisFirstLast('江苏路', 'UP', train('unknown'))).toEqual(expected);
-    expect(selectPisFirstLast('江苏路', 'UP', { ...train('GLL'), dest: '本站终到' })).toEqual(expected);
+    // a short working terminating at 广兰路 is not a departure towards 广兰路
+    expect(selectPisFirstLast('广兰路', 'DN', train('GLL'))).toEqual(selectPisFirstLast('广兰路', 'DN'));
   });
 
   it('returns no invented schedule for an unknown station', () => {
@@ -92,5 +94,55 @@ describe('PIS published first / last times', () => {
 
   it('uses the platform abbreviation for Panxiang Road English', () => {
     expect(STATION_EN.PXL).toBe('Panxiang Rd. • SNAI');
+  });
+});
+
+describe('PIS field cadence', () => {
+  it('preserves the page through countdown updates and switches exactly at its boundary', () => {
+    const state = { page: 0, since: 100 };
+    const durations = [PIS_TIMING.scrollingPageMs, PIS_TIMING.pageMs, PIS_TIMING.pageMs];
+    expect(advancePisCycle(state, 13449, durations)).toEqual(state);
+    expect(advancePisCycle(state, 13450, durations)).toEqual({ page: 1, since: 13450 });
+    expect(advancePisCycle(state, 17900, durations)).toEqual({ page: 2, since: 17900 });
+  });
+
+  it('catches up after a background-tab pause and preserves the remainder', () => {
+    const durations = [4450, 4450];
+    expect(advancePisCycle({ page: 1, since: 0 }, 89000 + 4451, durations)).toEqual({ page: 0, since: 93450 });
+  });
+
+  it('keeps separate first/last pages when the direction has two services', () => {
+    const durations = [13350, 4450, 4450, 4450];
+    expect(advancePisCycle({ page: 0, since: 0 }, 17800, durations).page).toBe(2);
+    expect(advancePisCycle({ page: 0, since: 0 }, 22250, durations).page).toBe(3);
+    expect(advancePisCycle({ page: 0, since: 0 }, 26700, durations).page).toBe(0);
+  });
+
+  it('uses the user-selected hardware only at the two western extension stations', () => {
+    expect(STATIONS.filter((s) => s.pisLayout === 'wide').map((s) => s.id)).toEqual(['PXL', 'GJH']);
+    expect(STATION_EN.YDD).toBe('Yuandong Ave.');
+  });
+});
+
+describe('PIS actual task destination', () => {
+  it.each(['LYL', 'YDD', 'SHR'] as const)('preserves %s both upstream and at its terminal arrival', (id) => {
+    const dest = STATIONS.findIndex((s) => s.id === id);
+    for (const terminal of [false, true]) {
+      const station = terminal ? dest : dest - 1;
+      const sim = {
+        t: 100, topo: { berths: [{ platform: 0 }], platforms: [{ track: 'DN' }],
+          stations: STATIONS.map((s) => ({ name: s.name, platforms: { DN: 0, UP: 1 } })) },
+        trainList: [{ failed: false, delay: 0, tasks: [{ k: 'stop', station, berth: 0, trip: 0,
+          arr: 150, dep: terminal ? null : 180, revenue: true, doors: true }],
+          phase: 'run', stopDist: Infinity, v: 0, skipStations: new Set(), tripNo: 'fixture', load: 0 }],
+        // A terminating task can supersede the original diagram destination.
+        plan: { trips: [{ revenue: true, to: terminal ? STATIONS.length - 1 : dest, dir: 'DN', stops: [] }] },
+        plat: [{ skip: false, surge: 1, limitUntil: 0 }, { skip: false, surge: 1, limitUntil: 0 }],
+        env: { wind: 0, rain: false }, alarms: new Map(),
+      } as unknown as Sim;
+      const actual = computePis(sim, station).DN[0];
+      expect(actual.dest).toBe(STATIONS[dest].name);
+      expect(actual.destSt).toBe(dest);
+    }
   });
 });

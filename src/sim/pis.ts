@@ -22,11 +22,32 @@ export function formatPisCountdown(row: PisRow | undefined): string {
 
 export interface PisFirstLast { destination: string; first: string; last: string }
 
+/** Screen time is wall-clock time, independent of simulation speed. 10-16 video measurements, D86. */
+export const PIS_TIMING = {
+  pageMs: 4450, scrollingPageMs: 13350, footerMs: 2500,
+  slideMs: 350, footerSlideMs: 300, englishWidthsPerSecond: 0.15,
+} as const;
+
+export interface PisCycleState { page: number; since: number }
+
+/** Advance an existing page without restarting it when a countdown or train list changes. */
+export function advancePisCycle(state: PisCycleState, now: number, durations: readonly number[]): PisCycleState {
+  if (!durations.length) return { page: 0, since: now };
+  let page = state.page % durations.length, since = state.since;
+  const cycle = durations.reduce((a, b) => a + b, 0);
+  if (now - since >= cycle) since += Math.floor((now - since) / cycle) * cycle;
+  while (now - since >= durations[page]) {
+    since += durations[page]; page = (page + 1) % durations.length;
+  }
+  return { page, since };
+}
+
 /** Published times at this station, with the first train's destination first. */
 export function selectPisFirstLast(station: string, track: TrackDir, first?: PisRow): PisFirstLast[] {
   const row = FIRST_LAST.find((r) => r.station === station);
   if (!row) return [];
-  const dest = first?.dest !== '本站终到' ? STATIONS[first?.destSt ?? -1]?.id : undefined;
+  const to = STATIONS[first?.destSt ?? -1];
+  const dest = to && to.name !== station ? to.id : undefined;
   // 【假设】龙阳路、淞虹路等其他终点没有单独的官方列，沿用该方向大交路。
   // 无车或本站终到时也按站台方向显示，避免把到达本站的车当成发车方向。
   const service = dest === 'GLL' ? 'GLL' : dest === 'PXL' ? 'PXL' : dest === 'PDA' ? 'PDA' : track === 'DN' ? 'PDA' : 'PXL';
@@ -77,7 +98,8 @@ export function computePis(sim: Sim, station: number): PisData {
       if (i === 0 && tr.phase === 'dwell') status = tr.doorsOpen ? 'at' : 'departing';
       else if (i === 0 && tr.stopDist < 350) status = 'arriving';
       const trip = t.trip >= 0 ? sim.plan.trips[t.trip] : null;
-      const dest = t.dep === null ? '本站终到' : trip ? STATIONS[trip.to].name : tr.destText;
+      // a train terminating here is still listed by its destination name, as photographed (D86)
+      const dest = t.dep === null ? STATIONS[station].name : trip ? STATIONS[trip.to].name : tr.destText;
       // a train starting here waits for its planned departure
       if (status === 'eta' && t.dep !== null && t.arr === null) eta = Math.max(eta, t.dep - 60);
       out[track].push({ dest, ...(t.noBoard ? { noBoard: true } : {}), destSt: t.dep === null ? station : trip ? trip.to : -1, dwellRemaining: i === 0 && tr.phase === 'dwell' && t.dep !== null ? Math.max(0, tr.dwellUntil - sim.t) : undefined, eta: Math.max(0, eta - sim.t), status, trip: tr.tripNo, load: Math.min(1.3, tr.load / LINE_INFO.capacity) });

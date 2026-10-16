@@ -2,8 +2,8 @@
  * Platform passenger information display (PIS), laid out like the Line 2
  * platform screens: a media area on the left with the scrolling notice bar
  * beneath it, and three boxes on the right — the first train's countdown
- * (always shown), the second / third trains and first / last times every 20 s, and the
- * clock/date and the station name in turn every 3 s.
+ * (always shown), the second / third trains and first / last pages. The western
+ * extension's wide screens keep first / last times in their own column (D86).
  *
  * The board is updated in place: rebuilding it on every snapshot restarted
  * the notice ticker, which then only ever showed its first half glyph. A box
@@ -15,7 +15,7 @@
 import { h, clear } from './dom';
 import type { PisData, PisRow, TrackDir } from '../sim/model';
 import { STATIONS, STATION_EN, DIRECTIONS } from '../data/line2';
-import { formatPisCountdown, selectPisFirstLast, type PisFirstLast } from '../sim/pis';
+import { advancePisCycle, formatPisCountdown, selectPisFirstLast, PIS_TIMING, type PisCycleState, type PisFirstLast } from '../sim/pis';
 import metroLogo from './assets/metro-logo.png';
 import lineBadge from './assets/line2-badge.png';
 
@@ -40,6 +40,8 @@ function dateOf(label: string, t: number): string {
 interface Box { el: HTMLElement; title: HTMLElement; digits: HTMLElement; dest: HTMLElement; to: HTMLElement; toEn: HTMLElement; key: string }
 interface Board {
   station: number; track: TrackDir; root: HTMLElement;
+  wide: boolean; cycle: PisCycleState; firstLastCycle: PisCycleState;
+  schedule?: Box;
   load: HTMLElement; ticker: HTMLElement; tickerText: string;
   b1: Box; b2: Box; b3: HTMLElement;
   rows: PisRow[]; t: number; dateLabel: string;
@@ -56,7 +58,7 @@ function mkBox(): Box {
   return { el: h('div', { class: 'pb' }, title, digits, dest), title, digits, dest, to, toEn, key: '' };
 }
 
-const SLIDE: KeyframeAnimationOptions = { duration: 520, easing: 'cubic-bezier(.45,0,.25,1)' };
+const SLIDE: KeyframeAnimationOptions = { duration: PIS_TIMING.slideMs, easing: 'linear' };
 
 /**
  * Change the content of `els` (children of one box) with `fill`: a copy of
@@ -82,7 +84,7 @@ function slide(els: HTMLElement[], fill: () => HTMLElement[] | void, vertical = 
     const a = g.animate([
       { transform: 'none', opacity: 1 },
       { transform: `translate${vertical ? 'Y' : 'X'}(${-out}px)`, opacity: vertical ? 0 : 1 },
-    ], { ...SLIDE, fill: 'forwards' });
+    ], { ...SLIDE, ...(vertical ? { duration: PIS_TIMING.footerSlideMs } : {}), fill: 'forwards' });
     a.onfinish = a.oncancel = () => g.remove();
   }
   if (!ghosts.length) return;
@@ -94,28 +96,52 @@ function slide(els: HTMLElement[], fill: () => HTMLElement[] | void, vertical = 
     e.animate([
       { transform: `translate${vertical ? 'Y' : 'X'}(${from}px)`, opacity: vertical ? 0 : 1 },
       { transform: 'none', opacity: 1 },
-    ], SLIDE);
+    ], { ...SLIDE, ...(vertical ? { duration: PIS_TIMING.footerSlideMs } : {}) });
   }
 }
 
 const englishScrolls = new WeakMap<HTMLElement, { width: number; textWidth: number; animation?: Animation }>();
 
 /** Measure after layout: short names stay still; overflow enters from the right. */
-function fillEnglish(el: HTMLElement, text: string) {
-  if (el.textContent !== text || !el.firstElementChild) {
+function fillEnglish(el: HTMLElement, text: string, prefix = '') {
+  if (el.dataset.text !== text || el.dataset.prefix !== prefix || !el.firstElementChild) {
     englishScrolls.get(el)?.animation?.cancel();
     englishScrolls.delete(el);
-    el.replaceChildren(h('span', {}, text));
+    el.dataset.text = text; el.dataset.prefix = prefix;
+    el.replaceChildren(h('span', { class: 'pb-prefix' }, prefix), h('span', { class: 'pb-en-window' }, h('span', {}, text)));
   }
-  const span = el.firstElementChild as HTMLElement;
-  const width = el.clientWidth, textWidth = span.offsetWidth;
+  const window = el.lastElementChild as HTMLElement;
+  const span = window.firstElementChild as HTMLElement;
+  const width = window.clientWidth, textWidth = span.offsetWidth;
   const old = englishScrolls.get(el);
   if (old?.width === width && old.textWidth === textWidth) return;
   old?.animation?.cancel();
   const animation = width > 0 && textWidth > width && typeof span.animate === 'function' ? span.animate([
     { transform: `translateX(${width}px)` }, { transform: `translateX(${-textWidth}px)` },
-  ], { duration: (width + textWidth) / Math.max(1, el.getBoundingClientRect().width / 10) * 1000, iterations: Infinity, easing: 'linear' }) : undefined;
+  ], { duration: (width + textWidth) / Math.max(1, width * PIS_TIMING.englishWidthsPerSecond) * 1000, iterations: Infinity, easing: 'linear' }) : undefined;
   englishScrolls.set(el, { width, textWidth, animation });
+}
+
+function destinationEnglish(r: PisRow | undefined): string {
+  return r && r.destSt >= 0 ? STATION_EN[STATIONS[r.destSt].id] ?? '' : '';
+}
+
+/** Measure with the secondary column's actual font and width, including font fallback. */
+const overflowCache = new Map<string, boolean>();
+function englishOverflows(b: Box, row: PisRow | undefined): boolean {
+  if (!row) return false;
+  const window = b.toEn.lastElementChild as HTMLElement | null;
+  if (!window || window.clientWidth <= 0) return false;
+  // measured once per text and column width: the board updates every 50 ms
+  const text = destinationEnglish(row), key = `${text}|${window.clientWidth}`;
+  const known = overflowCache.get(key);
+  if (known !== undefined) return known;
+  const measure = h('span', { class: 'pb-measure' }, text);
+  window.append(measure);
+  const overflow = measure.getBoundingClientRect().width > window.clientWidth;
+  measure.remove();
+  overflowCache.set(key, overflow);
+  return overflow;
 }
 
 const hhmm = (t: number) => { const d = ((t % 86400) + 86400) % 86400; return `${pad(Math.floor(d / 3600))}:${pad(Math.floor(d % 3600 / 60))}`; };
@@ -146,19 +172,18 @@ function fillBox(b: Box, k: number, r: PisRow | undefined, empty: [string, strin
   b.digits.classList.toggle('long', !!r && r.status === 'eta' && r.eta > 3600);
   b.el.classList.toggle('arr', !!r && r.status !== 'eta');
   if (!r) { b.to.textContent = empty[0]; fillEnglish(b.toEn, empty[1]); return; }
-  if (r.dest === '本站终到') { b.to.textContent = '终到列车 请勿上车'; fillEnglish(b.toEn, 'Terminating train, please do not board'); return; }
   if (r.noBoard) { b.to.textContent = `本次列车只下不上（往${r.dest}）`; fillEnglish(b.toEn, 'Alighting only, please do not board'); return; }
   b.to.innerHTML = '';
   b.to.append(h('span', {}, '开往'), h('span', {}, r.dest));
-  fillEnglish(b.toEn, r.destSt >= 0 ? `To  ${STATION_EN[STATIONS[r.destSt].id] ?? ''}` : '');
+  fillEnglish(b.toEn, destinationEnglish(r), 'To');
 }
 
-function fillFirstLast(b: Box, times: PisFirstLast[]) {
-  const key = `first-last|${JSON.stringify(times)}`;
+function fillFirstLast(b: Box, row: PisFirstLast | undefined, wide = false) {
+  const key = `first-last|${JSON.stringify(row)}`;
   if (b.key === key) return;
   if (b.key) {
     b.key = '';
-    slide([b.title, b.digits, b.dest], () => fillFirstLast(b, times));
+    slide([b.title, b.digits, b.dest], () => fillFirstLast(b, row, wide));
     return;
   }
   b.key = key;
@@ -166,27 +191,41 @@ function fillFirstLast(b: Box, times: PisFirstLast[]) {
   b.el.classList.remove('arr');
   b.digits.classList.remove('long');
   b.digits.classList.add('pb-timetable');
-  b.dest.hidden = true;
-  b.title.textContent = '首末班车(First / Last)';
+  b.dest.hidden = false;
+  b.title.replaceChildren(
+    h('span', {}, '首班车', h('small', {}, 'The First Train')),
+    h('span', {}, '末班车', h('small', {}, 'The Last Train')),
+  );
   clear(b.digits);
   clear(b.to);
   fillEnglish(b.toEn, '');
-  if (!times.length) { b.digits.append(h('div', { class: 'pb-times-empty' }, '暂无首末班信息')); return; }
-  for (const row of times) b.digits.append(h('div', { class: 'pb-times' },
-    h('div', { class: 'pb-times-to' }, `往${row.destination}`),
-    h('div', { class: 'pb-times-labels' }, h('span', {}, '首班'), h('span', {}, '末班')),
-    h('div', { class: 'pb-times-values' }, h('span', {}, row.first), h('span', {}, row.last))));
+  if (!row) { b.digits.append(h('div', { class: 'pb-times-empty' }, '暂无首末班信息')); return; }
+  b.digits.append(h('div', { class: 'pb-times-values' }, h('span', {}, row.first), h('span', {}, row.last)));
+  b.to.append(h('span', {}, '开往'), h('span', {}, row.destination));
+  const dest = STATIONS.find((s) => s.name === row.destination);
+  fillEnglish(b.toEn, dest ? STATION_EN[dest.id] ?? '' : '', 'To');
+  if (wide) b.el.classList.add('pb-schedule');
 }
 
 function update(bd: Board) {
   const now = performance.now();
   const { rows } = bd;
   fillBox(bd.b1, 0, rows[0], emptyText(bd, 0));
-  const page = Math.floor(now / 20000) % 3;
-  if (page === 2) fillFirstLast(bd.b2, selectPisFirstLast(STATIONS[bd.station].name, bd.track, rows[0]));
+  const times = selectPisFirstLast(STATIONS[bd.station].name, bd.track, rows[0]);
+  // Prime the English window before measuring its secondary-column width.
+  if (!bd.b2.toEn.firstElementChild) fillEnglish(bd.b2.toEn, destinationEnglish(rows[1]), 'To');
+  const durations = [1, 2].map((k) => englishOverflows(bd.b2, rows[k]) ? PIS_TIMING.scrollingPageMs : PIS_TIMING.pageMs);
+  if (!bd.wide) durations.push(...Array(Math.max(1, times.length)).fill(PIS_TIMING.pageMs));
+  bd.cycle = advancePisCycle(bd.cycle, now, durations);
+  const page = bd.cycle.page;
+  if (page >= 2) fillFirstLast(bd.b2, times[page - 2]);
   else { const k = page + 1; fillBox(bd.b2, k, rows[k], emptyText(bd, k)); }
-  // clock / station name, 3 s each
-  const showClock = Math.floor(now / 3000) % 2 === 0;
+  if (bd.schedule) {
+    bd.firstLastCycle = advancePisCycle(bd.firstLastCycle, now, Array(Math.max(1, times.length)).fill(PIS_TIMING.pageMs));
+    fillFirstLast(bd.schedule, times[bd.firstLastCycle.page], true);
+  }
+  // Wide hardware always keeps the clock and station header visible.
+  const showClock = bd.wide || Math.floor(now / PIS_TIMING.footerMs) % 2 === 0;
   const want = showClock ? `clock` : `name`;
   if (bd.b3.dataset.mode !== want) {
     const old = infoContent(bd);
@@ -221,7 +260,7 @@ function fillInfo(bd: Board, showClock: boolean) {
 
 function fillLoad(bd: Board) {
   const r = bd.rows[0];
-  bd.load.textContent = r && r.dest !== '本站终到' ? `下一班列车 车厢${loadText(r.load)}` : '';
+  bd.load.textContent = r?.destSt === bd.station ? '本站终到，请勿上车' : r ? `下一班列车 车厢${loadText(r.load)}` : '';
 }
 
 function build(station: number, track: TrackDir): Board {
@@ -241,8 +280,16 @@ function build(station: number, track: TrackDir): Board {
   const bar = h('div', { class: 'pis-bar' }, h('img', { src: lineBadge, alt: '' }), ticker);
   const b1 = mkBox(), b2 = mkBox();
   const b3 = h('div', { class: 'pb pb-info' });
-  const root = h('div', { class: 'pis2' }, media, bar, h('div', { class: 'pis-side' }, b1.el, b2.el, b3));
-  return { station, track, root, load, ticker, tickerText: '', b1, b2, b3, rows: [], t: 0, dateLabel: '', skip: false, done: false, ahead: 0 };
+  const wide = s.pisLayout === 'wide';
+  const schedule = wide ? mkBox() : undefined;
+  if (schedule) schedule.el.classList.add('pb-schedule');
+  const root = wide ? h('div', { class: 'pis2 pis-wide' }, media, bar, b3,
+    h('div', { class: 'pw-line' }, '2号线', h('small', {}, 'Line 2')),
+    h('div', { class: 'pw-station' }, s.name, h('small', {}, STATION_EN[s.id] ?? '')),
+    schedule!.el, b2.el, b1.el) : h('div', { class: 'pis2' }, media, bar, h('div', { class: 'pis-side' }, b1.el, b2.el, b3));
+  b1.el.classList.add('pb-first'); b2.el.classList.add('pb-next');
+  const since = performance.now();
+  return { station, track, root, wide, schedule, cycle: { page: 0, since }, firstLastCycle: { page: 0, since }, load, ticker, tickerText: '', b1, b2, b3, rows: [], t: 0, dateLabel: '', skip: false, done: false, ahead: 0 };
 }
 
 const boards = new WeakMap<HTMLElement, { key: string; list: Board[]; timer: number }>();
@@ -252,7 +299,7 @@ const boards = new WeakMap<HTMLElement, { key: string; list: Board[]; timer: num
  * `track` — into `el`.
  */
 export function renderPis(el: HTMLElement, pis: PisData | null, t: number, dateLabel = '', track?: TrackDir) {
-  if (!pis) { boards.delete(el); clear(el); el.append(h('div', { class: 'hint' }, '等待数据…')); return; }
+  if (!pis) { const cur = boards.get(el); if (cur) clearInterval(cur.timer); boards.delete(el); clear(el); el.append(h('div', { class: 'hint' }, '等待数据…')); return; }
   const key = `${pis.station}:${track ?? '*'}`;
   let cur = boards.get(el);
   if (!cur || cur.key !== key) {
@@ -263,7 +310,7 @@ export function renderPis(el: HTMLElement, pis: PisData | null, t: number, dateL
     const timer = window.setInterval(() => {
       if (!el.isConnected) { clearInterval(timer); boards.delete(el); return; }
       for (const b of list) update(b);
-    }, 250);
+    }, 50);
     cur = { key, list, timer };
     boards.set(el, cur);
   }

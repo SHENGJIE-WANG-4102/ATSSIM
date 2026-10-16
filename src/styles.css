@@ -327,23 +327,81 @@ tr.recovered td.txt { color: var(--ok); }
 .pb-digits { flex: 1; min-height: 0; line-height: 1; display: flex; align-items: center; justify-content: center; font: 700 6cqw 'DSEG7 Classic', var(--font-mono);
   color: #a4e4ff; letter-spacing: .02em; }
 .pb-digits.long { font: 600 2.9cqw var(--font-cn); white-space: nowrap; }
-.pb-digits.pb-timetable { flex-direction: column; justify-content: space-evenly; gap: .4cqw; padding: .3cqw .8cqw; letter-spacing: 0; }
+.pb-digits.pb-timetable { justify-content: center; padding: .3cqw .8cqw; letter-spacing: 0; }
 .pb-times { width: 100%; flex-shrink: 0; }
 .pb-times-to, .pb-times-empty { color: #fff; font: 500 1.6cqw/1.2 var(--font-cn); }
 .pb-times-to { text-align: center; white-space: nowrap; }
 .pb-times-labels, .pb-times-values { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: .8cqw; text-align: center; }
 .pb-times-labels { margin: .15cqw 0 .3cqw; color: #e8e0ff; font: 500 1.3cqw/1 var(--font-cn); }
 .pb-times-values { color: #d4bbff; font: 700 2.7cqw/1.1 'DSEG7 Classic', var(--font-mono); }
+.first-last .pb-title { display: grid; grid-template-columns: 1fr 1fr; font-size: 1.7cqw; font-weight: 400; }
+.first-last .pb-title small { display: block; font-size: 1.25cqw; white-space: nowrap; }
+.pb-times-values { width: 100%; }
 .pb-dest { background: #163f9c; padding: .5cqw 1cqw; }
 .pb-to { display: flex; justify-content: space-between; gap: 1cqw; font-size: 2.1cqw; white-space: nowrap; overflow: hidden; }
-.pb-to-en { font-size: 1.5cqw; color: #cfe3ff; white-space: nowrap; overflow: hidden; min-height: 1.9cqw; }
-.pb-to-en > span { display: inline-block; }
+.pb-to-en { display: flex; gap: .8cqw; font: 2.1cqw/1.15 Arial, sans-serif; color: #fff; white-space: nowrap; overflow: hidden; min-height: 2.5cqw; }
+.pb-prefix { flex: 0 0 auto; }
+.pb-prefix:empty { display: none; }
+.pb-en-window { display: block; position: relative; flex: 1; min-width: 0; overflow: hidden; text-align: center; }
+.pb-en-window > span { display: inline-block; white-space: nowrap; }
+.pb-en-window > .pb-measure { position: absolute; width: max-content; visibility: hidden; left: 0; }
 .pb-info { flex: .55 1 0; align-items: center; justify-content: center; text-align: center; gap: .3cqw; }
 .pb-clockrow { display: flex; align-items: baseline; justify-content: center; gap: .8cqw; }
 .pb-info .pb-clock { line-height: 1; white-space: nowrap; font: 700 4.4cqw 'DSEG7 Classic', var(--font-mono); color: #a4e4ff; }
 .pb-info .pb-date { font-size: 2cqw; white-space: nowrap; }
 .pb-info .pb-st { font-size: 3.2cqw; font-weight: 700; line-height: 1.1; }
 .pb-info .pb-st-en { font-size: 1.8cqw; color: #cfe3ff; padding: 0 .8cqw; }
+/* Western extension hardware: media, independent first/last column, secondary and first train. */
+.pis-wide { aspect-ratio: 32 / 9; grid-template-columns: 38% 14% 16% 32%; grid-template-rows: 17% 70% 13%;
+  grid-template-areas: "media clock line station" "media schedule next first" "media schedule bar bar";
+  background: #192d79; gap: 0; padding: .35cqw; }
+.pis-wide > .pb { margin: .2cqw; border-width: .15cqw; border-radius: .25cqw; }
+.pis-wide > .pb { background: linear-gradient(#40569c, #304684); }
+.pis-wide .pis-media { grid-area: media; padding: 1.3cqw; gap: .8cqw; }
+.pis-wide .pm-head { font-size: 1.25cqw; gap: .6cqw; }
+.pis-wide .pm-head img { height: 2.4cqw; }
+.pis-wide .pm-name { font-size: 2.8cqw; letter-spacing: 0; }
+.pis-wide .pm-towards { font-size: 1.3cqw; }
+.pis-wide .pm-strip { border-width: .2cqw; }
+.pis-wide .pm-stop { margin-top: -.8cqw; gap: .35cqw; }
+.pis-wide .pm-stop i { width: 1.2cqw; height: 1.2cqw; border-width: .25cqw; }
+.pis-wide .pm-stop span { font-size: .9cqw; max-height: 3cqw; }
+.pis-wide .pm-load { font-size: 1.15cqw; min-height: 1.4cqw; }
+.pis-wide .pb-info { grid-area: clock; }
+.pis-wide .pb-clockrow { flex-direction: column; align-items: center; gap: .2cqw; }
+.pis-wide .pb-clock { font-size: 2.1cqw; }
+.pis-wide .pb-date { font-size: 1.1cqw; }
+.pw-line, .pw-station { display: flex; flex-direction: column; justify-content: center; align-items: center;
+  margin: .2cqw; border: .15cqw solid #6386c9; border-radius: .25cqw; background: linear-gradient(#405b9c, #283c80); font-size: 1.7cqw; text-align: center; }
+.pw-line { grid-area: line; }
+.pw-station { grid-area: station; font-size: 1.6cqw; }
+.pw-line small, .pw-station small { display: block; font: 1.1cqw/1.2 Arial, sans-serif; }
+.pis-wide .pb-first { grid-area: first; }
+.pis-wide .pb-next { grid-area: next; }
+.pis-wide .pb-schedule { grid-area: schedule; display: flex; flex-direction: column; }
+.pis-wide .pb-title { background: transparent; font-size: 1.6cqw; padding: .7cqw .2cqw; font-weight: 400; }
+.pis-wide .pb-digits { font-size: 4.2cqw; }
+.pis-wide .pb-next .pb-title { font-size: 1.25cqw; }
+.pis-wide .pb-next .pb-digits { font-size: 2.6cqw; }
+.pis-wide .pb-dest { background: transparent; padding: .4cqw .65cqw; }
+.pis-wide .pb-to { font-size: 1.25cqw; gap: .4cqw; color: #fff3a4; }
+.pis-wide .pb-to-en { font-size: 1.2cqw; min-height: 1.4cqw; gap: .4cqw; color: #fff3a4; }
+.pis-wide .pb-first .pb-dest { margin-bottom: .7cqw; }
+.pis-wide .pb-first .pb-to { font-size: 1.65cqw; }
+.pis-wide .pb-first .pb-to-en { font-size: 1.15cqw; min-height: 1.5cqw; }
+.pis-wide .pb-schedule .pb-dest { order: 0; }
+.pis-wide .pb-schedule .pb-title { display: none; }
+.pis-wide .pb-schedule .pb-digits { order: 1; display: block; padding: .2cqw; }
+.pis-wide .pb-schedule .pb-to { font-size: 1.05cqw; flex-direction: column; gap: .2cqw; }
+.pis-wide .pb-schedule .pb-to-en { font-size: .8cqw; min-height: 1.2cqw; }
+.pis-wide .pb-schedule .pb-times-values { display: flex; flex-direction: column; gap: .5cqw; font-size: 2.35cqw; color: #b8e4ff; }
+.pis-wide .pb-schedule .pb-times-values > span::before { display: block; color: #fff; font: 1.15cqw/1.3 var(--font-cn); margin: .5cqw 0; }
+.pis-wide .pb-schedule .pb-times-values > span:first-child::before { content: "首班车 The First Train"; }
+.pis-wide .pb-schedule .pb-times-values > span:last-child::before { content: "末班车 The Last Train"; }
+.pis-wide .pis-bar { padding: .2cqw .5cqw; gap: .5cqw; }
+.pis-wide .pis-bar img { height: 2.4cqw; }
+.pis-wide .pis-ticker { font-size: 1.2cqw; }
+.pis-wide .pb-digits.long, .pis-wide .pb-next .pb-digits.long { font: 600 1.3cqw var(--font-cn); white-space: normal; text-align: center; }
 @keyframes marquee { to { transform: translateX(-100%); } }
 
 /* yard view */
