@@ -1,8 +1,8 @@
 /**
  * Parametric timetable (运行图) generation.
  *
- * Templates are parameter sets (pattern of big/small routes, core headway,
- * dwell factor). A day plan is a list of periods referencing templates. The
+ * Templates describe route patterns and reference headways. Independent
+ * clock tables select calibrated dwell factors and running grades. The
  * generator lays out departure streams at a reference station per direction,
  * builds trips, links them into train blocks (车底运用) by FIFO matching at
  * each terminal, and closes the gaps with depot insertions (出库) and
@@ -23,79 +23,170 @@ export interface Template {
   pattern: ('big' | 'small')[];
   /** headway between successive trains at the reference station (s) */
   headway: number;
-  dwellFactor: number;
-  /** Planned interval ATO level; omitted = full-performance level 1. */
-  runLevel?: number;
+  /** Leading peak wave and pattern phasing, read by the common stream rule. */
+  peak?: boolean;
+  openingAlternation?: boolean;
+  phase?: Partial<Record<TrackDir, number>>;
+  continuePattern?: boolean;
 }
 
 export const TEMPLATES: Record<string, Template> = {
   weekdayAM: {
     id: 'weekdayAM', name: '工作日早高峰', desc: '大小交路交替：大—大—小，淞虹路—广兰路 2\'30"，外段平均 3\'45"',
-    pattern: ['big', 'big', 'small'], headway: 150, dwellFactor: 0.8,
+    pattern: ['big', 'big', 'small'], headway: 150, peak: true, openingAlternation: true, phase: { DN: 2 },
   },
   weekdayPM: {
     id: 'weekdayPM', name: '工作日晚高峰', desc: '大小交路交替：大—大—小，淞虹路—广兰路 3\'00"，外段 4\'30"',
-    pattern: ['big', 'big', 'small'], headway: 180, dwellFactor: 0.8,
+    pattern: ['big', 'big', 'small'], headway: 180, peak: true, phase: { UP: 1 },
   },
   weekdayAMTail: {
     id: 'weekdayAMTail', name: '早高峰退出', desc: '2:1 交路逐步退出早高峰【假设】',
-    pattern: ['big', 'big', 'small'], headway: 210, dwellFactor: 0.8,
+    pattern: ['big', 'big', 'small'], headway: 210,
   },
   weekdayOff: {
-    id: 'weekdayOff', name: '工作日平峰', desc: '单一大交路 5\'00"', pattern: ['big'], headway: 300, dwellFactor: 1.0,
+    id: 'weekdayOff', name: '工作日平峰', desc: '单一大交路 5\'00"', pattern: ['big'], headway: 300,
   },
   weekdayEvening: {
-    id: 'weekdayEvening', name: '工作日夜间平峰', desc: '单一大交路 7\'00"', pattern: ['big'], headway: 420, dwellFactor: 0.95,
+    id: 'weekdayEvening', name: '工作日夜间平峰', desc: '单一大交路 7\'00"', pattern: ['big'], headway: 420,
   },
   weekdayPMTail: {
     id: 'weekdayPMTail', name: '晚高峰延续', desc: '2:1 延至约20:55，间隔由2\'45"逐步增至4\'00"【假设：分段线性插值】',
-    pattern: ['big', 'big', 'small'], headway: 165, dwellFactor: 1.1,
+    pattern: ['big', 'big', 'small'], headway: 165, continuePattern: true,
   },
   weekdayNight: {
     id: 'weekdayNight', name: '晚间大交路', desc: '21:00附近原小交路时隙改开机场车，3\'00"向末班8\'00"插值【假设】',
-    pattern: ['big'], headway: 180, dwellFactor: 1.1,
+    pattern: ['big'], headway: 180,
   },
   weekend: {
-    id: 'weekend', name: '双休日/节假日', desc: '全天单一大交路，日间 4\'30"', pattern: ['big'], headway: 270, dwellFactor: 1.05,
+    id: 'weekend', name: '双休日/节假日', desc: '全天单一大交路，日间 4\'30"', pattern: ['big'], headway: 270,
   },
   firstLast: {
     id: 'firstLast', name: '首末班及收车', desc: '首班 05:25 起 7\'00"；21:57 后蟠祥路—广兰路 8\'00"，末班后回段/存车',
-    pattern: ['big'], headway: 420, dwellFactor: 0.43, runLevel: 4,
+    pattern: ['big'], headway: 420,
   },
 };
 
-export interface Period { from: number; to: number; template: string; headway?: number; headwayTo?: number; label: string; runLevel?: number; dwellFactor?: number }
+export interface Period { from: number; to: number; template: string; headway?: number; headwayTo?: number; label: string }
 
 const H = (h: number, m = 0) => h * 3600 + m * 60;
 
-export function dayPeriods(dayType: DayType): Period[] {
-  if (dayType === 'weekday') {
-    return [
-      { from: H(4), to: H(6, 5), template: 'firstLast', label: '首班/早间', runLevel: 1, dwellFactor: 0.95 },
-      { from: H(6, 5), to: H(7, 40), template: 'weekdayOff', headway: 300, label: '早高峰前过渡' },
-      { from: H(7, 40), to: H(10), template: 'weekdayAM', label: '早高峰' },
-      { from: H(10), to: H(10, 40), template: 'weekdayAMTail', headway: 190, headwayTo: 270, label: '早高峰退出【假设】' },
-      { from: H(10, 40), to: H(18, 15), template: 'weekdayOff', label: '平峰' },
-      { from: H(18, 15), to: H(19, 30), template: 'weekdayPM', label: '晚高峰' },
-      // D72: 19:44 observed ~165 s, 20:43 observed ~240 s. The
-      // interpolation between observations is 【假设】, with a 12-min 2:1
-      // cycle by 20:45. This band does not pre-position a second peak wave.
-      { from: H(19, 30), to: H(19, 45), template: 'weekdayPMTail', label: '晚高峰延续' },
-      { from: H(19, 45), to: H(20, 45), template: 'weekdayPMTail', headway: 165, headwayTo: 240, label: '晚高峰间隔渐长' },
-      { from: H(20, 45), to: H(20, 55), template: 'weekdayPMTail', headway: 240, label: '小交路收车前' },
-      { from: H(20, 55), to: H(21), template: 'weekdayNight', headway: 240, headwayTo: 180, label: '机场车接替时隙【假设】' },
-      { from: H(21), to: H(21, 40), template: 'weekdayNight', headway: 240, label: '晚间大交路【假设】' },
-      { from: H(21, 40), to: H(28), template: 'firstLast', headway: 240, label: '末班/收车' },
-    ];
-  }
-  return [
-    { from: H(4), to: H(6, 40), template: 'firstLast', label: '首班/早间', runLevel: 1, dwellFactor: 0.95 },
+const DAY_PERIODS: Record<DayType, Period[]> = {
+  weekday: [
+    { from: H(4), to: H(6, 5), template: 'firstLast', label: '首班/早间' },
+    { from: H(6, 5), to: H(7, 40), template: 'weekdayOff', headway: 300, label: '早高峰前过渡' },
+    { from: H(7, 40), to: H(10), template: 'weekdayAM', label: '早高峰' },
+    { from: H(10), to: H(10, 40), template: 'weekdayAMTail', headway: 190, headwayTo: 270, label: '早高峰退出【假设】' },
+    { from: H(10, 40), to: H(18, 15), template: 'weekdayOff', label: '平峰' },
+    { from: H(18, 15), to: H(19, 30), template: 'weekdayPM', label: '晚高峰' },
+    // D72: 19:44 observed ~165 s, 20:43 observed ~240 s. The
+    // interpolation between observations is 【假设】, with a 12-min 2:1
+    // cycle by 20:45. This band does not pre-position a second peak wave.
+    { from: H(19, 30), to: H(19, 45), template: 'weekdayPMTail', label: '晚高峰延续' },
+    { from: H(19, 45), to: H(20, 45), template: 'weekdayPMTail', headway: 165, headwayTo: 240, label: '晚高峰间隔渐长' },
+    { from: H(20, 45), to: H(20, 55), template: 'weekdayPMTail', headway: 240, label: '小交路收车前' },
+    { from: H(20, 55), to: H(21), template: 'weekdayNight', headway: 240, headwayTo: 180, label: '机场车接替时隙【假设】' },
+    { from: H(21), to: H(21, 40), template: 'weekdayNight', headway: 240, label: '晚间大交路【假设】' },
+    { from: H(21, 40), to: H(28), template: 'firstLast', headway: 240, label: '末班/收车' },
+  ],
+  weekend: [
+    { from: H(4), to: H(6, 40), template: 'firstLast', label: '首班/早间' },
     { from: H(6, 40), to: H(7, 40), template: 'weekend', headway: 360, label: '早间过渡' },
     { from: H(7, 40), to: H(21), template: 'weekend', label: '双休日日间' },
     { from: H(21), to: H(21, 40), template: 'weekdayEvening', label: '夜间' },
     { from: H(21, 40), to: H(28), template: 'firstLast', headway: 480, label: '末班/收车' },
-  ];
+  ],
+};
+
+export function dayPeriods(dayType: DayType): Period[] {
+  return DAY_PERIODS[dayType].map(p => ({ ...p }));
 }
+
+interface ClockBand { from: number; to: number; value: number; valueTo?: number }
+// D73/D74 calibration clocks are independent of service frequency and route patterns.
+const DWELL_BANDS: Record<DayType, ClockBand[]> = {
+  weekday: [
+    { from: 0, to: H(6, 5), value: 0.95 },
+    { from: H(6, 5), to: H(6, 50), value: 1 },
+    { from: H(6, 50), to: H(9, 30), value: 0.8 },
+    { from: H(9, 30), to: H(16, 50), value: 1 },
+    { from: H(16, 50), to: H(19, 30), value: 0.8 },
+    { from: H(19, 30), to: H(21), value: 1.1 },
+    { from: H(21), to: H(21, 40), value: 1.1, valueTo: 0.43 },
+    { from: H(21, 40), to: Infinity, value: 0.43 },
+  ],
+  weekend: [
+    { from: 0, to: H(6, 40), value: 0.95 },
+    { from: H(6, 40), to: H(21), value: 1.05 },
+    { from: H(21), to: H(21, 40), value: 0.95 },
+    { from: H(21, 40), to: Infinity, value: 0.43 },
+  ],
+};
+const RUN_BANDS: Record<DayType, ClockBand[]> = {
+  weekday: [
+    { from: 0, to: H(21, 10), value: 1 },
+    { from: H(21, 10), to: H(21, 25), value: 2 },
+    { from: H(21, 25), to: H(21, 40), value: 3 },
+    { from: H(21, 40), to: Infinity, value: 4 },
+  ],
+  weekend: [
+    { from: 0, to: H(21, 40), value: 1 },
+    { from: H(21, 40), to: Infinity, value: 4 },
+  ],
+};
+
+interface ServiceData {
+  openingUp?: { at: number; headway: number; template: string; label: string };
+  denseUp?: number;
+  openingDn?: { to: number; headway: number }[];
+  peaks: Record<string, { DN?: number; UP?: number; upEnd?: number }>;
+  overrides: (Period & { dir: TrackDir })[];
+  openingSupplements: { from: number; to: number; headway: number; terminal: number }[];
+  shortClose?: number;
+  carryingClose?: { from: number; to: number };
+  lateHeadway: number;
+  lateReturns?: { from: number; every: number; terminal: number };
+  lateOrigins?: { countFrom: number; from: number; to: number; every: number; origin: number; terminal: number };
+  standby: StandbyWindow[];
+}
+const SERVICE_DATA: Record<DayType, ServiceData> = {
+  weekday: {
+    openingUp: { at: H(5, 35) + 30, headway: 450, template: 'weekdayOff', label: '西行开班疏班【假设】' },
+    denseUp: H(6, 55),
+    openingDn: [{ to: H(6, 10), headway: 225 }, { to: Infinity, headway: 180 }],
+    peaks: { weekdayAM: {}, weekdayPM: { DN: H(17), UP: H(17, 24), upEnd: H(20, 20) } },
+    overrides: [
+      { dir: 'DN', from: H(20, 15), to: H(20, 45), template: 'weekdayPMTail', headway: 180, label: '东行三分钟延续【假设】' },
+      { dir: 'DN', from: H(9, 45), to: H(10, 40), template: 'weekdayAMTail', headway: 200, headwayTo: 300, label: '东行早高峰退出【假设】' },
+    ],
+    // 【假设】 LYL depot origins fill the western opening wave while GLL is sparse.
+    openingSupplements: [
+      { from: 0, to: H(5, 35), headway: 450, terminal: 0 },
+      { from: H(5, 35), to: H(5, 50), headway: 225, terminal: 0 },
+      { from: H(5, 50), to: H(6, 10), headway: 450, terminal: 0 },
+      { from: H(6, 10), to: H(6, 30), headway: 225, terminal: 0 },
+      { from: H(6, 30), to: H(6, 40), headway: 225, terminal: 4 },
+      { from: H(6, 40), to: H(7, 10), headway: 150, terminal: 4 },
+    ],
+    shortClose: H(20, 55),
+    carryingClose: { from: H(20, 50), to: H(21) },
+    lateHeadway: 240,
+    lateReturns: { from: H(22, 30), every: 2, terminal: 19 },
+    lateOrigins: { countFrom: H(22), from: H(22, 10), to: H(22, 30), every: 4, origin: 19, terminal: 4 },
+    standby: [{ from: H(11, 30), need: H(16), to: H(20, 30) }],
+  },
+  weekend: {
+    peaks: {}, overrides: [], openingSupplements: [], lateHeadway: 480,
+    standby: [{ from: H(9), need: H(21), to: H(21) }],
+  },
+};
+
+// Published opening duties and depot operating windows, shared by all day types.
+const OPENING = {
+  longyang: H(5, 20), century: H(5, 24), guanglanWest: H(5, 28), guanglanEast: H(6),
+  outerAlternation: H(7, 10),
+  stockUntil: H(10), redirectFrom: H(7), emptyFeedersFrom: H(20),
+  feederUntil: H(26), stableUntil: H(10), dayStart: H(4),
+};
 
 /** Margin of the outer (west of 淞虹路) alternation window inside a peak band:
  * the outer end leads (DN) or lags (UP) the core by its ~11 min running time,
@@ -103,7 +194,7 @@ export function dayPeriods(dayType: DayType): Period[] {
 export const OUTER_BAND_MARGIN = 1200;
 /** whether a time at an outer station falls in a peak's 2'30"/5'00" pattern */
 export function inOuterAlternation(periods: Period[], t: number): boolean {
-  return periods.some(p => (p.template === 'weekdayAM' || p.template === 'weekdayPM') && t >= p.from + OUTER_BAND_MARGIN && t < p.to - OUTER_BAND_MARGIN);
+  return periods.some(p => TEMPLATES[p.template].peak && t >= p.from + OUTER_BAND_MARGIN && t < p.to - OUTER_BAND_MARGIN);
 }
 
 // ---------------------------------------------------------------- overlays (加开)
@@ -147,9 +238,7 @@ const MAX_LAYOVER = 1500;
  */
 interface StandbyWindow { from: number; need: number; to: number }
 function standbyWindows(dayType: DayType): StandbyWindow[] {
-  return dayType === 'weekday'
-    ? [{ from: H(11,30), need: H(16), to: H(20, 30) }]
-    : [{ from: H(9), need: H(21), to: H(21) }];
+  return SERVICE_DATA[dayType].standby;
 }
 /** longest an added train running on in its own direction may stand at an
  *  intermediate station's through platform before its next trip (s): any
@@ -237,30 +326,56 @@ function periodAt(periods: Period[], t: number): Period {
   return periods[periods.length - 1];
 }
 
-function dwellFactorAt(periods: Period[], t: number): number {
-  // D79 moves service slots only; preserve D73's clock-based exchange factors.
-  if (periods.some(p => p.template === 'weekdayAMTail')) {
-    if (t >= H(6, 5) && t < H(16, 50)) return t >= H(6, 50) && t < H(9, 30) ? 0.8 : 1;
-    if (t >= H(16, 50) && t < H(19, 30)) return 0.8;
-  }
-  const p = periodAt(periods, t);
-  // 【假设】 fade the observed evening exchange to the late-train level
-  // over 21:00–21:40, keeping the physical door cycle fixed (D73).
-  if (p.template === 'weekdayNight' && t >= H(21))
-    return 1.1 + (TEMPLATES.firstLast.dwellFactor - 1.1) * Math.min(1, (t - H(21)) / 2400);
-  return p.dwellFactor ?? TEMPLATES[p.template].dwellFactor;
+function clockValue(bands: ClockBand[], t: number): number {
+  const band = bands.find(b => t < b.to) ?? bands[bands.length - 1];
+  if (band.valueTo === undefined) return band.value;
+  const fraction = Math.max(0, Math.min(1, (t - band.from) / (band.to - band.from)));
+  return band.value + (band.valueTo - band.value) * fraction;
+}
+
+export function dwellFactorAt(dayType: DayType, t: number): number {
+  return clockValue(DWELL_BANDS[dayType], t);
 }
 
 export function plannedRunLevel(dayType: DayType, departure: number): number {
-  if(dayType==='weekday')return departure>=H(21,40)?4:departure>=H(21,25)?3:departure>=H(21,10)?2:1;
-  const p = periodAt(dayPeriods(dayType), departure);
-  if (p.template === 'weekdayNight' && departure >= H(21, 10)) return departure < H(21, 25) ? 2 : 3;
-  return p.runLevel ?? TEMPLATES[p.template].runLevel ?? 1;
+  return clockValue(RUN_BANDS[dayType], departure);
 }
 
 // ---------------------------------------------------------------- generation
 
 interface GenTrip extends Trip { next?: number; prev?: number }
+/** Candidate depot moves dropped during matching have never been published. */
+const UNUSED_DEPOT_MOVE = -2;
+/** Select a route while drafting service data, before train matching. */
+function trimRoute(trip: Pick<ServiceRequest, 'from' | 'to' | 'kind' | 'stops'>, from: number, to: number, kind: TripKind) {
+  trip.from = from;
+  trip.to = to;
+  trip.kind = kind;
+  trip.stops = trip.stops.filter(p => p.st >= Math.min(from, to) && p.st <= Math.max(from, to));
+  trip.stops[0].arr = trip.stops[0].dep;
+  trip.stops.at(-1)!.dep = trip.stops.at(-1)!.arr;
+}
+
+type ServiceIdentity = Pick<Trip, 'dir' | 'from' | 'to' | 'kind'> & { stations: number[] };
+const laidOutService = new WeakMap<Plan, Map<Trip, ServiceIdentity>>();
+const generationIssues = new WeakMap<Plan, PlanIssue[]>();
+
+function serviceIdentity(trip: Trip): ServiceIdentity {
+  return { dir: trip.dir, from: trip.from, to: trip.to, kind: trip.kind, stations: trip.stops.map(p => p.st) };
+}
+
+/** The same guard is used in generation and by regressions which mutate a plan. */
+export function serviceStructureIssues(plan: Plan): PlanIssue[] {
+  const service = laidOutService.get(plan);
+  if (!service) return [];
+  const present = new Set(plan.trips);
+  const issues: PlanIssue[] = [];
+  for (const [trip, expected] of service) {
+    if (present.has(trip) && !trip.cancelled && JSON.stringify(serviceIdentity(trip)) === JSON.stringify(expected)) continue;
+    issues.push({ severity: 'error', code: 'SERVICE_STRUCTURE', t: trip.stops[0].dep, blocks: [trip.block], text: '已铺画载客车次被取消或改变起终点、交路' });
+  }
+  return issues;
+}
 
 /** Added service may keep a train of the base plan in service instead of
  * bringing another out of the depot (延长运用, D47). `canExtend` says whether
@@ -295,10 +410,11 @@ export function yardNeed(topo: Topology, plan: Plan): number[] {
 
 /** `shift`: per yard, how many of its earliest morning exits another yard
  *  takes (a second pass when the first one needed more than a yard holds) */
-export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[]): Plan {
+function layoutService(ctx: PlanContext) {
   const { topo } = ctx;
   const periods = dayPeriods(ctx.dayType);
-  const trips: GenTrip[] = [];
+  const service = SERVICE_DATA[ctx.dayType];
+  const trips: ServiceRequest[] = [];
   const nS = topo.stations.length;
   const W = 0;
   const E = nS - 1;
@@ -306,18 +422,18 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
   const GLL = 22;
   let upPhase = 10; // UP peak phase, aligned to the first airport train below.
   /** the published first trains from their origins: they open each station */
-  const firstService: GenTrip[] = [];
+  const firstService: ServiceRequest[] = [];
 
-  const addTrip = (dir: TrackDir, kind: TripKind, from: number, to: number, stops: PlanStop[], revenue: boolean, overlay?: string): GenTrip => {
-    const tr: GenTrip = { id: trips.length, no: '', dir, kind, from, to, stops, revenue, block: -1, overlay };
+  const addTrip = (dir: TrackDir, kind: TripKind, from: number, to: number, stops: PlanStop[], revenue: boolean, overlay?: string): ServiceRequest => {
+    const tr: ServiceRequest = { id: trips.length, dir, kind, from, to, stops, revenue, overlay };
     trips.push(tr);
     return tr;
   };
 
-  const factorAt = (t: number) => dwellFactorAt(periods, t);
+  const factorAt = (t: number) => dwellFactorAt(ctx.dayType, t);
   // A peak is a whole-core promise, not an origin departure change. Allow
   // the complete core traversal plus one headway for its leading wave.
-  const peaks = periods.filter(p => p.template === 'weekdayAM' || p.template === 'weekdayPM');
+  const peaks = periods.filter(p => TEMPLATES[p.template].peak);
   const peakHw = (p: Period) => TEMPLATES[p.template].headway;
   const coreLead = new Map(peaks.map(p => {
     const hw = peakHw(p);
@@ -336,30 +452,27 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     // an off-grid first train which disrupts the western 1:2 alternation.
     upPhase = ((first - anchor) % hw + hw) % hw;
   }
-  const morningUpStart = H(6, 55) + upPhase;
-  // 【假设】 D79/D80: reference waves mapped from the checked station bins.
-  const peakStart=(p:Period,dir:TrackDir)=>p.template==='weekdayPM'?(dir==='DN'?H(17):H(17,24))
-    :dir==='UP'?morningUpStart:p.from-coreLead.get(p)!;
-  /** the steady peak stream from its leading wave, after a 20 min run-in from the headway before */
+  const morningUpStart = service.denseUp === undefined ? undefined : service.denseUp + upPhase;
+  const peakStart = (p: Period, dir: TrackDir) => service.peaks[p.template]?.[dir]
+    ?? (dir === 'UP' && morningUpStart !== undefined ? morningUpStart : p.from - coreLead.get(p)!);
+  /** Reference-station service waves; all directional differences come from data. */
   const streamAt = (t: number, dir: TrackDir): Period & { steady?: boolean } => {
-    if (ctx.dayType === 'weekday' && dir === 'DN' && t >= H(20,15) && t < H(20,45))
-      return { from: H(20,15), to: H(20,45), template: 'weekdayPMTail', headway: 180, label: '东行三分钟延续【假设】' };
-    if (ctx.dayType === 'weekday' && dir === 'DN' && t >= H(9, 45) && t < H(10, 40))
-      return { from: H(9, 45), to: H(10, 40), template: 'weekdayAMTail', headway: 200, headwayTo: 300, label: '东行早高峰退出【假设】' };
-    if (ctx.dayType === 'weekday' && t < morningUpStart) {
-      if (dir === 'UP') return { from: H(5, 35), to: morningUpStart, template: 'weekdayOff', headway: 450, label: '西行开班疏班【假设】' };
-      const start = peaks[0].from - coreLead.get(peaks[0])!;
-      if (t < start) return { from: 0, to: start, template: 'weekdayAM', headway: t < H(6, 10) ? 225 : 180, label: '东行开班过渡【假设】' };
+    const override = service.overrides.find(p => p.dir === dir && t >= p.from && t < p.to);
+    if (override) return override;
+    if (morningUpStart !== undefined && t < morningUpStart) {
+      if (dir === 'UP') return { ...service.openingUp!, from: service.openingUp!.at, to: morningUpStart };
+      const start = peakStart(peaks[0], dir);
+      if (t < start) return { from: 0, to: start, template: peaks[0].template, headway: service.openingDn!.find(p => t < p.to)!.headway, label: '东行开班过渡【假设】' };
     }
     for (const peak of peaks) {
       const hw = peakHw(peak);
-      const start = peakStart(peak,dir), transition = start - 1200;
-      const end=peak.template==='weekdayPM'&&dir==='UP'?H(20,20):peak.to;
+      const start = peakStart(peak, dir), transition = start - OUTER_BAND_MARGIN;
+      const end = dir === 'UP' ? service.peaks[peak.template]?.upEnd ?? peak.to : peak.to;
       if (t >= start && t < end) return { ...peak, from: start, headway: hw, steady: true };
       if (t >= transition && t < start) {
         const before = periodAt(periods, transition);
         const prev = Math.max(hw, before.headway ?? TEMPLATES[before.template].headway);
-        return { ...peak, from: transition, to: start, headway: hw + (prev - hw) * (start - t) / 1200, label: `${peak.label}渐进预置` };
+        return { ...peak, from: transition, to: start, headway: hw + (prev - hw) * (start - t) / OUTER_BAND_MARGIN, label: `${peak.label}渐进预置` };
       }
     }
     return periodAt(periods, t);
@@ -389,9 +502,9 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
   const nextSlot = (t: number, dir: TrackDir) => {
     const p = streamAt(t, dir);
     const candidate = t + headwayAt(p.steady ? t : t + headwayAt(t, dir) / 2, dir);
-    if (ctx.dayType === 'weekday' && dir === 'UP' && t < morningUpStart && candidate >= morningUpStart) return morningUpStart;
+    if (morningUpStart !== undefined && dir === 'UP' && t < morningUpStart && candidate >= morningUpStart) return morningUpStart;
     // Join the leading peak wave without a short insertion or a long gap.
-    const join = peaks.map(p => ({ b: peakStart(p,dir), hw: peakHw(p) })).find(x => x.b > t && x.b <= candidate);
+    const join = peaks.map(p => ({ b: peakStart(p, dir), hw: peakHw(p) })).find(x => x.b > t && x.b <= candidate);
     if (join) return join.b - t >= 90 ? join.b : join.b + join.hw;
     return candidate;
   };
@@ -404,25 +517,27 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     for (let guard = 0; guard < 2000; guard++) {
       const p = streamAt(t, 'DN');
       const tpl = TEMPLATES[p.template];
-      if (p.label !== lastPeriod) { if (p.template !== 'weekdayPMTail') idx = p.template === 'weekdayAM' ? 2 : 0; lastPeriod = p.label; }
-      if (p.steady) idx = Math.round((t - p.from) / peakHw(p)) + (p.template === 'weekdayAM' ? 2 : 0);
+      if (p.label !== lastPeriod) {
+        if (!tpl.continuePattern) idx = tpl.phase?.DN ?? 0;
+        lastPeriod = p.label;
+      }
+      if (p.steady) idx = Math.round((t - p.from) / peakHw(p)) + (tpl.phase?.DN ?? 0);
       let kind = tpl.pattern[idx % tpl.pattern.length] as 'big' | 'small' | 'late';
       // Pre-position the core with short routes, while the west outer
       // section still has one departure every 5 minutes (D73).
-      if (p.template === 'weekdayAM' && t < H(7, 10)) kind = idx % 2 === 0 ? 'big' : 'small';
+      if (tpl.openingAlternation && t < OPENING.outerAlternation) kind = idx % 2 === 0 ? 'big' : 'small';
       if (guard === 0) kind = 'big'; // preserve the published PXL 05:25 opener
       if (kind === 'big' || kind === 'late') {
         const originDep = atReference('DN', W, E, SHR, t)[0].dep;
-        if (originDep > OPERATIONS.lastBigEastboundDep) kind = 'late';
-        if (originDep > OPERATIONS.lastLateEastboundDep + 1) break;
-        const to = kind === 'big' ? E : GLL;
+        if (originDep > OPERATIONS.lastBigEastboundDep) break;
+        const to = E;
         const stops = atReference('DN', W, to, SHR, t);
         addTrip('DN', kind, W, to, stops, true);
       } else {
         const stops = buildStops(ctx, 'DN', SHR, GLL, t, true, factorAt);
         // End the eastbound short route at its far end, rather than letting
         // another whole-core journey start at 20:55 (D72).
-        if (ctx.dayType === 'weekday' && stops.at(-1)!.arr >= H(20, 55)) {
+        if (service.shortClose !== undefined && stops.at(-1)!.arr >= service.shortClose) {
           // The train of the former short-route slot continues east from
           // SHR to the airport; adding a new PXL origin would require an
           // unrelated extra train at the west end during the withdrawal.
@@ -432,6 +547,13 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
       idx++;
       t = nextSlot(t, 'DN');
     }
+  }
+  // The closing stream is counted backwards from its official final origin.
+  // Only feasible slots are laid out, so no surplus first late train exists.
+  const lateCount = Math.floor((OPERATIONS.lastLateEastboundDep - OPERATIONS.lastBigEastboundDep - MIN_HEADWAY) / service.lateHeadway) + 1;
+  for (let index = lateCount - 1; index >= 0; index--) {
+    const departure = OPERATIONS.lastLateEastboundDep - index * service.lateHeadway;
+    addTrip('DN', 'late', W, GLL, buildStops(ctx, 'DN', W, GLL, departure, true, factorAt), true);
   }
   // ---- UP stream (reference: 广兰路 departure)
   {
@@ -449,19 +571,22 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     // 05:20 first train does the same).
     const gllCycle = minTurn(GLL) + (OPERATIONS.platformTurnClear.GLL ?? 0) + 10;
     let lastGllOpening = -Infinity;
-    let t = ctx.dayType === 'weekday' ? H(5, 35) + 30 : firstThrough;
+    let t = service.openingUp?.at ?? firstThrough;
     for (let guard = 0; guard < 2000; guard++) {
       const p = streamAt(t, 'UP');
       const tpl = TEMPLATES[p.template];
-      if (p.label !== lastPeriod) { if (p.template !== 'weekdayPMTail') idx = 0; lastPeriod = p.label; }
-      if (p.steady) idx = Math.round((t - p.from - (p.template === 'weekdayAM' ? upPhase : 0)) / peakHw(p));
-      if (p.template === 'weekdayPM') idx++;
+      if (p.label !== lastPeriod) {
+        if (!tpl.continuePattern) idx = 0;
+        lastPeriod = p.label;
+      }
+      if (p.steady) idx = Math.round((t - p.from - (tpl.openingAlternation ? upPhase : 0)) / peakHw(p));
+      idx += tpl.phase?.UP ?? 0;
       let kind = tpl.pattern[idx % tpl.pattern.length] as 'big' | 'small' | 'late';
-      if (p.template === 'weekdayAM' && t < peaks[0].from) {
+      if (tpl.openingAlternation && t < peaks[0].from) {
         // Anchor the outer 5-minute grid to the official airport first train.
         kind = Math.round((t - firstThrough) / peakHw(p)) % 2 === 0 ? 'big' : 'small';
       }
-      if (p.template === 'weekdayAM' && t >= peaks[0].from && t < peaks[0].from + peakHw(p)) kind = 'big';
+      if (tpl.openingAlternation && t >= peaks[0].from && t < peaks[0].from + peakHw(p)) kind = 'big';
       if (kind === 'big' && atReference('UP', E, W, GLL, t)[0].dep < OPERATIONS.firstEastTerminusDep - .01) kind = 'small';
       // The explicit 06:00 airport train occupies its full path. During
       // morning build-up do not insert another departure within 90 seconds.
@@ -497,67 +622,58 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
   // station timing is calibrated separately; no run or dwell time is changed.
   // (淞虹路 05:58 westbound and 远东大道 06:24 eastbound are not origins: they
   // are the 龙阳路 and 广兰路 first trains passing.)
-  const firstLYL = Math.max(H(5, 20), H(5, 24) - buildStops(ctx, 'UP', 19, W, H(5, 20), true, factorAt).find(s => s.st === 17)!.dep + H(5, 20));
+  const firstLYL = Math.max(OPENING.longyang, OPENING.century - buildStops(ctx, 'UP', 19, W, OPENING.longyang, true, factorAt).find(s => s.st === 17)!.dep + OPENING.longyang);
   for (const [dir, from, to, dep] of [
-    ['UP', 19, W, firstLYL], ['UP', GLL, W, H(5, 28)],
-    ['DN', GLL, E, H(6)],
+    ['UP', 19, W, firstLYL], ['UP', GLL, W, OPENING.guanglanWest],
+    ['DN', GLL, E, OPENING.guanglanEast],
   ] as const) firstService.push(addTrip(dir, 'ins', from, to, buildStops(ctx, dir, from, to, dep, true, factorAt, undefined,
     dir === 'DN' ? FIRST_TRAIN_DIAGRAM_RUN_ADJUST_S.guanglanEast : from === 19 ? FIRST_TRAIN_DIAGRAM_RUN_ADJUST_S.longyangWest : 0), true));
 
-  if (ctx.dayType === 'weekday') {
-    // 【假设】 D79: LYL supplies the western opening wave while GLL/ZJG
-    // still have 7–8 minute service. The official LYL opener uses this portal.
+  {
     for (let round = 0; round < 30; round++) {
       const calls = trips.filter(t => t.dir === 'UP' && t.revenue && t.to <= SHR)
-        .flatMap(t => t.stops.filter(s => s.st === 19).map(s => s.dep)).sort((a,b)=>a-b);
+        .flatMap(t => t.stops.filter(s => s.st === 19).map(s => s.dep)).sort((a, b) => a - b);
       let added = false;
-      for (let i=0;i+1<calls.length;i++) {
-        const at=calls[i], gap=at < H(6, 10) ? (at>=H(5,35)&&at<H(5,50)?225:450) : at < H(6, 40) ? 225 : 150;
-        if (at>=H(7, 10) || calls[i+1]-at < gap+MIN_HEADWAY) continue;
-        const dep=at+gap, to=dep<H(6, 30)?W:SHR;
-        const stops=buildStops(ctx,'UP',19,to,dep,true,factorAt);
-        if (!new DepIndex(trips).clear(stops,'UP')) continue;
-        addTrip('UP','ins',19,to,stops,true);added=true;break;
+      for (let i = 0; i + 1 < calls.length; i++) {
+        const at = calls[i];
+        const band = service.openingSupplements.find(p => at >= p.from && at < p.to);
+        if (!band || calls[i + 1] - at < band.headway + MIN_HEADWAY) continue;
+        const dep = at + band.headway;
+        const terminal = service.openingSupplements.find(p => dep >= p.from && dep < p.to)?.terminal ?? band.terminal;
+        const stops = buildStops(ctx, 'UP', 19, terminal, dep, true, factorAt);
+        if (!new DepIndex(trips).clear(stops, 'UP')) continue;
+        addTrip('UP', 'ins', 19, terminal, stops, true);
+        added = true;
+        break;
       }
-      if(!added)break;
-    }
-    for(let dep=H(17,7);dep<=H(17,20);dep+=30){
-      const stops=buildStops(ctx,'UP',19,SHR,dep,true,factorAt);
-      if(new DepIndex(trips).clear(stops,'UP')){addTrip('UP','ins',19,SHR,stops,true);break;}
-    }
-    // Do not take surplus opening trains all the way into PXL's full tails.
-    // 【假设】 finish carrying at SHR and use its existing BZL portal/turn.
-    const events = trips.filter(t => t.revenue && (t.from === W || t.to === W))
-      .flatMap(t => t.to === W ? [{t,time:t.stops.at(-1)!.arr,arr:true}] : [{t,time:t.stops[0].dep,arr:false}])
-      .filter(e=>e.time<H(9)).sort((a,b)=>a.time-b.time);
-    const waiting: GenTrip[]=[];
-    for(const e of events){
-      if(!e.arr){const i=waiting.findIndex(t=>t.stops.at(-1)!.arr+minTurn(W)<=e.time);if(i>=0)waiting.splice(i,1);continue;}
-      waiting.push(e.t);
-      if(waiting.length<=MAX_PRESENT[W])continue;
-      const i=waiting.findIndex(t=>!firstService.includes(t));
-      if(i<0)continue;
-      const t=waiting.splice(i,1)[0];t.to=SHR;t.kind='wd';t.stops=t.stops.filter(s=>s.st>=SHR);t.stops.at(-1)!.dep=t.stops.at(-1)!.arr;
+      if (!added) break;
     }
   }
 
-  if (ctx.dayType === 'weekday') {
+  if (service.shortClose !== undefined) {
     // The last two short-route duties finish carrying passengers: the final
     // westbound one goes to 蟠祥路 and the eastbound one to 龙阳路 depot.
-    const closingSlot = trips.filter(t => t.dir === 'UP' && Math.abs((t.stops.find(s => s.st === GLL)?.dep ?? -Infinity)-H(20,55))<=180)
-      .sort((a,b)=>Math.abs(a.stops.find(s=>s.st===GLL)!.dep-H(20,55))-Math.abs(b.stops.find(s=>s.st===GLL)!.dep-H(20,55)))[0];
+    const distance = (trip: ServiceRequest) => Math.abs((trip.stops.find(stop => stop.st === GLL)?.dep ?? -Infinity) - service.shortClose!);
+    const closingSlot = trips.filter(t => t.dir === 'UP' && distance(t) <= 180).sort((a, b) => distance(a) - distance(b))[0];
     if (closingSlot) {
-      const dep = H(20,55);
-      closingSlot.kind = 'wd'; closingSlot.from = GLL; closingSlot.to = W;
+      const dep = service.shortClose;
+      closingSlot.locked = true;
+      closingSlot.kind = 'wd';
+      closingSlot.from = GLL;
+      closingSlot.to = W;
       closingSlot.stops = buildStops(ctx, 'UP', GLL, W, dep, true, factorAt);
     }
     // The preceding short-route trains finish their trips and return at SHR;
     // classify these as withdrawals once they overlap the closing window.
-    for (const t of trips) if (t.dir === 'UP' && t.kind === 'small' && t.stops.at(-1)!.arr > H(20, 55)) t.kind = 'wd';
+    for (const t of trips) if (t.dir === 'UP' && t.kind === 'small' && t.stops.at(-1)!.arr > service.shortClose) t.kind = 'wd';
     const dn = trips.filter(t => t.dir === 'DN' && t.from === SHR && t.kind === 'big'
-      && t.stops.find(s => s.st === 19)!.arr >= H(20, 50)
-      && t.stops.find(s => s.st === 19)!.arr <= H(21)).at(0);
-    if (dn) { dn.kind = 'wd'; dn.from = SHR; dn.to = 19; dn.stops = buildStops(ctx, 'DN', SHR, 19, dn.stops.find(s => s.st === SHR)!.dep, true, factorAt); }
+      && t.stops.find(s => s.st === 19)!.arr >= service.carryingClose!.from
+      && t.stops.find(s => s.st === 19)!.arr <= service.carryingClose!.to).at(0);
+    if (dn) {
+      dn.kind = 'wd';
+      dn.to = 19;
+      dn.stops = buildStops(ctx, 'DN', SHR, 19, dn.stops[0].dep, true, factorAt);
+    }
   }
 
   // 广兰路 turns trains on its one middle-track platform (配线图 PDF). A DN
@@ -569,7 +685,7 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     // the departing train is out of the west throat and the next arrival's
     // route into the middle track set within this time
     const GLL_CLEAR = 60;
-    const arrAt = (t: GenTrip) => t.stops[t.stops.length - 1].arr;
+    const arrAt = (t: ServiceRequest) => t.stops[t.stops.length - 1].arr;
     const arrivals = trips.filter((t) => t.dir === 'DN' && t.to === GLL && t.kind === 'small').sort((a, b) => arrAt(a) - arrAt(b));
     const deps = trips.filter((t) => t.dir === 'UP' && t.from === GLL).map((t) => t.stops[0].dep).sort((a, b) => a - b);
     for (let i = 0; i + 1 < arrivals.length; i++) {
@@ -597,100 +713,296 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     const last = trips.filter(t => t.dir === dir && t.from === from && t.to === to && t.revenue)
       .sort((a, b) => a.stops[0].dep - b.stops[0].dep).at(-1)!;
     last.stops = buildStops(ctx, dir, from, to, dep, true, factorAt);
-    // A cutoff can leave a former first late slot too close to the fixed
-    // last airport slot. Move that same closing duty behind it.
   }
-  // Keep the late stream on a regular eight-minute grid behind 21:57;
-  // its final slot is independently fixed at 22:42 (D73).
-  const closingDN = trips.filter(t => t.dir === 'DN' && t.from === W && t.to === GLL && t.revenue)
-    .sort((a, b) => a.stops[0].dep - b.stops[0].dep);
-  if(ctx.dayType==='weekday')while(closingDN.length>1&&OPERATIONS.lastLateEastboundDep-(closingDN.length-1)*240<OPERATIONS.lastBigEastboundDep+MIN_HEADWAY)
-    cancelTrip(closingDN.shift()!,'末班衔接：首趟广兰路终到车须与机场末班保持间隔');
-  for (let i = closingDN.length - 2; i >= 0; i--)
-    closingDN[i].stops = buildStops(ctx, 'DN', W, GLL, OPERATIONS.lastLateEastboundDep - (closingDN.length - 1 - i) * (ctx.dayType==='weekday'?240:480), true, factorAt);
-  if(ctx.dayType==='weekday'){
-    // 【假设】 D81: alternate late DN carrying returns at LYL and use a
-    // limited number of UP LYL depot origins, preserving all official lasts.
-    const nightDN=trips.filter(t=>t.dir==='DN'&&t.from===W&&t.revenue&&t.stops.find(p=>p.st===19)!.arr>=H(22,30)).sort((a,b)=>a.stops[0].dep-b.stops[0].dep);
-    for(const [i,t]of nightDN.entries())if(i%2===0&&t.stops[0].dep!==OPERATIONS.lastBigEastboundDep&&t.stops[0].dep!==OPERATIONS.lastLateEastboundDep){
-      t.to=19;t.kind='wd';t.stops=t.stops.filter(p=>p.st<=19);t.stops.at(-1)!.dep=t.stops.at(-1)!.arr;
-    }
-    const nightUP=trips.filter(t=>t.dir==='UP'&&t.from===E&&t.revenue&&t.stops.find(p=>p.st===19)!.dep>=H(22)).sort((a,b)=>a.stops[0].dep-b.stops[0].dep);
-    for(const [i,t]of nightUP.entries())if(i%4===0&&t.stops.find(p=>p.st===19)!.dep>=H(22,10)
-      &&t.stops.find(p=>p.st===19)!.dep<H(22,30)&&t.stops[0].dep!==OPERATIONS.lastBigWestboundDep){
-      t.from=19;t.kind='ins';t.stops=t.stops.filter(p=>p.st<=19);t.stops[0].arr=t.stops[0].dep;
+  if (service.lateReturns) {
+    const rule = service.lateReturns;
+    const duties = trips.filter(t => t.dir === 'DN' && t.from === W && t.revenue
+      && t.stops.find(p => p.st === rule.terminal)!.arr >= rule.from).sort((a, b) => a.stops[0].dep - b.stops[0].dep);
+    for (const [i, t] of duties.entries()) if (i % rule.every === 0 && ![OPERATIONS.lastBigEastboundDep, OPERATIONS.lastLateEastboundDep].includes(t.stops[0].dep)) {
+      trimRoute(t, t.from, rule.terminal, 'wd');
     }
   }
-  let blocks: Block[];
-  if(ctx.dayType==='weekday') {
-    const originals=[...trips], primary=structuredClone(trips);
-    const protectedFirst=new Set([...firstService.map(t=>t.id),...trips.filter(t=>
-      (t.dir==='DN'&&t.from===W&&[OPERATIONS.firstWestTerminusDep,OPERATIONS.lastBigEastboundDep,OPERATIONS.lastLateEastboundDep].includes(t.stops[0].dep))
-      ||(t.dir==='UP'&&t.from===E&&t.stops[0].dep===OPERATIONS.lastBigWestboundDep)).map(t=>t.id)]);
-    for(let attempt=0;;attempt++){
-      trips.splice(0,trips.length,...primary.map((t,i)=>{
-        const original=originals[i];for(const key of Object.keys(original))delete (original as unknown as Record<string,unknown>)[key];
-        return Object.assign(original,structuredClone(t));
-      }));
-      blocks=circulate(ctx,trips,[W,E,SHR,GLL,1,19,28],periods,undefined,undefined,0,undefined,undefined,shift,stock);
-      if(attempt>=20)break;
-      const probe:Plan={dayType:ctx.dayType,trips,blocks,periods:[],overlays:[],fleetPeak:0};
-      const issue=validatePlan(ctx,probe).find(i=>i.severity==='error'&&['TERMINAL_FULL','HEADWAY','TURN_HEADWAY','DEPOT_CONFLICT'].includes(i.code));
-      if(!issue)break;
-      let repaired=false;
-      if(issue.code==='DEPOT_CONFLICT'){
-        const b=blocks[issue.blocks![0]],last=trips[b.trips.at(-1)!];
-        if(last.id<primary.length&&last.dir==='UP'&&last.from===GLL&&last.to===SHR){
-          const p=primary[last.id];p.to=19;p.kind='wd';p.stops=p.stops.filter(s=>s.st>=19);p.stops.at(-1)!.dep=p.stops.at(-1)!.arr;repaired=true;
-        }
-      }else if(issue.code==='TERMINAL_FULL'){
-        const feederDuty=(issue.blocks??[]).map(id=>blocks[id])
-          .filter(b=>b.start.kind==='depot'&&b.trips.length>1&&b.trips[0]>=primary.length&&b.trips[1]<primary.length)
-          .map(b=>primary[b.trips[1]]).filter(t=>!protectedFirst.has(t.id))
-          .sort((a,b)=>b.stops[0].dep-a.stops[0].dep)[0];
-        if(feederDuty){
-          // 【假设】 Use the adjacent NECC tails before omitting the entire western
-          // leg: they already turn the hub overlay (D67), clear of PXL.
-          const from=feederDuty.dir==='DN'?(feederDuty.from===W?1:SHR):19;
-          feederDuty.from=from;feederDuty.kind='ins';
-          feederDuty.stops=feederDuty.stops.filter(p=>feederDuty.dir==='DN'?p.st>=from:p.st<=from);
-          feederDuty.stops[0].arr=feederDuty.stops[0].dep;
-          continue;
-        }
-        const T=issue.text.startsWith(STATIONS[W].name)?W:E,dir=T===W?'DN':'UP',ref=T===W?SHR:GLL;
-        const arrivals=(terminalOccupancy(probe).get(T)??[]).filter(o=>o.from<=issue.t&&o.to>issue.t);
-        const choices=primary.filter(t=>t.revenue&&t.dir===dir&&t.from===ref&&!protectedFirst.has(t.id))
-          .map(p=>({p,stops:atReference(dir,T,T===W?E:W,ref,p.stops[0].dep)}))
-          .filter(({stops})=>(dir==='DN'||stops[0].dep>=OPERATIONS.firstEastTerminusDep)&&stops[0].dep<=issue.t-HOLD_CLEAR&&stops[0].dep>issue.t-1800
-            &&arrivals.some(o=>o.from+minTurn(T)<=stops[0].dep))
-          .sort((a,b)=>b.stops[0].dep-a.stops[0].dep);
-        const choice=choices[0];
-        if(choice){
-          // Keep previously withdrawn opening duties withdrawn: otherwise a
-          // new terminal slot resurrects one of them and brings the crowd back.
-          for(const t of trips.slice(0,primary.length))if(t.dir==='UP'&&primary[t.id].to===W&&t.to===SHR&&t.kind==='wd'){
-            Object.assign(primary[t.id],{to:SHR,kind:'wd',stops:structuredClone(t.stops)});
-          }
-          // 【假设】 extend a short slot to the terminal and turn an existing
-          // train into it. The core slot stays put; no additional core train.
-          Object.assign(choice.p,{from:T,to:T===W?E:W,kind:'big',stops:choice.stops});repaired=true;
-        }
-      }else{
-        const choices=(issue.blocks??[]).flatMap(id=>blocks[id].trips.map(t=>trips[t]))
-          .filter(t=>t.id<primary.length&&!protectedFirst.has(t.id)&&t.stops[0].dep<issue.t&&t.stops.at(-1)!.arr>=issue.t-120);
-        for(const t of choices){
-          const others=new DepIndex(primary.filter(p=>p.id!==t.id));
-          for(const delta of [1,-1,5,-5,10,-10,15,-15]){
-            const shifted=primary[t.id].stops.map(p=>({...p,arr:p.arr+delta,dep:p.dep+delta}));
-            if(!others.clear(shifted,t.dir,MIN_HEADWAY+.01))continue;
-            primary[t.id].stops=shifted;repaired=true;break;
-          }
-          if(repaired)break;
+  if (service.lateOrigins) {
+    const rule = service.lateOrigins;
+    const duties = trips.filter(t => t.dir === 'UP' && t.from === E && t.revenue
+      && t.stops.find(p => p.st === rule.origin)!.dep >= rule.countFrom).sort((a, b) => a.stops[0].dep - b.stops[0].dep);
+    for (const [i, t] of duties.entries()) {
+      const dep = t.stops.find(p => p.st === rule.origin)!.dep;
+      if (i % rule.every !== 0 || dep < rule.from || dep >= rule.to || t.stops[0].dep === OPERATIONS.lastBigWestboundDep) continue;
+      trimRoute(t, rule.origin, rule.terminal, 'wd');
+    }
+  }
+  for (const [id, trip] of trips.entries()) trip.id = id;
+  return { requests: trips, periods, firstService: new Set(firstService.map(service => service.id)) };
+}
+
+
+/** A service request fixes its core slot; outer legs are selected against
+ * terminal places before any Trip is created. No request is cancelled. */
+export interface ServiceRequest {
+  id: number;
+  dir: TrackDir;
+  kind: TripKind;
+  from: number;
+  to: number;
+  stops: PlanStop[];
+  revenue: boolean;
+  overlay?: string;
+  standby?: boolean;
+  locked?: boolean;
+}
+interface DepotMove {
+  dir: TrackDir;
+  from: number;
+  to: number;
+  depot: number;
+  stops: PlanStop[];
+  revenue: boolean;
+}
+interface EndSupply {
+  ends: Set<number>;
+  pairs: Map<number, number>;
+  stable: Set<number>;
+  feeders: Map<number, DepotMove>;
+  withdrawals: Map<number, DepotMove>;
+  continuations: Map<number, number>;
+}
+
+/** Reserve actual terminal places and movements, rather than laying out
+ * impossible full-route duties and repairing their endpoints afterwards.
+ * Only the uncommitted outer legs can be selected here; the core calls stay
+ * exactly as requested. The returned supply is used by circulation as-is. */
+export function allocateTerminalServices(ctx: PlanContext, requests: readonly ServiceRequest[], published: ReadonlySet<number> = new Set()) {
+  const { topo } = ctx;
+  const services = requests.map(request => ({ ...request }));
+  const supply: EndSupply = {
+    ends: new Set([0, topo.stations.length - 1]), pairs: new Map(), stable: new Set(),
+    feeders: new Map(), withdrawals: new Map(), continuations: new Map(),
+  };
+  const factor = (t: number) => dwellFactorAt(ctx.dayType, t);
+  const arrival = (service: ServiceRequest) => service.stops.at(-1)!.arr;
+  const departure = (service: ServiceRequest) => service.stops[0].dep;
+  const locked = (service: ServiceRequest) => service.locked || published.has(service.id) || isPublishedOrigin(ctx, service);
+  const places = new Map<number, { from: number; to: number }[]>();
+  const standbyPlaces = new Map<number, { from: number; to: number }[]>();
+  const periods = dayPeriods(ctx.dayType);
+  const reserve = (station: number, from: number, to: number) => {
+    const list = places.get(station) ?? [];
+    if (terminalOverflows(topo, station, [...list, { from, to }]).length) return false;
+    // Off-peak and while holding a standby, keep the arrival platform free.
+    // Only a peak arrival wave may use the existing transient holding rule.
+    const combined = [...list, { from, to }];
+    const boundaries = [from, ...combined.map(place => place.from), ...periods.map(period => period.from), ...(standbyPlaces.get(station) ?? []).map(window => window.from)];
+    if (boundaries.some(time => time >= from && time < to
+      && (!TEMPLATES[periodAt(periods, time).template].peak || (standbyPlaces.get(station) ?? []).some(window => window.from <= time && window.to > time))
+      && combined.filter(place => place.from <= time && place.to > time).length > (TERMINAL_CAP[station] ?? 2))) return false;
+    list.push({ from, to });
+    places.set(station, list);
+    return true;
+  };
+  const selectRoute = (request: ServiceRequest, from: number, to: number, kind: TripKind) => {
+    const stops = request.stops.filter(stop => stop.st >= Math.min(from, to) && stop.st <= Math.max(from, to)).map(stop => ({ ...stop }));
+    stops[0].arr = stops[0].dep;
+    stops.at(-1)!.dep = stops.at(-1)!.arr;
+    services[request.id] = { ...request, from, to, kind, stops };
+  };
+  const movementIndex = (except?: number) => {
+    const index = new DepIndex(services.filter(service => service.id !== except));
+    for (const move of [...supply.feeders.values(), ...supply.withdrawals.values()]) index.add(move);
+    return index;
+  };
+  const exitFree = (depot: number, dir: TrackDir, stops: PlanStop[]) => {
+    const yard = topo.depots[depot], path = yard.portals.exit[dir].path;
+    const [start, clear] = outboundWindow(ctx, depot, { dir, stops });
+    const returns = [...services.filter(service => ![...supply.continuations.values()].includes(service.id)), ...supply.withdrawals.values()];
+    return returns.every(service => {
+      const portal = yard.portals.entry[service.dir];
+      if (portal.station !== service.to || portal.path !== path) return true;
+      const [approach, end] = inboundWindow(topo, depot, service);
+      return clear <= approach || start >= end;
+    });
+  };
+  for (const terminal of supply.ends) {
+    const depot = depotIndex(topo, TERMINAL_DEPOT[terminal]);
+    const turn = minTurn(terminal);
+    const departures = services.filter(service => service.from === terminal).sort((a, b) => departure(a) - departure(b));
+    const arrivals = services.filter(service => service.to === terminal).sort((a, b) => arrival(a) - arrival(b));
+    if (!departures.length) continue;
+    const overnight = OPERATIONS.terminalStabling[STATIONS[terminal].id] ?? 0;
+    const lastDeparture = departure(departures.at(-1)!);
+    const night = new Set((overnight ? arrivals.filter(service => arrival(service) >= lastDeparture - 60).slice(-overnight) : []).map(service => service.id));
+    // 【假设】 The existing overnight cars take the earliest duties. Storage
+    // tails are freed before arrivals build up; no extra overnight car is added.
+    const taken = new Set(departures.slice(0, overnight).map(service => service.id));
+    for (const id of taken) supply.stable.add(id);
+    for (const window of standbyWindows(ctx.dayType)) {
+      const incoming = arrivals.find(service => arrival(service) >= window.from && arrival(service) < Math.min(window.need, window.to - 240)
+        && !supply.pairs.has(service.id) && !night.has(service.id));
+      const outgoing = incoming && departures.find(service => !taken.has(service.id) && departure(service) >= Math.max(window.need, arrival(incoming) + turn));
+      if (!incoming || !outgoing || !reserve(terminal, arrival(incoming), departure(outgoing))) continue;
+      services[incoming.id] = { ...incoming, standby: true };
+      standbyPlaces.set(terminal, [...(standbyPlaces.get(terminal) ?? []), { from: arrival(incoming), to: departure(outgoing) }]);
+      supply.pairs.set(incoming.id, outgoing.id);
+      taken.add(outgoing.id);
+    }
+    for (const incoming of arrivals.filter(service => locked(service) && !night.has(service.id) && !supply.pairs.has(service.id))) {
+      const outgoing = departures.find(service => !taken.has(service.id) && departure(service) >= arrival(incoming) + turn
+        && departure(service) <= arrival(incoming) + MAX_LAYOVER);
+      if (outgoing && reserve(terminal, arrival(incoming), departure(outgoing))) {
+        supply.pairs.set(incoming.id, outgoing.id);
+        taken.add(outgoing.id);
+      }
+    }
+    // Meet each departure deadline with the most recent ready car. Assigning
+    // every early arrival far into the future needlessly fills the tails and
+    // then requires another yard feeder for a nearer departure.
+    for (const outgoing of departures.filter(service => !taken.has(service.id))) {
+      const ready = arrivals.filter(service => !night.has(service.id) && !supply.pairs.has(service.id)
+        && arrival(service) + turn <= departure(outgoing) && arrival(service) >= departure(outgoing) - MAX_LAYOVER)
+        .sort((a, b) => arrival(b) - arrival(a));
+      const incoming = ready.find(service => reserve(terminal, arrival(service), departure(outgoing)));
+      if (!incoming) continue;
+      supply.pairs.set(incoming.id, outgoing.id);
+      taken.add(outgoing.id);
+    }
+    for (const incoming of arrivals) {
+      if (night.has(incoming.id) || supply.pairs.has(incoming.id)) continue;
+      // A surplus car still serves the line end if a real withdrawal path
+      // and a place until that departure are available.
+      const dir: TrackDir = terminal === 0 ? 'DN' : 'UP';
+      const to = entryStation(topo, depot, dir);
+      const index = movementIndex();
+      let withdrawing = false;
+      for (let offset = 0; offset <= 2400 && !withdrawing; offset += 5) {
+        const modes = arrival(incoming) >= lastDeparture - 60 ? [false] : terminal === 0 ? [true, false] : [false, true];
+        for (const revenue of modes) {
+          const stops = buildStops(ctx, dir, terminal, to, arrival(incoming) + turn + offset, revenue, factor);
+          if (!index.clear(stops, dir)) continue;
+          if (revenue && stops.some(stop => stop.st < 4 && inOuterAlternation(dayPeriods(ctx.dayType), stop.dep))) continue;
+          if (!reserve(terminal, arrival(incoming), stops[0].dep)) continue;
+          supply.withdrawals.set(incoming.id, { dir, from: terminal, to, depot, stops, revenue });
+          withdrawing = true;
+          break;
         }
       }
-      if(!repaired)break;
+      if (withdrawing || locked(incoming)) continue;
+      // No end-terminal place: finish carrying at the existing entry portal,
+      // preserving every requested core call instead of creating a queue there.
+      selectRoute(incoming, incoming.from, entryStation(topo, depot, incoming.dir), 'wd');
     }
-  }else blocks=circulate(ctx, trips, [W, E, SHR, GLL, 19, 28], periods, undefined, undefined, 0, undefined, undefined, shift, stock);
+    for (const outgoing of departures.filter(service => !taken.has(service.id))) {
+      // A car finishing at the depot junction can continue in the same
+      // direction to position at the line end. Reuse it before scheduling
+      // a new yard exit against the return wave on that very lead.
+      const direction = outgoing.dir === 'DN' ? 'UP' : 'DN';
+      const junction = exitStation(topo, depot, direction);
+      let continuing = false;
+      for (const incoming of services.filter(service => service.to === junction && service.dir === direction
+        && ![...supply.continuations.values()].includes(service.id)).sort((a, b) => arrival(b) - arrival(a))) {
+        if (arrival(incoming) >= departure(outgoing) - turn) continue;
+        // This is the same car's call at the junction, not a second train.
+        const others = services.filter(service => service.id !== incoming.id && service.id !== outgoing.id);
+        const throughIndex = new DepIndex(others);
+        for (const move of [...supply.feeders.values(), ...supply.withdrawals.values()]) throughIndex.add(move);
+        const boarding = plannedDwell(ctx.dayType, junction, direction, arrival(incoming), factor(arrival(incoming)));
+        for (let wait = 20; wait <= THROUGH_WAIT && !continuing; wait += 5) {
+          for (const revenue of [true, false]) {
+            if (revenue && wait < boarding) continue;
+            const stops = buildStops(ctx, direction, junction, terminal, arrival(incoming) + wait, revenue, factor);
+            if (!revenue && stops.some(stop => stop.st < 4 && inOuterAlternation(periods, stop.dep))) continue;
+            if (stops.at(-1)!.arr + turn > departure(outgoing) || departure(outgoing) - stops.at(-1)!.arr > MAX_LAYOVER) continue;
+            if (!throughIndex.clear(stops, direction) || !reserve(terminal, stops.at(-1)!.arr, departure(outgoing))) continue;
+            supply.feeders.set(outgoing.id, { dir: direction, from: junction, to: terminal, depot, stops, revenue });
+            supply.continuations.set(outgoing.id, incoming.id);
+            continuing = true;
+            break;
+          }
+        }
+        if (continuing) break;
+      }
+      if (continuing) continue;
+      const origins = [terminal, ...topo.stations.map((_, station) => station).filter(station => station !== terminal
+        && outgoing.stops.some(stop => stop.st === station)
+        && (turnbackAt(topo, station, outgoing.dir === 'DN' ? 'UP' : 'DN') || exitStation(topo, depot, outgoing.dir) === station))]
+        .filter(station => outgoing.dir === 'DN' ? station <= 4 : station >= 22);
+      let supplied = false;
+      for (const origin of locked(outgoing) ? [terminal] : origins) {
+        const dep = outgoing.stops.find(stop => stop.st === origin)!.dep;
+        const dir: TrackDir = topo.stations[origin].chain < topo.depots[depot].junctionChain ? 'UP' : 'DN';
+        const from = exitStation(topo, depot, dir);
+        if (from === origin) {
+          if (!exitFree(depot, dir, outgoing.stops.filter(stop => stop.st >= Math.min(origin, outgoing.to) && stop.st <= Math.max(origin, outgoing.to)))) continue;
+          selectRoute(outgoing, origin, outgoing.to, origin === terminal ? outgoing.kind : 'ins');
+          supplied = true;
+          break;
+        }
+        const reversing = dir !== outgoing.dir;
+        const latest = dep - (reversing ? minTurn(origin) : 0) - 10;
+        const index = movementIndex(outgoing.id);
+        for (let offset = 0; offset <= (reversing ? MAX_LAYOVER : THROUGH_WAIT) && !supplied; offset += 5) {
+          for (const revenue of [true, false]) {
+            let start = latest - offset - buildStops(ctx, dir, from, origin, 0, revenue, factor).at(-1)!.arr;
+            for (let k = 0; k < 8; k++) {
+              const error = buildStops(ctx, dir, from, origin, start, revenue, factor).at(-1)!.arr - (latest - offset);
+              start -= error;
+              if (Math.abs(error) < .001) break;
+            }
+            const stops = buildStops(ctx, dir, from, origin, start, revenue, factor);
+            if (!index.clear(stops, dir) || !exitFree(depot, dir, stops)
+              || !frontTurnClear(ctx, services, { dir, to: origin, stops }, dep, new Set([outgoing.id]))) continue;
+            if (!reserve(origin, stops.at(-1)!.arr, dep)) continue;
+            if (origin !== terminal) selectRoute(outgoing, origin, outgoing.to, 'ins');
+            supply.feeders.set(outgoing.id, { dir, from, to: origin, depot, stops, revenue });
+            supplied = true;
+            break;
+          }
+        }
+        if (supplied) break;
+      }
+      // A locked/unreachable request is retained; feasibility errors remain
+      // visible instead of dropping it or substituting an arbitrary service.
+    }
+  }
+  return { services, supply };
+}
+
+/** Match the laid-out services to rolling stock, then resolve bounded timing
+ * conflicts. Neither step may change a service's route or cancel it. */
+export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[]): Plan {
+  const { topo } = ctx;
+  const { requests, periods, firstService: published } = layoutService(ctx);
+  const { services, supply } = allocateTerminalServices(ctx, requests, published);
+  const trips: GenTrip[] = [];
+  const serviceStructure = new Map<Trip, ServiceIdentity>();
+  const requestIssues: PlanIssue[] = [];
+  for (const service of services) {
+    const request = requests[service.id];
+    const required = request.stops.filter(stop => stop.st >= Math.max(4, Math.min(request.from, request.to))
+      && stop.st <= Math.min(22, Math.max(request.from, request.to)));
+    const lastCore = request.dir === 'DN' ? 22 : 4;
+    const retainsCore = service.dir === request.dir && required.every(stop => {
+      const selected = service.stops.find(call => call.st === stop.st);
+      return selected && (stop.st === lastCore ? selected.arr === stop.arr : selected.dep === stop.dep);
+    });
+    const locked = request.locked || published.has(request.id) || isPublishedOrigin(ctx, request);
+    if (!retainsCore || (locked && (request.from !== service.from || request.to !== service.to))) {
+      requestIssues.push({ severity: 'error', code: 'SERVICE_STRUCTURE', t: request.stops[0].dep,
+        text: `服务请求 ${request.id} 的固定交路或核心时隙被改写` });
+    }
+    const trip = addTo(trips, service.dir, service.kind, service.from, service.to, service.stops.map(stop => ({ ...stop })), service.revenue);
+    if (service.standby) trip.standby = true;
+    serviceStructure.set(trip, serviceIdentity(trip));
+  }
+  const firstService = trips.filter(trip => published.has(trip.id));
+  const W = 0, E = topo.stations.length - 1;
+  const originalDepartures = new Map(trips.map(t => [t, t.stops[0].dep]));
+  const anchors = new Set(firstService.map(t => t.id));
+  for (const trip of trips) if (isPublishedOrigin(ctx, trip)) anchors.add(trip.id);
+  spaceServiceDepartures(trips, anchors);
+  const anchorTrips = trips.filter(t => anchors.has(t.id));
+  const blocks = circulate(ctx, trips, [W, E, 4, 22, 1, 19, 28], periods, undefined, undefined, 0, undefined, undefined, shift, stock, supply);
+  finishDepotMoves(trips, blocks);
+  resolveTimingConflicts(ctx, trips, blocks, new Set(anchorTrips.map(t => t.id)), originalDepartures);
   addFixedRuns(ctx, trips, blocks, ctx.fixedRuns ?? FIXED_LATE_TRAINS);
 
   // Trains before a station opens cannot board there (positioning and depot
@@ -709,7 +1021,7 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     const clock = row && (dir === 'DN' ? row.firstE : row.firstW);
     if (!clock) return -Infinity;
     const [h, m] = clock.split(':').map(Number);
-    return H(h, m);
+    return h * 3600 + m * 60;
   };
   for (const trip of trips) if (trip.revenue && !trip.cancelled) {
     for (const stop of trip.stops) if (stop.dep < opening(stop.st, trip.dir) - .001) stop.noBoard = true;
@@ -720,6 +1032,8 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     periods: periods.map((p) => ({ from: p.from, to: p.to, template: p.template, label: p.label })),
     overlays: [], fleetPeak: 0,
   };
+  laidOutService.set(plan, serviceStructure);
+  generationIssues.set(plan, [...requestIssues, ...serviceStructureIssues(plan)]);
   numberPlan(plan);
   plan.fleetPeak = fleetPeak(plan);
   if (!shift) {
@@ -728,6 +1042,112 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
     if (over.some((n) => n > 0)) return generatePlan(ctx, over, need);
   }
   return plan;
+}
+
+/** Publish only the chosen depot moves after matching; unused feeder candidates
+ * never become numbered train services. Primary services are protected above. */
+function finishDepotMoves(trips: GenTrip[], blocks: Block[]) {
+  const used = new Set(blocks.flatMap(b => b.trips));
+  const retained = trips.filter(t => used.has(t.id));
+  const ids = new Map(retained.map((t, id) => [t.id, id]));
+  for (const trip of retained) {
+    trip.id = ids.get(trip.id)!;
+    if (trip.prev !== undefined) trip.prev = ids.get(trip.prev);
+    if (trip.next !== undefined) trip.next = ids.get(trip.next);
+  }
+  for (const block of blocks) block.trips = block.trips.map(id => ids.get(id)!);
+  trips.splice(0, trips.length, ...retained);
+}
+
+function isPublishedOrigin(ctx: PlanContext, trip: Pick<Trip, 'from' | 'to' | 'dir' | 'stops'>): boolean {
+  return (trip.from === 0 && [OPERATIONS.firstWestTerminusDep, OPERATIONS.lastBigEastboundDep, OPERATIONS.lastLateEastboundDep].includes(trip.stops[0].dep))
+    || (trip.from === ctx.topo.stations.length - 1 && [OPERATIONS.firstEastTerminusDep, OPERATIONS.lastBigWestboundDep].includes(trip.stops[0].dep));
+}
+
+/** Resolve full-path headway drift before assigning trains and depot moves. */
+function spaceServiceDepartures(trips: GenTrip[], protectedIds: Set<number>) {
+  const original = trips.map(t => t.stops[0].dep);
+  const shifted = (trip: GenTrip, delta: number) => trip.stops.map(p => ({ ...p, arr: p.arr + delta, dep: p.dep + delta }));
+  const withinBudget = (trip: GenTrip, delta: number) => Math.abs(trip.stops[0].dep + delta - original[trip.id]) <= MAX_DIAGRAM_SHIFT_S;
+  for (let round = 0; round < TIMING_ROUNDS; round++) {
+    let moved = false;
+    for (const trip of trips) {
+      const others = new DepIndex(trips.filter(t => t !== trip));
+      if (protectedIds.has(trip.id) || others.clear(trip.stops, trip.dir, MIN_HEADWAY + 0.01)) continue;
+      const neighbours = trips.filter(t => t !== trip && t.dir === trip.dir && !protectedIds.has(t.id)
+        && !new DepIndex([t]).clear(trip.stops, trip.dir, MIN_HEADWAY + 0.01));
+      let resolved = false;
+      // Minimise the largest clock change. Sharing a correction between two
+      // neighbours avoids moving an entire full-route path by twenty seconds.
+      for (let amount = 1; amount <= MAX_DIAGRAM_SHIFT_S && !resolved; amount++) {
+        for (const sign of [-1, 1]) {
+          const delta = amount * sign;
+          if (!withinBudget(trip, delta)) continue;
+          const stops = shifted(trip, delta);
+          if (others.clear(stops, trip.dir, MIN_HEADWAY + 0.01)) {
+            trip.stops = stops;
+            resolved = true;
+            break;
+          }
+          for (const neighbour of neighbours) {
+            if (!withinBudget(neighbour, -delta)) continue;
+            const otherStops = shifted(neighbour, -delta);
+            const index = new DepIndex(trips.filter(t => t !== trip && t !== neighbour));
+            if (!index.clear(stops, trip.dir, MIN_HEADWAY + 0.01) || !index.clear(otherStops, neighbour.dir, MIN_HEADWAY + 0.01)
+              || !new DepIndex([{ ...neighbour, stops: otherStops }]).clear(stops, trip.dir, MIN_HEADWAY + 0.01)) continue;
+            trip.stops = stops;
+            neighbour.stops = otherStops;
+            resolved = true;
+            break;
+          }
+          if (resolved) break;
+        }
+      }
+      moved ||= resolved;
+    }
+    if (!moved) break;
+  }
+}
+
+/** Only clock shifts are permitted once the service has been laid out. */
+export const MAX_DIAGRAM_SHIFT_S = 20;
+const TIMING_ROUNDS = 64;
+function resolveTimingConflicts(ctx: PlanContext, trips: GenTrip[], blocks: Block[], protectedIds: Set<number>, serviceDepartures: Map<GenTrip, number>) {
+  const original = trips.map(t => serviceDepartures.get(t) ?? t.stops[0].dep);
+  const plan: Plan = { dayType: ctx.dayType, trips, blocks, periods: [], overlays: [], fleetPeak: 0 };
+  const errors = () => validatePlan(ctx, plan).filter(i => i.severity === 'error');
+  const cost = (issues: PlanIssue[]) => issues.reduce((sum, issue) =>
+    sum + (issue.code === 'HEADWAY' ? 100 + Math.max(0, MIN_HEADWAY - (issue.gap ?? 0)) : 1000), 0);
+  for (let round = 0; round < TIMING_ROUNDS; round++) {
+    const before = errors();
+    if (!before.length) break;
+    let moved = false;
+    for (const issue of before) {
+      const candidates = [...new Set((issue.blocks ?? []).flatMap(id => blocks[id].trips))]
+        .map(id => trips[id]).filter(t => !t.cancelled && !protectedIds.has(t.id)
+          && t.stops[0].dep <= issue.t && t.stops.at(-1)!.arr >= issue.t - 120);
+      for (const trip of candidates) {
+        const stops = trip.stops;
+        for (let amount = MAX_DIAGRAM_SHIFT_S; amount >= 1; amount--) {
+          for (const sign of [-1, 1]) {
+            const delta = amount * sign;
+            if (Math.abs(stops[0].dep + delta - original[trip.id]) > MAX_DIAGRAM_SHIFT_S) continue;
+            trip.stops = stops.map(p => ({ ...p, arr: p.arr + delta, dep: p.dep + delta }));
+            const after = errors();
+            if (cost(after) < cost(before) && !after.some(i => !before.some(b => b.code === i.code && b.blocks?.join() === i.blocks?.join()))) {
+              moved = true;
+              break;
+            }
+            trip.stops = stops;
+          }
+          if (moved) break;
+        }
+        if (moved) break;
+      }
+      if (moved) break;
+    }
+    if (!moved) break; // Unsolved conflicts stay visible to validatePlan.
+  }
 }
 
 /**
@@ -829,7 +1249,13 @@ function addFixedRuns(ctx: PlanContext, trips: GenTrip[], blocks: Block[], runs:
         r = addTo(trips, dir, 'extra', from, to, run, true);
         const ex = exitStation(topo, depot, back);
         const index = new DepIndex(trips.filter((t) => !t.cancelled && t !== r));
-        const latest = dep - minTurn(from) - 60 - buildStops(ctx, back, ex, from, 0, false, 1).at(-1)!.arr;
+        const targetArrival = dep - minTurn(from) - 60;
+        let latest = targetArrival - buildStops(ctx, back, ex, from, 0, false, 1).at(-1)!.arr;
+        for (let k = 0; k < 8; k++) {
+          const error = buildStops(ctx, back, ex, from, latest, false, 1).at(-1)!.arr - targetArrival;
+          latest -= error;
+          if (Math.abs(error) < .001) break;
+        }
         let move: PlanStop[] | null = null;
         for (let k = 0; k <= 90 && !move; k++) {
           const st = buildStops(ctx, back, ex, from, latest - k * 10, false, 1);
@@ -877,22 +1303,20 @@ function addFixedRuns(ctx: PlanContext, trips: GenTrip[], blocks: Block[], runs:
  * withdrawals and terminal stabling. Mutates `trips` (adds new trips) and
  * returns the new blocks.
  */
-function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], periods: Period[], overlay?: string, baseTrips?: Trip[], blockBase = 0, baseOcc?: Map<number, { from: number; to: number; block?: number }[]>, reuse?: OverlayReuse, shift?: number[], stock?: number[]): Block[] {
+function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], periods: Period[], overlay?: string, baseTrips?: Trip[], blockBase = 0, baseOcc?: Map<number, { from: number; to: number; block?: number }[]>, reuse?: OverlayReuse, shift?: number[], stock?: number[], supply?: EndSupply): Block[] {
   const { topo } = ctx;
-  const factorAt = (t: number) => dwellFactorAt(periods.length ? periods : dayPeriods(ctx.dayType), t);
+  const factorAt = (t: number) => dwellFactorAt(ctx.dayType, t);
   const pool = trips.filter((t) => t.overlay === overlay && !t.cancelled);
-  const allForGaps = () => [...(baseTrips ?? []), ...trips];
+  const continuing = new Set(supply?.continuations.values());
+  const allForGaps = () => [...(baseTrips ?? []), ...trips.filter(t => t.block !== UNUSED_DEPOT_MOVE)];
   const stablingNight: Record<number, number> = overlay ? {} : { 0: OPERATIONS.terminalStabling.PXL, [topo.stations.length - 1]: OPERATIONS.terminalStabling.PDA, 22: OPERATIONS.lineStabling.GLL };
-  // In the morning the trains in the turnback tracks take the first
-  // departures (the tracks are needed for turning soon after); those in a
-  // storage tail are placed later (relieveTerminals).
+  // Overnight cars take the earliest departures, including the storage-tail
+  // cars. Their places are freed before the arrival wave reaches the ends.
   const stabling: Record<number, number> = Object.fromEntries(Object.entries(stablingNight)
-    .map(([st, n]) => [st, +st === 22 ? 0 : Math.min(n, topo.stations[+st].turnbackBerths.length)]));
+    .map(([st, n]) => [st, +st === 22 ? 0 : n]));
   const W = 0;
   const sources: GenTrip[] = [];
   const sinks: GenTrip[] = [];
-  /** a hot standby that goes back to the yard: when it leaves the line end */
-  const standbyUntil = new Map<number, number>();
 
   /**
    * An added-service trip into a terminal the base plan already fills does not run: the
@@ -909,7 +1333,17 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
     } else if (sources.includes(X)) sources.splice(sources.indexOf(X), 1);
   };
   for (const T of terminals) {
-    const arrivals = pool.filter((t) => t.to === T).map((t) => ({ trip: t, time: t.stops[t.stops.length - 1].arr }));
+    if (supply && supply.ends.has(T)) {
+      for (const [arrival, departure] of supply.pairs) if (trips[arrival].to === T) {
+        trips[arrival].next = departure;
+        trips[departure].prev = arrival;
+      }
+      const paired = new Set(supply.pairs.values());
+      sources.push(...pool.filter(t => t.from === T && !paired.has(t.id)));
+      sinks.push(...pool.filter(t => t.to === T && !supply.pairs.has(t.id)));
+      continue;
+    }
+    const arrivals = pool.filter((t) => t.to === T && !continuing.has(t.id)).map((t) => ({ trip: t, time: t.stops[t.stops.length - 1].arr }));
     const departures = pool.filter((t) => t.from === T).map((t) => ({ trip: t, time: t.stops[0].dep }));
     type Ev = { time: number; kind: 0 | 1; trip: GenTrip };
     const evs: Ev[] = [
@@ -926,30 +1360,8 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
     // An added departure placed in the turnback window of an added arrival
     // (applyOverlay) comes linked to it: that train takes it.
     const unlink = (a: GenTrip) => { if (a.next !== undefined) { trips[a.next].prev = undefined; a.next = undefined; } };
-    // the hot standby held aside at this line end, and its window
-    const windows = !overlay && (T === W || T === topo.stations.length - 1) && topo.stations[T].turnbackBerths.length >= 2 ? standbyWindows(ctx.dayType) : [];
-    let sb: { trip: GenTrip; ready: number; w: StandbyWindow } | null = null;
-    const held = new Set<StandbyWindow>();
-    /** the line end turns every departure up to `until` with the trains in
-     *  `stand` and those arriving, one place fewer than it has */
-    const spare = (from: number, stand: { ready: number }[], until: number) => {
-      const q = stand.map((p) => p.ready);
-      for (let k = from; k < evs.length && evs[k].time < until; k++) {
-        const e = evs[k];
-        if (e.trip.cancelled) continue;
-        for (let i = q.length - 1; i >= 0; i--) if (e.time - q[i] > MAX_LAYOVER) q.splice(i, 1);
-        if (e.kind === 0) { q.push(e.time + mt); if (q.length > cap - 1) q.shift(); continue; }
-        const i = q.findIndex((r) => r <= e.time);
-        if (i < 0) return false;
-        q.splice(i, 1);
-      }
-      return true;
-    };
     for (let ei = 0; ei < evs.length; ei++) {
       const ev = evs[ei];
-      // end of the window: back into the cycle, first in line (or to the yard
-      // if the line end is full)
-      if (sb && ev.time >= sb.w.to) { present.unshift({ trip: sb.trip, ready: ev.time }); standbyUntil.set(sb.trip.id, ev.time); sb = null; }
       // trains idle longer than the maximum layover go back to the depot
       for (let i = present.length - 1; i >= 0; i--) {
         if (ev.time - present[i].ready > (T > 0 && T < topo.stations.length - 1 ? 450 : MAX_LAYOVER)) { unlink(present[i].trip); out.push(present.splice(i, 1)[0].trip); }
@@ -960,13 +1372,7 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
         const base = (baseOcc?.get(T) ?? []).filter((o) => o.from <= ev.time + mt && o.to > ev.time).length;
         if (overlay && base >= cap) { dropArrival(ev.trip); continue; }
         present.push({ trip: ev.trip, ready: ev.time + mt });
-        const w = windows.find((x) => !held.has(x) && ev.time >= x.from && ev.time < Math.min(x.need, x.to - 240));
-        if (w && !sb && ((present.length > 1 && spare(ei + 1, present.slice(0, -1), w.need)) || ev.time >= w.from + 3600)) {
-          sb = { trip: present.pop()!.trip, ready: ev.time + mt, w };
-          held.add(w);
-          sb.trip.standby = true;
-        }
-        if (present.length + base > cap - (sb ? 1 : 0)) { const x = present.shift()!.trip; unlink(x); out.push(x); }
+        if (present.length + base > cap) { const x = present.shift()!.trip; unlink(x); out.push(x); }
       } else {
         const linked = ev.trip.prev;
         let i = linked === undefined ? -1 : present.findIndex(p => p.trip.id === linked && p.ready <= ev.time);
@@ -974,12 +1380,9 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
         if (i < 0) i = present.findIndex((p) => p.trip.next === undefined && p.ready <= ev.time && frontTurnClear(ctx, allForGaps(),
           p.trip, ev.time, new Set([p.trip.id, ev.trip.id])));
         if (i >= 0) pairs.push({ a: present.splice(i, 1)[0].trip, d: ev.trip });
-        // short of a train in the build-up: the standby goes back into service
-        else if (sb && ev.time >= sb.w.need && sb.ready <= ev.time) { pairs.push({ a: sb.trip, d: ev.trip }); sb = null; }
         else src.push(ev.trip);
       }
     }
-    if (sb) { standbyUntil.set(sb.trip.id, sb.w.to); out.push(sb.trip); }
     for (const p of present) out.push(p.trip);
     const m = { pairs, out, src };
     for (const p of m.pairs) { p.a.next = p.d.id; p.d.prev = p.a.id; }
@@ -1240,7 +1643,7 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
     const byDepot = topo.depots.map(() => [] as GenTrip[]);
     for (const D of queue) {
       const T = D.from, dep = D.stops[0].dep;
-      if (dep >= H(10)) break;
+      if (dep >= OPENING.stockUntil) break;
       if ((dep <= firstDepFrom(T) + 1500 || D.kind === 'small') && (left[T] ?? 0) > 0) { left[T]--; continue; }
       byDepot[depotIndex(topo, TERMINAL_DEPOT[T])].push(D);
     }
@@ -1249,7 +1652,7 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
       // Redirect after opening: sending a BZL/LYD train to the airport before
       // 06:00 would cross GLL's occupied DN platform. Actual yardNeed, rather
       // than the raw source count, includes returns and far-side suppliers.
-      for (const D of byDepot[d].filter(D => D.stops[0].dep >= H(7)).slice(0, n)) {
+      for (const D of byDepot[d].filter(D => D.stops[0].dep >= OPENING.redirectFrom).slice(0, n)) {
         const c = topo.stations[D.from].chain;
         const alt = topo.depots.map((_, i) => i).filter((i) => i !== d && shift[i] === 0 && spare[i] > 0)
           .sort((i, j) => Math.abs(topo.depots[i].junctionChain - c) - Math.abs(topo.depots[j].junctionChain - c))[0];
@@ -1264,30 +1667,26 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
     if (D.prev !== undefined) continue;
     const T = D.from;
     const dep = D.stops[0].dep;
+    if (supply?.stable.has(D.id)) {
+      stabling[T]--;
+      startOf.set(D.id, { kind: 'stable', station: T });
+      continue;
+    }
+    const prepared = supply?.feeders.get(D.id);
+    if (prepared) {
+      const feeder = addTo(trips, prepared.dir, prepared.revenue ? 'ins' : 'empty', prepared.from, T, prepared.stops, prepared.revenue);
+      feeder.next = D.id;
+      D.prev = feeder.id;
+      const previous = supply?.continuations.get(D.id);
+      if (previous !== undefined) {
+        feeder.prev = previous;
+        trips[previous].next = feeder.id;
+      } else startOf.set(feeder.id, { kind: 'depot', depot: prepared.depot, time: 0 });
+      continue;
+    }
     let depot = depotIndex(topo, TERMINAL_DEPOT[T]);
     let early = !overlay && (dep <= firstDepFrom(T) + 1500 || D.kind === 'small');
-    if (!overlay && T === W && dep < H(8)) {
-      // Before the airport wave reaches PXL, extend an existing GLL short
-      // service into this west-end duty rather than add a depot train to
-      // an already occupied 150-second core stream (D73, 【假设】).
-      const candidates = pool.filter(A => A.dir === 'UP' && A.from === 22 && A.to === 4 && A.kind === 'small')
-        .map(A => ({ A, stops: buildStops(ctx, 'UP', A.from, W, A.stops[0].dep, true, factorAt) }))
-        .filter(({ stops }) => stops.at(-1)!.arr + minTurn(W) <= dep && stops.at(-1)!.arr >= dep - 600)
-        .sort((a, b) => b.stops.at(-1)!.arr - a.stops.at(-1)!.arr);
-      const candidate = candidates.find(({ A, stops }) => new DepIndex(allForGaps().filter(t => t !== A && t !== D))
-        .clear(stops.filter(s => s.st < 4), 'UP'));
-      if (candidate) {
-        const { A, stops } = candidate;
-        if (A.next !== undefined) {
-          const released = trips[A.next]; released.prev = undefined;
-          queue.push(released);
-        }
-        A.to = W; A.kind = 'ins'; A.stops = stops;
-        A.next = D.id; D.prev = A.id;
-        continue;
-      }
-    }
-    if (!overlay && T === 22 && ((D.dir === 'UP' && dep === H(5, 28)) || (D.dir === 'DN' && dep === H(6)))) {
+    if (!overlay && T === 22 && ((D.dir === 'UP' && dep === OPENING.guanglanWest) || (D.dir === 'DN' && dep === OPENING.guanglanEast))) {
       const berth = D.dir === 'DN' ? platformBerth(topo, T, 'DN')
         : departureBerthAfterReverse(topo, topo.stations[T].turnbackBerths[0], platformBerth(topo, T, 'UP'));
       startOf.set(D.id, { kind: 'stable', station: T, berth });
@@ -1472,14 +1871,16 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
     // is busy) can finish at SHR and enter BZL directly. Going all the way to
     // PXL and returning would insert a depot withdrawal into the AM core
     // slots and the outer alternation.
-    if (!overlay && A.dir === 'UP' && (A.from === 22 || A.from === 19) && A.to === W && A.kind === 'ins' && A.stops[0].dep > H(5, 28)) {
-      A.to = 4; A.kind = 'wd'; A.stops = A.stops.filter(s => s.st >= 4);
-      A.stops.at(-1)!.dep = A.stops.at(-1)!.arr;
-      const index = new DepIndex(allForGaps().filter(t => t.id !== A.id && t.id !== A.prev));
-      for (let k = 0; k < 60 && !index.clear(A.stops, 'UP'); k++) for (const stop of A.stops) { stop.arr++; stop.dep++; }
-    }
     const T = A.to;
-    const arr = Math.max(lastArr(A), standbyUntil.get(A.id) ?? -Infinity);
+    const planned = supply?.withdrawals.get(A.id);
+    if (planned) {
+      const withdrawal = addTo(trips, planned.dir, planned.revenue ? 'wd' : 'empty', T, planned.to, planned.stops, planned.revenue);
+      A.next = withdrawal.id;
+      withdrawal.prev = A.id;
+      endOf.set(withdrawal.id, { kind: 'depot', depot: planned.depot });
+      continue;
+    }
+    const arr = lastArr(A);
     if (!overlay && !A.standby && (T === W || T === topo.stations.length - 1)) {
       // An end-terminal return can replace an already-positioned depot
       // feeder for the next duty. It arrives no earlier than that feeder,
@@ -1488,12 +1889,12 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
         && D.stops[0].dep >= arr + minTurn(T) && D.stops[0].dep <= arr + MAX_LAYOVER)
         .sort((a, b) => a.stops[0].dep - b.stops[0].dep).find(D => {
           const feeder = trips[D.prev!];
-          return startOf.get(feeder.id)?.kind === 'depot' && (feeder.kind === 'ins' || feeder.kind === 'empty')
+          return !pool.includes(feeder) && startOf.get(feeder.id)?.kind === 'depot' && (feeder.kind === 'ins' || feeder.kind === 'empty')
             && feeder.to === T && feeder.stops.at(-1)!.arr <= arr;
         });
       if (next) {
         const feeder = trips[next.prev!];
-        if(ctx.dayType==='weekday')cancelTrip(feeder,'车底接续：回流车接替定位或回段车次');else feeder.cancelled = true;
+        feeder.block = UNUSED_DEPOT_MOVE;
         feeder.next = undefined; startOf.delete(feeder.id);
         A.next = next.id; next.prev = A.id;
         continue;
@@ -1606,7 +2007,7 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
     return true;
   };
   const blocks: Block[] = [];
-  const heads = trips.filter((t) => t.overlay === overlay && !t.cancelled && t.prev === undefined && t.block < 0);
+  const heads = trips.filter((t) => t.overlay === overlay && !t.cancelled && t.prev === undefined && t.block === -1);
   heads.sort((a, b) => a.stops[0].dep - b.stops[0].dep);
   for (const h of heads) {
     const b: Block = { id: blockBase + blocks.length, svc: '', start: startOf.get(h.id) ?? { kind: 'stable', station: h.from }, end: { kind: 'none' }, trips: [] };
@@ -1638,8 +2039,8 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
   spacePortalExits(ctx, blocks, trips, new Set(pool.map(t => t.id)));
   if (!overlay) relieveTerminals(ctx, blocks, trips, new Set(pool.map(t => t.id)));
   if (!overlay) fitOpeningFeeders(ctx, blocks, trips, new Set(pool.map(t => t.id)));
-  if (!overlay && ctx.dayType === 'weekday') relieveTerminals(ctx, blocks, trips, new Set(pool.map(t => t.id)));
-  if (!overlay && ctx.dayType === 'weekday') reuseTerminalReturns(ctx, blocks, trips);
+  if (!overlay) relieveTerminals(ctx, blocks, trips, new Set(pool.map(t => t.id)));
+  if (!overlay) reuseTerminalReturns(ctx, blocks, trips, new Set(pool.map(t => t.id)));
   if (!overlay) reorderTerminalTurns(blocks, trips, [0, topo.stations.length - 1]);
   void periods;
   return blocks;
@@ -1648,32 +2049,47 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
 /** A returning service replaces an earlier depot feeder for the same duty.
  * Run after feeder fitting/FIFO assignment as well: their order may change.
  * 【假设】 D79: keep the arriving train in service instead of a needless yard swap. */
-function reuseTerminalReturns(ctx: PlanContext, blocks: Block[], trips: GenTrip[]) {
-  for (let round=0;round<blocks.length;round++) {
-    let changed=false;
-    for(const incoming of blocks){
-      if(incoming.end.kind!=='depot'||incoming.trips.length<2)continue;
-      let k=incoming.trips.length-1;
-      while(k>=0&&!(trips[incoming.trips[k]].revenue&&[0,ctx.topo.stations.length-1].includes(trips[incoming.trips[k]].to)))k--;
-      if(k<0||k===incoming.trips.length-1)continue;
-      const a=trips[incoming.trips[k]],arr=a.stops.at(-1)!.arr,T=a.to;
-      const tail=incoming.trips.slice(k+1).map(id=>trips[id]);
-      if(tail[0].from!==T||tail.some(t=>t.kind!=='wd'&&t.kind!=='empty'))continue;
-      const candidate=blocks.filter(b=>b!==incoming&&b.start.kind==='depot'&&b.trips.length>1)
-        .map(b=>({b,feeder:trips[b.trips[0]],d:trips[b.trips[1]]}))
-        .filter(({feeder,d})=>['ins','empty'].includes(feeder.kind)&&feeder.to===T&&d.from===T&&d.dir!==a.dir
-          &&feeder.stops.at(-1)!.arr<=arr&&d.stops[0].dep>=arr+minTurn(T)&&d.stops[0].dep<=arr+MAX_LAYOVER)
-        .sort((x,y)=>x.d.stops[0].dep-y.d.stops[0].dep)[0];
-      if(!candidate)continue;
-      const {b,feeder,d}=candidate;
-      for(const t of [...tail,feeder]){cancelTrip(t,'车底接续：回流车接替定位或回段车次');t.prev=undefined;t.next=undefined;t.block=-1;}
-      a.next=d.id;d.prev=a.id;
-      incoming.trips=[...incoming.trips.slice(0,k+1),...b.trips.slice(1)];incoming.end=b.end;
-      blocks.splice(blocks.indexOf(b),1);changed=true;break;
+function reuseTerminalReturns(ctx: PlanContext, blocks: Block[], trips: GenTrip[], fixed: Set<number>) {
+  const ends = [0, ctx.topo.stations.length - 1];
+  for (let round = 0; round < blocks.length; round++) {
+    let changed = false;
+    for (const incoming of blocks) {
+      if (incoming.end.kind !== 'depot' || incoming.trips.length < 2) continue;
+      let index = incoming.trips.length - 1;
+      while (index >= 0 && !(trips[incoming.trips[index]].revenue && ends.includes(trips[incoming.trips[index]].to))) index--;
+      if (index < 0 || index === incoming.trips.length - 1) continue;
+      const arrival = trips[incoming.trips[index]], at = arrival.stops.at(-1)!.arr, terminal = arrival.to;
+      if (arrival.standby) continue;
+      const tail = incoming.trips.slice(index + 1).map(id => trips[id]);
+      if (tail[0].from !== terminal || tail.some(t => fixed.has(t.id) || (t.kind !== 'wd' && t.kind !== 'empty'))) continue;
+      const candidate = blocks.filter(b => b !== incoming && b.start.kind === 'depot' && b.trips.length > 1)
+        .map(block => ({ block, feeder: trips[block.trips[0]], departure: trips[block.trips[1]] }))
+        .filter(({ feeder, departure }) => !fixed.has(feeder.id) && ['ins', 'empty'].includes(feeder.kind)
+          && feeder.to === terminal && departure.from === terminal && departure.dir !== arrival.dir
+          && feeder.stops.at(-1)!.arr <= at && departure.stops[0].dep >= at + minTurn(terminal)
+          && departure.stops[0].dep <= at + MAX_LAYOVER)
+        .sort((a, b) => a.departure.stops[0].dep - b.departure.stops[0].dep)[0];
+      if (!candidate) continue;
+      const { block, feeder, departure } = candidate;
+      for (const trip of [...tail, feeder]) {
+        trip.prev = undefined;
+        trip.next = undefined;
+        trip.block = UNUSED_DEPOT_MOVE;
+      }
+      arrival.next = departure.id;
+      departure.prev = arrival.id;
+      incoming.trips = [...incoming.trips.slice(0, index + 1), ...block.trips.slice(1)];
+      incoming.end = block.end;
+      blocks.splice(blocks.indexOf(block), 1);
+      changed = true;
+      break;
     }
-    if(!changed)break;
+    if (!changed) break;
   }
-  for(const [id,b]of blocks.entries()){b.id=id;for(const t of b.trips)trips[t].block=id;}
+  for (const [id, block] of blocks.entries()) {
+    block.id = id;
+    for (const trip of block.trips) trips[trip].block = id;
+  }
 }
 
 /** Depot feeder times can change after the initial FIFO matching. Reassign
@@ -1707,37 +2123,37 @@ function reorderTerminalTurns(blocks: Block[], trips: GenTrip[], terminals: numb
 function fitOpeningFeeders(ctx: PlanContext, blocks: Block[], trips: GenTrip[], fixed: Set<number>) {
   const { topo } = ctx;
   const plan = { trips, blocks } as Plan;
-  const periods = dayPeriods(ctx.dayType);
-  const factor = (t: number) => dwellFactorAt(periods, t);
-  const until=ctx.dayType==='weekday'?H(26):H(10);
-  const pending=new Set(ctx.dayType==='weekday'?blocks.filter(b=>b.start.kind==='depot'&&b.trips.length>1&&!fixed.has(b.trips[0])
-    &&trips[b.trips[0]].to===trips[b.trips[1]].from&&trips[b.trips[0]].stops[0].dep<until).map(b=>b.trips[0]):[]);
-  const ordered=ctx.dayType==='weekday'?[...blocks].sort((a,b)=>(trips[b.trips[1]]?.stops[0].dep??0)-(trips[a.trips[1]]?.stops[0].dep??0)):blocks;
+  const factor = (t: number) => dwellFactorAt(ctx.dayType, t);
+  const until = OPENING.feederUntil;
+  const pending = new Set(blocks.filter(b => b.start.kind === 'depot' && b.trips.length > 1 && !fixed.has(b.trips[0])
+    && trips[b.trips[0]].to === trips[b.trips[1]].from && trips[b.trips[0]].stops[0].dep < until).map(b => b.trips[0]));
+  const ordered = [...blocks].sort((a, b) => (trips[a.trips[1]]?.stops[0].dep ?? 0) - (trips[b.trips[1]]?.stops[0].dep ?? 0));
   for (const b of ordered) {
     if (b.start.kind !== 'depot' || b.trips.length < 2) continue;
     const first = trips[b.trips[0]], next = trips[b.trips[1]];
     if (fixed.has(first.id) || first.to !== next.from || first.stops[0].dep >= until) continue;
     const target = next.from, departure = next.stops[0].dep;
     pending.delete(first.id);
-    const others = trips.filter(t => t !== first && !t.cancelled && !pending.has(t.id));
+    const others = trips.filter(t => t !== first && !t.cancelled && t.block !== UNUSED_DEPOT_MOVE && !pending.has(t.id));
     const index = new DepIndex(others.filter(t => t !== next));
-    const occupied = (terminalOccupancy(plan).get(target) ?? []).filter(o => o.block !== b.id && !pending.has(blocks[o.block].trips[0]));
+    const occupied = (terminalOccupancy(plan).get(target) ?? []).filter(o => o.block !== b.id && !(pending.has(blocks[o.block].trips[0]) && trips[blocks[o.block].trips[0]].stops.at(-1)!.arr === o.from));
     const depots = topo.depots.map((_, d) => d).sort((a, z) =>
       Math.abs(topo.depots[a].junctionChain - topo.stations[target].chain) - Math.abs(topo.depots[z].junctionChain - topo.stations[target].chain));
     let fitted = false;
-    const need=ctx.dayType==='weekday'?yardNeed(topo,plan):[];
+    const need = yardNeed(topo, plan);
     for (const depot of depots) {
-      if(ctx.dayType==='weekday'&&b.start.kind==='depot'&&depot!==b.start.depot&&need[depot]>=topo.depots[depot].capacity)continue;
+      if (b.start.kind === 'depot' && depot !== b.start.depot && need[depot] >= topo.depots[depot].capacity) continue;
       const dir: TrackDir = topo.stations[target].chain < topo.depots[depot].junctionChain ? 'UP' : 'DN';
       const origin = exitStation(topo, depot, dir);
       if (origin === target) continue;
       const reverse = dir !== next.dir, turn = reverse ? minTurn(target) : 0;
-      for (const revenue of first.stops[0].dep>=H(20)?[false,true]:[true,false]) {
+      for (const revenue of first.stops[0].dep >= OPENING.emptyFeedersFrom ? [false, true] : [true, false]) {
         const latest = departure - turn - (reverse ? 10 : 0);
         let start = latest - buildStops(ctx, dir, origin, target, 0, revenue, factor).at(-1)!.arr;
         for (let k = 0; k < 8; k++) {
           const error = buildStops(ctx, dir, origin, target, start, revenue, factor).at(-1)!.arr - latest;
-          start -= error; if (Math.abs(error) < .001) break;
+          start -= error;
+          if (Math.abs(error) < .001) break;
         }
         for (let offset = 0; offset <= (reverse ? 1200 : THROUGH_WAIT); offset += 5) {
           const stops = buildStops(ctx, dir, origin, target, start - offset, revenue, factor);
@@ -1745,18 +2161,20 @@ function fitOpeningFeeders(ctx: PlanContext, blocks: Block[], trips: GenTrip[], 
           if (arrival > departure - turn + .001 || !index.clear(stops, dir)) continue;
           // GLL's side-platform train does not leave before 06:00.
           const gll = stops.find(s => s.st === 22);
-          if (dir === 'DN' && target > 22 && gll && gll.arr < H(6) + MIN_HEADWAY) continue;
-          const conflicts = occupied.filter(o => o.from < departure && o.to > arrival);
-          if(ctx.dayType==='weekday'){
-            if(reverse&&terminalOverflows(topo,target,[...occupied,{from:arrival,to:departure}]).some(o=>o.t>=arrival&&o.t<departure+HOLD_CLEAR))continue;
-          }else{
-            if (reverse && conflicts.length >= (TERMINAL_CAP[target] ?? 1)) continue;
-            if (reverse && occupied.some(o => o.from > arrival && o.to < departure)) continue;
-          }
+          if (dir === 'DN' && target > 22 && gll && gll.arr < OPENING.guanglanEast + MIN_HEADWAY) continue;
+          if (reverse && terminalOverflows(topo, target, [...occupied, { from: arrival, to: departure }]).some(o => o.t >= arrival && o.t < departure + HOLD_CLEAR)) continue;
           const portal = topo.depots[depot].portals.exit[dir];
           if (portal.reverse && blocks.some(other => other !== b && !pending.has(other.trips[0]) && other.start.kind === 'depot' && other.start.depot === depot
             && trips[other.trips[0]].dir === dir && trips[other.trips[0]].from === origin
             && Math.abs(trips[other.trips[0]].stops[0].dep - stops[0].dep) < PORTAL_CYCLE)) continue;
+          const [exitStart, exitClear] = outboundWindow(ctx, depot, { dir, stops });
+          if (blocks.some(other => {
+            if (other === b || other.end.kind !== 'depot' || other.end.depot !== depot) return false;
+            const last = trips[other.trips.at(-1)!];
+            if (topo.depots[depot].portals.entry[last.dir].path !== portal.path) return false;
+            const [approach, clear] = inboundWindow(topo, depot, last);
+            return exitStart < clear && exitClear > approach;
+          })) continue;
           const candidate = { ...first, dir, from: origin, to: target, stops, revenue };
           if (!frontTurnClear(ctx, others, candidate, departure, new Set([first.id, next.id]))) continue;
           Object.assign(first, candidate, { kind: revenue ? 'ins' : 'empty' });
@@ -1776,7 +2194,7 @@ function fitOpeningFeeders(ctx: PlanContext, blocks: Block[], trips: GenTrip[], 
 function headwayRoom(trips: Trip[], t: Trip, keep: number, skip: Set<number> = new Set()): { later: number; earlier: number } {
   let later = Infinity, earlier = Infinity;
   for (const u of trips) {
-    if (u.dir !== t.dir || u.cancelled || u.id === t.id || skip.has(u.id)) continue;
+    if (u.dir !== t.dir || u.cancelled || u.block === UNUSED_DEPOT_MOVE || u.id === t.id || skip.has(u.id)) continue;
     for (const s of t.stops) {
       const us = u.stops.find((x) => x.st === s.st);
       if (!us) continue;
@@ -1790,7 +2208,7 @@ function headwayRoom(trips: Trip[], t: Trip, keep: number, skip: Set<number> = n
 /** `t` moved by `shift` keeps `keep` s to every other train in its direction at each of its stops */
 function headwayClear(trips: Trip[], t: Trip, shift: number, keep: number, skip: Set<number> = new Set()): boolean {
   return trips.every((u) => {
-    if (u.dir !== t.dir || u.cancelled || u.id === t.id || skip.has(u.id)) return true;
+    if (u.dir !== t.dir || u.cancelled || u.block === UNUSED_DEPOT_MOVE || u.id === t.id || skip.has(u.id)) return true;
     return t.stops.every((s) => {
       const us = u.stops.find((x) => x.st === s.st);
       return !us || Math.abs(us.dep - (s.dep + shift)) >= keep;
@@ -1809,7 +2227,7 @@ function relieveTerminals(ctx: PlanContext, blocks: Block[], trips: GenTrip[], f
   const { topo } = ctx;
   const plan = { blocks, trips } as unknown as Plan;
   const clearAt = (t: Trip, delta: number, skip: Set<number>) => trips.every((u) => {
-    if (u.dir !== t.dir || u.cancelled || u.id === t.id || skip.has(u.id)) return true;
+    if (u.dir !== t.dir || u.cancelled || u.block === UNUSED_DEPOT_MOVE || u.id === t.id || skip.has(u.id)) return true;
     return t.stops.every((s) => {
       const us = u.stops.find((x) => x.st === s.st);
       return !us || Math.abs(us.dep - (s.dep + delta)) >= MIN_HEADWAY;
@@ -1846,41 +2264,6 @@ function relieveTerminals(ctx: PlanContext, blocks: Block[], trips: GenTrip[], f
     for (const [x, d] of moves) if (d > turnSlack(x) || !clearAt(trips[x.trips[0]], d, skip)) return null;
     return moves;
   };
-  /**
-   * Where no later exit fits (the morning build-up at 蟠祥路, fed through the
-   * change of ends at 淞虹路), a train that would come out of the depot empty
-   * to start there (an 出段 insertion trip in service, or empty) stands
-   * overnight in the station's storage tail instead.
-   */
-  const placesLeft = (st: number) => topo.stations[st].turnbackBerths.length + topo.stations[st].storageBerths.length
-    - blocks.filter((x) => x.start.kind === 'stable' && x.start.station === st && x.trips.some((id) => !trips[id].cancelled)).length;
-  /** a morning yard exit whose first move only brings the train to `st`, where it can stand overnight instead */
-  const stableable = (b: Block, st: number) => {
-    const a = trips[b.trips[0]], d = trips[b.trips[1]];
-    return b.start.kind === 'depot' && !!d && (a.kind === 'ins' || a.kind === 'empty') && a.to === st && d.from === st && d.stops[0].dep <= 10 * 3600;
-  };
-  const toStable = (b: Block, st: number) => {
-    const a = trips[b.trips[0]], d = trips[b.trips[1]];
-    a.cancelled = true;
-    a.block = -1;
-    a.next = undefined;
-    d.prev = undefined;
-    b.trips.shift();
-    b.start = { kind: 'stable', station: st };
-  };
-  const stableInstead = (st: number, present: { from: number; block: number }[]): boolean => {
-    // D79: a daytime NECC origin must be supplied by its depot feeder;
-    // it cannot silently create another overnight train beyond the fixed 8.
-    if(ctx.dayType==='weekday'&&st!==0&&st!==topo.stations.length-1)return false;
-    if (placesLeft(st) <= 0) return false;
-    for (const o of present.slice().sort((x, y) => y.from - x.from)) {
-      const b = blocks.find((x) => x.id === o.block)!;
-      if (!stableable(b, st) || trips[b.trips[0]].stops.at(-1)!.arr !== o.from) continue;
-      toStable(b, st);
-      return true;
-    }
-    return false;
-  };
   for (let iter = 0; iter < 30; iter++) {
     let moved = false;
     for (const [st, list] of terminalOccupancy(plan)) {
@@ -1888,7 +2271,6 @@ function relieveTerminals(ctx: PlanContext, blocks: Block[], trips: GenTrip[], f
       const over = ov && list.find((o) => o.from === ov.t);
       if (!over) continue;
       const present = list.filter((x) => x.from <= over.from && x.to > over.from);
-      let relieved = false;
       // the latest arrivals first: they are the ones to hold back
       for (const o of present.sort((x, y) => y.from - x.from)) {
         const b = blocks.find((x) => x.id === o.block)!;
@@ -1903,20 +2285,13 @@ function relieveTerminals(ctx: PlanContext, blocks: Block[], trips: GenTrip[], f
           for (const p of t.stops) { p.arr += d; p.dep += d; }
           if (x.start.kind === 'depot') x.start.time = depotStartTime(ctx, x.start.depot, t);
         }
-        moved = relieved = true;
+        moved = true;
         break;
       }
-      if (!relieved && stableInstead(st, present)) moved = true;
     }
     if (!moved) break;
   }
-  // places left in a storage tail take the earliest such exits: they stood
-  // there overnight (the trains that ended the day there)
-  for (const st of [0, topo.stations.length - 1]) {
-    if (!topo.stations[st].storageBerths.length) continue;
-    const list = blocks.filter((b) => stableable(b, st)).sort((x, y) => trips[x.trips[1]].stops[0].dep - trips[y.trips[1]].stops[0].dep);
-    for (const b of list) { if (placesLeft(st) <= 0) break; toStable(b, st); }
-  }
+
 }
 
 /** platform time a depot exit takes when it changes ends on the junction
@@ -2002,7 +2377,7 @@ export function sharedLead(topo: Topology, depot: number): boolean {
   return ins.has(p.exit.DN.path) || ins.has(p.exit.UP.path);
 }
 
-export function inboundWindow(topo: Topology, depot: number, last: Trip): [number, number] {
+export function inboundWindow(topo: Topology, depot: number, last: Pick<Trip, 'to' | 'stops'>): [number, number] {
   const d = topo.depots[depot];
   const distance = Math.abs(topo.stations[last.to].chain - d.junctionChain);
   const arr = last.stops.at(-1)!.arr;
@@ -2010,8 +2385,19 @@ export function inboundWindow(topo: Topology, depot: number, last: Trip): [numbe
   return [arr + 15 + Math.max(0, distance - 1500) / 20, arr + 15 + distance / 20 + (transfer + LINE_INFO.trainLength) / (25 / 3.6) + 25];
 }
 
+/** A reversing exit occupies the conversion track until it can reach and
+ * clear its junction platform. The yard's nominal exitTime alone omits the
+ * change of ends and can place a return in front of the exiting car.
+ * 【假设】 Retain the inbound model's 25 s clearing margin after departure. */
+export function outboundWindow(ctx: PlanContext, depot: number, first: Pick<Trip, 'dir' | 'stops'>): [number, number] {
+  const yard = ctx.topo.depots[depot];
+  const start = depotStartTime(ctx, depot, first);
+  const portal = yard.portals.exit[first.dir];
+  return [start, Math.max(start + yard.exitTime, portal.reverse ? first.stops[0].dep + 25 : -Infinity)];
+}
+
 /** time a train must leave the depot gate to make its first departure */
-export function depotStartTime(ctx: PlanContext, depot: number, first: Trip): number {
+export function depotStartTime(ctx: PlanContext, depot: number, first: Pick<Trip, 'stops'> & { dir?: TrackDir }): number {
   const { topo } = ctx;
   const J = topo.depots[depot].junctionChain;
   const st0 = first.stops[0].st;
@@ -2071,8 +2457,7 @@ export function fleetPeak(plan: Plan): number {
 
 export function applyOverlay(ctx: PlanContext, plan: Plan, preset: { id: string; label: string; a: number; b: number; from: number; to: number; headway: number },
   live?: Pick<OverlayReuse, 'canExtend' | 'now'>): { trips: number; blocks: number; skipped: number; extended: OverlayReuse['extended'] } {
-  const periods = dayPeriods(ctx.dayType);
-  const factorAt = (t: number) => dwellFactorAt(periods, t);
+  const factorAt = (t: number) => dwellFactorAt(ctx.dayType, t);
   const trips = plan.trips as GenTrip[];
   const tag = `${preset.id}@${preset.from}`;
   const n0 = trips.length;
@@ -2396,6 +2781,46 @@ export function platformBerth(topo: Topology, station: number, dir: TrackDir): n
   return topo.berths.find((b) => b.platform === p && b.dir === travel)!.id;
 }
 
+/** Existing depot leads may also serve as turnback tracks. Reserve the
+ * other lead while a direct return needs one, in both tasks and validation. */
+const DEPOT_TURN_CLEAR = 120;
+function dutyTurnBerths(topo: Topology, plan: Plan, block: Block, arrival: Trip, departure: Trip): number[] {
+  const turn = turnbackAt(topo, arrival.to, arrival.dir);
+  if (turn?.kind !== 'rear') return [];
+  let berths = turn.berths;
+  for (const depot of topo.depots.filter(depot => depot.station === arrival.to && !depot.portals.entry[arrival.dir].reverse)) {
+    const portal = depot.portals.entry[arrival.dir];
+    const stub = depot.transferPaths[portal.path].stub;
+    const returning = plan.blocks.some(other => {
+      if (other === block || other.end.kind !== 'depot' || other.end.depot !== depot.id) return false;
+      const last = plan.trips[other.trips.at(-1)!];
+      return last && !last.cancelled && last.dir === arrival.dir && last.to === arrival.to
+        && last.stops.at(-1)!.arr >= arrival.stops.at(-1)!.arr - DEPOT_TURN_CLEAR
+        && last.stops.at(-1)!.arr <= departure.stops[0].dep + minTurn(arrival.to);
+    });
+    const alternatives = berths.filter(berth => topo.berths[berth].link !== stub);
+    if (returning && alternatives.length) berths = alternatives;
+  }
+  return berths;
+}
+
+/** Check the actual interlocking sections. SHR2 -> DN and UP -> SHR1 are
+ * disjoint straight routes (layout PDF); SHR1 -> DN crosses that return.
+ * Keep the existing clearance whenever routes overlap or are unknown. */
+function returnSharesTurnExit(topo: Topology, depot: number, incoming: Trip, outgoing: Trip, berth: number): boolean {
+  const yard = topo.depots[depot];
+  if (!yard) return true;
+  const entryStub = yard.transferPaths[yard.portals.entry[incoming.dir].path].stub;
+  const tail = topo.links[topo.berths[berth].link];
+  const head = topo.berths[berth].dir === 1 ? tail.a : tail.b;
+  const platform = topo.platforms[topo.stations[outgoing.from].platforms[outgoing.dir]].link;
+  const entries = topo.routes.filter(route => route.steps.at(-1)?.link === entryStub && topo.links[route.steps[0].link].track === incoming.dir);
+  const exits = topo.routes.filter(route => topo.signals[route.start].node === head && route.end >= 0 && topo.signals[route.end].link === platform);
+  if (!entries.length || !exits.length) return true;
+  return entries.some(entry => exits.some(exit => entry.sections.some(section => exit.sections.includes(section))
+    || entry.switches.some(point => exit.switches.some(other => other.sw === point.sw))));
+}
+
 /** Task list for a block (from its first trip). */
 export function blockTasks(topo: Topology, plan: Plan, block: Block, fromTrip = 0): Task[] {
   const tasks: Task[] = [];
@@ -2427,18 +2852,10 @@ export function blockTasks(topo: Topology, plan: Plan, block: Block, fromTrip = 
     if (next) {
       if (next.dir !== trip.dir) {
         addTurnback(topo, trip, tasks);
-        // D79: SHR1/2 are BZL's two leads (layout-pdf.md), not isolated
-        // storage tails. 【假设】 assign SHR2 while an UP return needs SHR1;
-        // the existing route/occupancy checks still decide when it can enter.
-        const reverse=tasks.at(-1);
-        if(plan.dayType==='weekday'&&trip.to===4&&trip.dir==='UP'&&reverse?.k==='reverse'){
-          const depot=topo.depots.find(d=>d.key==='BZL')!;
-          const stub=depot.transferPaths[depot.portals.entry.UP.path].stub;
-          const returnSoon=plan.blocks.some(b=>b!==block&&b.end.kind==='depot'&&b.end.depot===depot.id&&(()=>{
-            const t=plan.trips[b.trips.at(-1)!];return t&&!t.cancelled&&t.dir==='UP'&&t.to===4
-              &&t.stops.at(-1)!.arr>=trip.stops.at(-1)!.arr-120&&t.stops.at(-1)!.arr<=next.stops[0].dep+240;
-          })());
-          if(returnSoon){reverse.berths=reverse.berths.filter(b=>topo.berths[b].link!==stub);reverse.chosen=reverse.berths[0];}
+        const reverse = tasks.at(-1);
+        if (reverse?.k === 'reverse') {
+          const berths = dutyTurnBerths(topo, plan, block, trip, next);
+          if (berths.length) { reverse.berths = berths; reverse.chosen = berths[0]; }
         }
       }
     }
@@ -2561,10 +2978,12 @@ export function departureBerthAfterReverse(topo: Topology, reversedAt: number, p
 // ---------------------------------------------------------------- validation
 
 export interface PlanIssue {
+  /** Exact interval for resolving timing conflicts; text is rounded for display. */
+  gap?: number;
   /** Circulations contributing to this conflict; used by pure overlay fitting. */
   blocks?: number[];
   severity: 'error' | 'warn';
-  code: 'TURN_SHORT' | 'BLOCK_BREAK' | 'TERMINAL_FULL' | 'TAIL_ORDER' | 'FRONT_CONFLICT' | 'LAYOVER_LONG' | 'DEPOT_CONFLICT' | 'HEADWAY' | 'FLEET' | 'TIME_ORDER' | 'UNASSIGNED' | 'STABLE_CONFLICT' | 'TURN_HEADWAY';
+  code: 'SERVICE_STRUCTURE' | 'TURN_SHORT' | 'BLOCK_BREAK' | 'TERMINAL_FULL' | 'TAIL_ORDER' | 'FRONT_CONFLICT' | 'LAYOVER_LONG' | 'DEPOT_CONFLICT' | 'HEADWAY' | 'FLEET' | 'TIME_ORDER' | 'UNASSIGNED' | 'STABLE_CONFLICT' | 'TURN_HEADWAY';
   t: number;
   text: string;
 }
@@ -2577,7 +2996,7 @@ const MIN_HEADWAY = 90;
 /** A front turn occupies the opposite platform from arrival to departure.
  * Its timetable slot must protect normal-direction arrivals through that
  * platform as well as the incoming train's own departure stream. */
-function frontTurnClear(ctx: PlanContext, trips: Trip[], arrival: Pick<Trip, 'dir' | 'to' | 'stops'>, departure: number, excluded: Set<number>): boolean {
+function frontTurnClear(ctx: PlanContext, trips: readonly Pick<Trip, 'id' | 'dir' | 'stops' | 'cancelled'>[], arrival: Pick<Trip, 'dir' | 'to' | 'stops'>, departure: number, excluded: Set<number>): boolean {
   if (turnbackAt(ctx.topo, arrival.to, arrival.dir)?.kind !== 'front') return true;
   const arr = arrival.stops.at(-1)!.arr;
   return !trips.some(trip => !trip.cancelled && !excluded.has(trip.id) && trip.dir !== arrival.dir
@@ -2636,9 +3055,9 @@ export function terminalOccupancy(plan: Plan): Map<number, { from: number; to: n
 /** departure times per station and direction, for headway checks while trips are added */
 class DepIndex {
   private m = new Map<string, number[]>();
-  constructor(trips: Iterable<Trip>) { for (const t of trips) this.add(t); }
-  add(t: Trip) {
-    if (t.cancelled) return;
+  constructor(trips: Iterable<Pick<Trip, 'dir' | 'stops' | 'cancelled'> & { block?: number }>) { for (const t of trips) this.add(t); }
+  add(t: Pick<Trip, 'dir' | 'stops' | 'cancelled'> & { block?: number }) {
+    if (t.cancelled || t.block === UNUSED_DEPOT_MOVE) return;
     for (const p of t.stops) {
       const k = `${p.st}${t.dir}`;
       let a = this.m.get(k);
@@ -2669,7 +3088,7 @@ class DepIndex {
  */
 export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
   const { topo } = ctx;
-  const out: PlanIssue[] = [];
+  const out: PlanIssue[] = [...(generationIssues.get(plan) ?? [])];
   const name = (st: number) => STATIONS[st].name;
   const live = plan.trips.filter((t) => !t.cancelled);
   // Line stabling (正线存车) must hold as many trains at night as leave it in
@@ -2679,7 +3098,7 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
     const night = plan.blocks.filter(b => b.end.kind === 'stable' && b.end.station === st).length;
     const morning = plan.blocks.filter(b => b.start.kind === 'stable' && b.start.station === st).length;
     if (night !== n || morning !== n)
-      out.push({ severity: 'warn', code: 'FLEET', t: H(4), blocks: [], text: `${name(st)} 正线存车 ${n} 列：夜间入位 ${night} 列，早晨出车 ${morning} 列` });
+      out.push({ severity: 'warn', code: 'FLEET', t: OPENING.dayStart, blocks: [], text: `${name(st)} 正线存车 ${n} 列：夜间入位 ${night} 列，早晨出车 ${morning} 列` });
   }
   // Explicit overnight stabling on a main platform reserves that track from
   // the evening arrival through the following day's departure. Check both
@@ -2695,7 +3114,7 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
     const arrived = last.stops.at(-1)!.arr;
     const morning = plan.blocks.find(b => b.start.kind === 'stable' && b.start.station === station && b.start.berth === stableBerth);
     const first = morning?.trips.map(id => plan.trips[id]).find(t => !t.cancelled);
-    const departure = first?.stops[0].dep ?? H(6);
+    const departure = first?.stops[0].dep ?? OPENING.guanglanEast;
     for (const trip of live) {
       if (trip.dir !== 'DN' || trip === last || trip === first) continue;
       const stop = trip.stops.find(s => s.st === station);
@@ -2781,26 +3200,34 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
       const [approach, clear] = inboundWindow(topo, depot.id, last);
       for (const outbound of exits) {
         if (outbound===inbound || outbound.start.kind!=='depot') continue;
-        // the exit or the return itself is an added move (a base circulation
-        // extended into added trips still left the yard as planned)
-        const added = last.overlay || plan.trips[outbound.trips.find(id => !plan.trips[id].cancelled)!].overlay;
-        if (added && outbound.start.time < clear && outbound.start.time+depot.exitTime > approach)
+        const first = plan.trips[outbound.trips.find(id => !plan.trips[id].cancelled)!];
+        const portal = depot.portals.exit[first.dir];
+        if (portal.path !== depot.portals.entry[last.dir].path) continue;
+        const exitClear = Math.max(outbound.start.time + depot.exitTime, portal.reverse ? first.stops[0].dep + 25 : -Infinity);
+        if (outbound.start.time < clear && exitClear > approach)
           out.push({severity:'error',code:'DEPOT_CONFLICT',t:Math.max(approach,outbound.start.time),blocks:[inbound.id,outbound.id],
-            text:`${depot.name} 加开回段接近与图定出段共用转换轨时隙冲突`});
+            text:`${depot.name} 回段接近与出段共用转换轨时隙冲突`});
       }
     }
   }
   // 【假设】 D79: an UP return into BZL uses SHR's west throat while a
   // reversing train leaves it. Separate their planned station events by
   // 120 s; a same-direction station headway alone does not cover this move.
-  if(ctx.dayType==='weekday')for(const b of plan.blocks){
-    if(b.end.kind!=='depot'||topo.depots[b.end.depot].key!=='BZL')continue;
-    const last=plan.trips[b.trips.at(-1)!];if(!last||last.dir!=='UP'||last.to!==4||last.cancelled)continue;
-    for(const other of plan.blocks)if(other!==b)for(let k=1;k<other.trips.length;k++){
-      const a=plan.trips[other.trips[k-1]],d=plan.trips[other.trips[k]];
-      if(!a||!d||a.cancelled||d.cancelled||a.to!==4||d.from!==4||a.dir!=='UP'||d.dir!=='DN')continue;
-      const arr=last.stops.at(-1)!.arr,dep=d.stops[0].dep;
-      if(Math.abs(arr-dep)<120&&a.stops.at(-1)!.arr<arr)out.push({severity:'error',code:'DEPOT_CONFLICT',t:arr,blocks:[b.id,other.id],text:'淞虹路回段到达与折返发车共用咽喉不足120 s'});
+  for (const block of plan.blocks) {
+    if (block.end.kind !== 'depot' || topo.depots[block.end.depot].key !== 'BZL') continue;
+    const returning = plan.trips[block.trips.at(-1)!];
+    if (!returning || returning.dir !== 'UP' || returning.to !== 4 || returning.cancelled) continue;
+    for (const other of plan.blocks) {
+      if (other === block) continue;
+      for (let k = 1; k < other.trips.length; k++) {
+        const arrival = plan.trips[other.trips[k - 1]], departure = plan.trips[other.trips[k]];
+        if (!arrival || !departure || arrival.cancelled || departure.cancelled
+          || arrival.to !== 4 || departure.from !== 4 || arrival.dir !== 'UP' || departure.dir !== 'DN') continue;
+        const at = returning.stops.at(-1)!.arr, dep = departure.stops[0].dep;
+        if (Math.abs(at - dep) < DEPOT_TURN_CLEAR && arrival.stops.at(-1)!.arr < at
+          && dutyTurnBerths(topo, plan, other, arrival, departure).every(berth => returnSharesTurnExit(topo, block.end.kind === 'depot' ? block.end.depot : -1, returning, departure, berth)))
+          out.push({ severity: 'error', code: 'DEPOT_CONFLICT', t: at, blocks: [block.id, other.id], text: '淞虹路回段到达与折返发车共用咽喉不足120 s' });
+      }
     }
   }
   // station headways per direction (passing / departing)
@@ -2825,7 +3252,7 @@ export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
           reported = list[i].t;
           // the design headway is the hard limit: a plan below it cannot run
           // to time (the operating headways the templates keep are far wider)
-          out.push({ severity: 'error', code: 'HEADWAY', t: list[i].t, blocks: [list[i-1].block,list[i].block], text: `${name(st)} ${dir === 'DN' ? '下行' : '上行'} ${list[i - 1].no}/${list[i].no} 间隔 ${Math.round(h)} s（最小 ${MIN_HEADWAY} s）` });
+          out.push({ severity: 'error', code: 'HEADWAY', gap: h, t: list[i].t, blocks: [list[i-1].block,list[i].block], text: `${name(st)} ${dir === 'DN' ? '下行' : '上行'} ${list[i - 1].no}/${list[i].no} 间隔 ${Math.round(h)} s（最小 ${MIN_HEADWAY} s）` });
         }
       }
     }
