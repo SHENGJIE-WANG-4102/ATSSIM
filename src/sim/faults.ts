@@ -225,7 +225,7 @@ export function requestTrainMaintenance(sim: Sim, id: number): { ok: boolean; ms
   fault.maintenanceAt = sim.t + TRAIN_MAINTENANCE_TIME;
   fault.repairAt = fault.maintenanceAt;
   if (fault.stage === 'effect') stage(sim,fault,'procedure');
-  sim.log('B','列车',`故障列车 ${tr.svc} 阻挡救援列车 ${sim.trains.get(blocker)!.svc}（连挂体或占用待转换道岔），申请现场抢修（假设20min），完成后清客回段`);
+  sim.log('B','列车',`故障列车 ${tr.svc} 阻挡救援列车 ${sim.trains.get(blocker)!.svc}（连挂体或占用待转换道岔），申请现场抢修（预计20min），完成后清客回段`);
   return {ok:true,msg:'现场抢修已申请，20min内维持故障防护'};
 }
 

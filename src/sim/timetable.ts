@@ -40,7 +40,7 @@ export const TEMPLATES: Record<string, Template> = {
     pattern: ['big', 'big', 'small'], headway: 180, peak: true, phase: { UP: 1 },
   },
   weekdayAMTail: {
-    id: 'weekdayAMTail', name: '早高峰退出', desc: '2:1 交路逐步退出早高峰【假设】',
+    id: 'weekdayAMTail', name: '早高峰退出', desc: '2:1 交路逐步退出早高峰', // 【假设】
     pattern: ['big', 'big', 'small'], headway: 210,
   },
   weekdayOff: {
@@ -50,11 +50,11 @@ export const TEMPLATES: Record<string, Template> = {
     id: 'weekdayEvening', name: '工作日夜间平峰', desc: '单一大交路 7\'00"', pattern: ['big'], headway: 420,
   },
   weekdayPMTail: {
-    id: 'weekdayPMTail', name: '晚高峰延续', desc: '2:1 延至约20:55，间隔由2\'45"逐步增至4\'00"【假设：分段线性插值】',
+    id: 'weekdayPMTail', name: '晚高峰延续', desc: '2:1 延至约20:55，间隔由2\'45"逐步增至4\'00"', // 【假设】 piecewise-linear interpolation
     pattern: ['big', 'big', 'small'], headway: 165, continuePattern: true,
   },
   weekdayNight: {
-    id: 'weekdayNight', name: '晚间大交路', desc: '21:00附近原小交路时隙改开机场车，3\'00"向末班8\'00"插值【假设】',
+    id: 'weekdayNight', name: '晚间大交路', desc: '21:00附近原小交路时隙改开机场车，3\'00"向末班8\'00"插值', // 【假设】
     pattern: ['big'], headway: 180,
   },
   weekend: {
@@ -75,7 +75,7 @@ const DAY_PERIODS: Record<DayType, Period[]> = {
     { from: H(4), to: H(6, 5), template: 'firstLast', label: '首班/早间' },
     { from: H(6, 5), to: H(7, 40), template: 'weekdayOff', headway: 300, label: '早高峰前过渡' },
     { from: H(7, 40), to: H(10), template: 'weekdayAM', label: '早高峰' },
-    { from: H(10), to: H(10, 40), template: 'weekdayAMTail', headway: 190, headwayTo: 270, label: '早高峰退出【假设】' },
+    { from: H(10), to: H(10, 40), template: 'weekdayAMTail', headway: 190, headwayTo: 270, label: '早高峰退出' }, // 【假设】
     { from: H(10, 40), to: H(18, 15), template: 'weekdayOff', label: '平峰' },
     { from: H(18, 15), to: H(19, 30), template: 'weekdayPM', label: '晚高峰' },
     // D72: 19:44 observed ~165 s, 20:43 observed ~240 s. The
@@ -84,8 +84,8 @@ const DAY_PERIODS: Record<DayType, Period[]> = {
     { from: H(19, 30), to: H(19, 45), template: 'weekdayPMTail', label: '晚高峰延续' },
     { from: H(19, 45), to: H(20, 45), template: 'weekdayPMTail', headway: 165, headwayTo: 240, label: '晚高峰间隔渐长' },
     { from: H(20, 45), to: H(20, 55), template: 'weekdayPMTail', headway: 240, label: '小交路收车前' },
-    { from: H(20, 55), to: H(21), template: 'weekdayNight', headway: 240, headwayTo: 180, label: '机场车接替时隙【假设】' },
-    { from: H(21), to: H(21, 40), template: 'weekdayNight', headway: 240, label: '晚间大交路【假设】' },
+    { from: H(20, 55), to: H(21), template: 'weekdayNight', headway: 240, headwayTo: 180, label: '机场车接替时隙' }, // 【假设】
+    { from: H(21), to: H(21, 40), template: 'weekdayNight', headway: 240, label: '晚间大交路' }, // 【假设】
     { from: H(21, 40), to: H(28), template: 'firstLast', headway: 240, label: '末班/收车' },
   ],
   weekend: [
@@ -95,6 +95,29 @@ const DAY_PERIODS: Record<DayType, Period[]> = {
     { from: H(21), to: H(21, 40), template: 'weekdayEvening', label: '夜间' },
     { from: H(21, 40), to: H(28), template: 'firstLast', headway: 480, label: '末班/收车' },
   ],
+};
+
+/**
+ * Service periods as shown to the dispatcher (header, timetable graph). The
+ * generator's peak `from` is the time the whole core runs at peak, so the
+ * reference stations densify well before it; these clocks are when the
+ * passenger sees the change, read from the Gaode tables at 世纪公园 and
+ * 张江高科 (reference/timetable-gaode/).
+ */
+const SHOWN_PERIODS: Record<DayType, Period[]> = {
+  weekday: [
+    { from: H(4), to: H(6, 5), template: 'firstLast', label: '首班/早间' },
+    { from: H(6, 5), to: H(6, 45), template: 'weekdayOff', label: '早高峰前过渡' },
+    { from: H(6, 45), to: H(10), template: 'weekdayAM', label: '早高峰' },
+    { from: H(10), to: H(10, 45), template: 'weekdayAMTail', label: '早高峰退出' },
+    { from: H(10, 45), to: H(17), template: 'weekdayOff', label: '平峰' },
+    { from: H(17), to: H(17, 30), template: 'weekdayOff', label: '晚高峰前过渡' },
+    { from: H(17, 30), to: H(20, 30), template: 'weekdayPM', label: '晚高峰' },
+    { from: H(20, 30), to: H(21, 30), template: 'weekdayPMTail', label: '晚高峰退出' },
+    { from: H(21, 30), to: H(22, 30), template: 'weekdayNight', label: '夜间' },
+    { from: H(22, 30), to: H(28), template: 'firstLast', label: '末班/收车' },
+  ],
+  weekend: DAY_PERIODS.weekend,
 };
 
 export function dayPeriods(dayType: DayType): Period[] {
@@ -150,13 +173,13 @@ interface ServiceData {
 }
 const SERVICE_DATA: Record<DayType, ServiceData> = {
   weekday: {
-    openingUp: { at: H(5, 35) + 30, headway: 450, template: 'weekdayOff', label: '西行开班疏班【假设】' },
+    openingUp: { at: H(5, 35) + 30, headway: 450, template: 'weekdayOff', label: '西行开班疏班' }, // 【假设】
     denseUp: H(6, 55),
     openingDn: [{ to: H(6, 10), headway: 225 }, { to: Infinity, headway: 180 }],
     peaks: { weekdayAM: {}, weekdayPM: { DN: H(17), UP: H(17, 24), upEnd: H(20, 20) } },
     overrides: [
-      { dir: 'DN', from: H(20, 15), to: H(20, 45), template: 'weekdayPMTail', headway: 180, label: '东行三分钟延续【假设】' },
-      { dir: 'DN', from: H(9, 45), to: H(10, 40), template: 'weekdayAMTail', headway: 200, headwayTo: 300, label: '东行早高峰退出【假设】' },
+      { dir: 'DN', from: H(20, 15), to: H(20, 45), template: 'weekdayPMTail', headway: 180, label: '东行三分钟延续' }, // 【假设】
+      { dir: 'DN', from: H(9, 45), to: H(10, 40), template: 'weekdayAMTail', headway: 200, headwayTo: 300, label: '东行早高峰退出' }, // 【假设】
     ],
     // 【假设】 LYL depot origins fill the western opening wave while GLL is sparse.
     openingSupplements: [
@@ -462,7 +485,7 @@ function layoutService(ctx: PlanContext) {
     if (morningUpStart !== undefined && t < morningUpStart) {
       if (dir === 'UP') return { ...service.openingUp!, from: service.openingUp!.at, to: morningUpStart };
       const start = peakStart(peaks[0], dir);
-      if (t < start) return { from: 0, to: start, template: peaks[0].template, headway: service.openingDn!.find(p => t < p.to)!.headway, label: '东行开班过渡【假设】' };
+      if (t < start) return { from: 0, to: start, template: peaks[0].template, headway: service.openingDn!.find(p => t < p.to)!.headway, label: '东行开班过渡' }; // 【假设】
     }
     for (const peak of peaks) {
       const hw = peakHw(peak);
@@ -1029,7 +1052,7 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
   }
   const plan: Plan = {
     dayType: ctx.dayType, trips, blocks,
-    periods: periods.map((p) => ({ from: p.from, to: p.to, template: p.template, label: p.label })),
+    periods: SHOWN_PERIODS[ctx.dayType].map((p) => ({ from: p.from, to: p.to, template: p.template, label: p.label })),
     overlays: [], fleetPeak: 0,
   };
   laidOutService.set(plan, serviceStructure);

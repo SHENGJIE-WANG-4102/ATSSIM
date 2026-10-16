@@ -1408,3 +1408,9 @@ violations []
 - `npx vitest run tests/timetable.test.ts tests/calibration.test.ts tests/dispatcher.test.ts tests/core.test.ts tests/features.test.ts --maxWorkers=2`：**5 files passed，171 tests passed**，各文件39/16/8/87/21项。
 - 场景文件按互不重叠的名称分组：`npx vitest run tests/scenarios.test.ts -t faults --maxWorkers=1`为**8 passed / 8 skipped**；`node node_modules/vitest/vitest.mjs run tests/scenarios.test.ts --maxWorkers=1 -t <pattern>`的pattern分别为`dawn-poss|gll-loop|hq-night|ciie-close`及`ljz-person|river-tunnel|holiday-return|njd-closure`，各**4 passed / 12 skipped**。各组跳过的是另组用例，16项全部覆盖；八个培训场景事件全部触发，无“未找到”，完整性检查通过。
 - 最终指定**6个文件、187项测试全部通过**。只运行指定文件及其既有预热，没有运行npm test、soak、simday或独立全日实跑。探针及日志只在已忽略的work/probe中。只改工作区，没有提交、推送或切分支。
+
+## D84 界面时段按乘客看到的钟点显示
+
+- 问题（用户发现）：表头和运行图上方的时段标签直接读排图时段。排图时段的高峰起点按 `coreLead` 口径，表示「整个核心段都已进入高峰」的时刻，参考站要早约一个核心段全程就开始加密，所以 18:06 表头还写「平峰」，实际 17:30 起已是 3'00"。早高峰同样晚约 55 分钟。
+- 改为单独一张显示用时段表 `SHOWN_PERIODS`，只供表头和运行图显示，不参与排图。工作日钟点按高德世纪公园、张江高科两站：早高峰 06:45–10:00，退出到 10:45；晚高峰前过渡 17:00，晚高峰 17:30–20:30，退出到 21:30；夜间到 22:30，之后末班/收车。双休日沿用排图时段。
+- 用户决定：界面文字（时段名、模板说明、事件记录）不出现「假设」字样，【假设】标记只留在代码注释和本文件里。
