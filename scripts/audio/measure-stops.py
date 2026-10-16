@@ -113,7 +113,13 @@ def measure(frequencies, times, power, prominence, speech, row, duration):
         confidence = 'low'
     elif low_before - low_after < .15 and confidence == 'high':
         confidence = 'medium'
-    edge = duration - at < 4 or at - low < 4
+    # np.clip above keeps indexing safe, but repeating the first STFT column
+    # cannot supply missing braking history. Short platform videos exposed
+    # accepted candidates with only 3-4 s of an 8 s ridge available.
+    # 【假设】Incomplete template context must be excluded from means; this is
+    # a confidence guard, not a video-validated correction to the timestamp.
+    pre_context_limited = bool(seed - float(lag[-1]) < times[0])
+    edge = duration - at < 4 or at - low < 4 or pre_context_limited
     if edge:
         confidence = 'low'
     return dict(station=row['station'], recording=row['recording'], direction=row['direction'],
@@ -125,6 +131,7 @@ def measure(frequencies, times, power, prominence, speech, row, duration):
                 lowFallDb=round(low_before - low_after, 2), floorDb=round(floor_db, 2),
                 score=round(best['score'], 2), tailContrastDb=round(best['tailContrastDb'], 2), sweepEndS=round(seed, 2),
                 voicedFraction=round(best['voicedFraction'], 2), edgeLimited=edge,
+                preContextLimited=pre_context_limited,
                 ambiguous=ambiguous, alternativeScore=round(alternative_score, 2), energy=evidence)
 
 

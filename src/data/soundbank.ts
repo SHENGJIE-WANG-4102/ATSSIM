@@ -1,5 +1,6 @@
-import { ONBOARD_RENDER_BANK } from './onboardbank';
+import { ONBOARD_RENDER_BANK, FIELD_1016_TERMINAL_CLIP } from './onboardbank';
 import { DOOR_BANK } from './doorbank';
+import type { RecordingId } from './ridelog';
 export { ONBOARD_ANNOUNCEMENTS, ONBOARD_NEXT_DELAY_S, ONBOARD_ARRIVAL_ADVANCE_S } from './onboardbank';
 export type { OnboardAnnouncement } from './onboardbank';
 /** Local recordings only; files are not distributed with the repository (D71).
@@ -17,7 +18,7 @@ export type SoundDirection = 'DN' | 'UP' | 'both' | 'shared';
 export interface SoundClip {
   id: string; file: string; kind: SoundKind; station: string; direction: SoundDirection;
   side: 'east' | 'west' | 'both' | 'shared';
-  source: 'platform-01' | 'platform-03' | 'ride-east' | 'ride-west' | 'door-reference';
+  source: RecordingId | 'door-reference' | 'cabin-reference';
   /** Original range; for composed clips this is only the first library part.
    * All constituent source clocks/ranges are resolved through composition;
    * composed duration is durationS, never the first part's range length. */
@@ -67,6 +68,7 @@ export const SOUND_BANK: readonly SoundClip[] = [
   { id: 'platform-suffix', file: 'platform-suffix.mp3', kind: 'suffix', station: '江苏路', direction: 'UP', side: 'west', source: 'platform-01', range: [18.53, 25.10], voiceRange: [18.88, 25.04], both: false, confidence: 'medium' },
   { id: 'platform-close', file: 'platform-close.mp3', kind: 'close', station: '江苏路', direction: 'shared', side: 'shared', source: 'platform-03', range: [15.35, 18.80], voiceRange: [15.54, 18.62], both: false, confidence: 'high' },
   ...ONBOARD_RENDER_BANK,
+  FIELD_1016_TERMINAL_CLIP,
   ...DOOR_BANK,
   {"id":"onboard-rolling","file":"onboard-rolling.mp3","kind":"interior-rolling","station":"浦东南路","direction":"shared","side":"shared","source":"ride-east","range":[947,963],"loopCrossfadeS":1,"effects":"rolling-noise","both":false,"confidence":"medium"},
   {"id":"onboard-idle","file":"onboard-idle.mp3","kind":"interior-idle","station":"静安寺","direction":"shared","side":"shared","source":"ride-east","range":[134,146],"loopCrossfadeS":1,"effects":"cabin-floor","both":false,"confidence":"medium"},

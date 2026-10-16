@@ -7,7 +7,8 @@ import { writeFileSync } from 'node:fs';
 import { resolve, relative, isAbsolute } from 'node:path';
 import { FIRST_LAST } from '../../src/data/firstlast';
 import { STATIONS } from '../../src/data/line2';
-import { RECORDING_SOURCES, RIDE_LOG, RIDE_MODEL_BASELINE, USER_DOOR_REFERENCES, type RideStop } from '../../src/data/ridelog';
+import { RECORDING_SOURCES, RIDE_LOG, RIDE_MODEL_BASELINE, USER_DOOR_REFERENCES,
+  LEGACY_RECORDING_IDS, FIELD_1016_RECORDING_IDS, summarizeRideLog, type RecordingId, type RideStop } from '../../src/data/ridelog';
 
 const minute = (clock: string): number => {
   const [hours, minutes] = clock.split(':').map(Number);
@@ -29,7 +30,7 @@ for (const source of RECORDING_SOURCES) {
     const row = rows[index];
     const stationIndex = STATIONS.findIndex(station => station.name === row.station);
     if (stationIndex < 0) throw new Error(`Unknown station: ${row.station}`);
-    const times = [row.stop, row.open, row.close, row.start].filter((at): at is number => at !== null);
+    const times = [row.stop, row.open, row.close, row.closingMotion ?? null, row.start].filter((at): at is number => at !== null);
     if (times.some(at => !Number.isFinite(at) || at < 0 || at > source.durationS)) throw new Error(`Out-of-file event: ${row.station}`);
     if (times.some((at, i) => i > 0 && at < times[i - 1])) throw new Error(`Event order: ${row.station}`);
     const bounds = row.analysisWindowS;
@@ -56,7 +57,11 @@ const intervals: { from: string; to: string; recording: string; direction: strin
   observedDwell: number | null; modelDwell: number; dwellDelta: number | null; dwellIncluded: boolean;
   closeToStart: number | null; closeIncluded: boolean; observedTotal: number | null; modelTotal: number;
   officialSeconds: number; officialKind: 'departure-arrival' | 'departure-departure'; pairIncluded: boolean }[] = [];
-for (const source of RECORDING_SOURCES.filter(source => source.kind === 'ride')) {
+// The immutable 10-14 comparison must never require a legacy model interval
+// for a new source, or silently compare 21:05 data to an old last-train plan.
+const legacyIds: readonly RecordingId[] = LEGACY_RECORDING_IDS;
+const fieldIds: readonly RecordingId[] = FIELD_1016_RECORDING_IDS;
+for (const source of RECORDING_SOURCES.filter(source => source.kind === 'ride' && legacyIds.includes(source.id))) {
   const rows = RIDE_LOG.filter(row => row.recording === source.id);
   for (let index = 1; index < rows.length; index++) {
     const from = rows[index - 1], to = rows[index];
@@ -129,7 +134,14 @@ const report = {
     omitted: paired.filter(row => row.observedDwell! > 70).map(row => row.to),
     runExtraS: round(usualRunExtra), dwellExtraS: round(usualDwellExtra),
     dwellShare: usualTotal === null || usualTotal <= 0 ? null : round(usualDwellExtra! / usualTotal) },
-  excludedStops: RIDE_LOG.filter(row => row.evidence.stop?.confidence === 'low').map(row => `${row.recording}:${row.station}`),
+  excludedStops: RIDE_LOG.filter(row => legacyIds.includes(row.recording) && row.evidence.stop?.confidence === 'low').map(row => `${row.recording}:${row.station}`),
+  measurementSummaries: {
+    legacy: summarizeRideLog(RIDE_LOG.filter(row => legacyIds.includes(row.recording))),
+    field1016: summarizeRideLog(RIDE_LOG.filter(row => fieldIds.includes(row.recording))),
+    combined: summarizeRideLog(RIDE_LOG),
+    byRecording: Object.fromEntries(RECORDING_SOURCES.filter(source => source.kind === 'ride')
+      .map(source => [source.id, summarizeRideLog(RIDE_LOG.filter(row => row.recording === source.id))])),
+  },
 };
 const jsonIndex = args.indexOf('--json');
 if (jsonIndex >= 0) saveIgnored(args[jsonIndex + 1], report);

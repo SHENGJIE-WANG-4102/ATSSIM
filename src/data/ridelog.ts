@@ -1,9 +1,9 @@
 /**
- * User's local Line 2 recordings, supplied on 2026-10-14.
+ * User's local Line 2 recordings, supplied on 2026-10-14 and 2026-10-16.
  * Source files live in ignored work/recordings/; no audio or passenger
  * transcript is distributed. Filename door references are car-door numbers:
- * westbound 4-1, eastbound 5-5. The user says clock start times are unknown;
- * filesystem copy times must not be used as recording times.
+ * westbound 4-1, eastbound 5-5. 10-14 clock starts are unknown; 10-16
+ * filenames provide approximate minutes only. Copy times are not clocks.
  *
  * Method: local speech recognition locates station announcements; 8 kHz
  * spectrograms (256 ms windows / 64 ms hops) locate recurring ~2750 / 2843 Hz
@@ -15,15 +15,18 @@
  * Speech timestamps are not door times;
  * "门灯闪烁时，请勿上下车" is also part of arrival announcements.
  *
- * User decision superseding the handoff: +/-3 s is adequate; adopt closing
- * and starting candidates, omit opening times, exclude low-confidence events
- * from averages. Search windows are analysis bounds, not event bounds.
+ * 10-14 user decision: +/-3 s, closing-warning/start candidates, no opening
+ * measurements. Keep those rows unchanged. 10-16 includes opening and a
+ * separate mechanical closingMotion estimate (D85 and the task A notes).
+ * Low-confidence events never enter means. Windows are analysis bounds.
  * Confidence thresholds and frequency templates are assumptions 【假设】;
  * they are not statistical error bars. User-supplied markers retain decimals.
  * Station order/names: line2.ts; official comparison: firstlast.ts.
  */
 export type RideDirection = 'DN' | 'UP';
-export type RecordingId = 'ride-east' | 'ride-west' | 'platform-01' | 'platform-03';
+export const LEGACY_RECORDING_IDS = ['ride-east', 'ride-west', 'platform-01', 'platform-03'] as const;
+export const FIELD_1016_RECORDING_IDS = ['ride-1016-west-core', 'ride-1016-west-end', 'ride-1016-east-end', 'ride-1016-east-night'] as const;
+export type RecordingId = typeof LEGACY_RECORDING_IDS[number] | typeof FIELD_1016_RECORDING_IDS[number];
 export const RIDELOG_PRECISION_S = 3;
 
 export interface RecordingSource {
@@ -32,6 +35,13 @@ export interface RecordingSource {
   kind: 'ride' | 'platform';
   durationS: number;
   clockStart: string | null;
+  clockStartPrecision?: 'minute';
+  recordedDate?: string;
+  /** User label, not an interpretation of stock type or vehicle identity. */
+  vehicleLabel?: string;
+  /** Filename route can start before the captured portion. */
+  observedFrom?: string;
+  note?: string;
   from: string;
   to: string;
   directions: RideDirection[];
@@ -52,6 +62,22 @@ export const RECORDING_SOURCES: RecordingSource[] = [
     kind: 'platform', durationS: 109.96, clockStart: null, from: '江苏路', to: '江苏路', directions: ['UP', 'DN'],
     doorReferences: [{ direction: 'UP', car: 4, door: 1, trainType: '02A03' },
       { direction: 'DN', car: 5, door: 5, trainType: '02A05' }] },
+  { id: 'ride-1016-west-core', filename: 'Fri_19.51_中山公园~威宁路_021008车内录音.wav',
+    kind: 'ride', durationS: 297.12, clockStart: '19:51', clockStartPrecision: 'minute', recordedDate: '2026-10-16',
+    vehicleLabel: '021008', from: '中山公园', to: '威宁路', directions: ['UP'],
+    note: 'Filename clock is approximate to the minute. Starts with traction already present; overlaps the other 19:51 source on the nominal clock.' },
+  { id: 'ride-1016-west-end', filename: 'Fri_19.51_淞虹路~蟠祥路_021008车内录音.wav',
+    kind: 'ride', durationS: 951, clockStart: '19:51', clockStartPrecision: 'minute', recordedDate: '2026-10-16',
+    vehicleLabel: '021008', from: '淞虹路', to: '蟠祥路·国家会计学院', directions: ['UP'],
+    note: 'Filename clock preserved despite overlapping the western-core recording. Same physical train and turnback timing are not established.' },
+  { id: 'ride-1016-east-end', filename: 'Fri_20.25_国际会展中心~淞虹路_021008车内录音.wav',
+    kind: 'ride', durationS: 487.54, clockStart: '20:25', clockStartPrecision: 'minute', recordedDate: '2026-10-16',
+    vehicleLabel: '021008', from: '国家会展中心', observedFrom: '虹桥火车站', to: '淞虹路', directions: ['DN'],
+    note: '国际会展中心 normalized to 国家会展中心. 【假设】Captured portion starts at 虹桥火车站, based on the next/arrival announcements and two observed intervals; filename route retained.' },
+  { id: 'ride-1016-east-night', filename: 'Fri_21.05_北新泾~浦东南路_02A05车内录音.wav',
+    kind: 'ride', durationS: 1854.86, clockStart: '21:05', clockStartPrecision: 'minute', recordedDate: '2026-10-16',
+    vehicleLabel: '02A05', from: '北新泾', to: '浦东南路', directions: ['DN'],
+    note: 'Filename clock is approximate to the minute; entry into 北新泾 is captured before its first recorded departure.' },
 ];
 
 export interface AcousticCandidate {
@@ -59,13 +85,21 @@ export interface AcousticCandidate {
   at: number;
   /** Search tolerance 【假设】; must not be advertised as verified accuracy. */
   searchRadiusS: number;
-  evidence: 'closing-tone-pulses' | 'rising-traction-band';
+  evidence: 'closing-tone-pulses' | 'rising-traction-band' | 'opening-band-step' | 'door-impact-duration' | 'traction-switch-and-rolling';
 }
 
 export type RideConfidence = 'high' | 'medium' | 'low';
 export interface RideEventEvidence {
   confidence: RideConfidence;
-  method: 'spectral-knee' | 'closing-tone-pulses' | 'rising-traction-band' | 'user-marker' | 'file-boundary';
+  method: AcousticCandidate['evidence'] | 'spectral-knee' | 'user-marker' | 'file-boundary';
+  gainDb?: number;
+  impactAt?: number;
+  travelS?: number;
+  powerAt?: number;
+  rollingConfirmed?: boolean;
+  score?: number;
+  edgeLimited?: boolean;
+  preContextLimited?: boolean;
   /** Descending ridge band, not a speed or chainage estimate. */
   bandHz?: [number, number];
   ridgeFallDb?: number;
@@ -86,10 +120,13 @@ export interface RideStop {
   /** Adopted events in original recording seconds; null means not captured. */
   stop: number | null;
   open: number | null;
+  /** Warning onset, retained for the 10-14 closing-warning → start metric. */
   close: number | null;
+  /** Mechanical closing onset. Absent on legacy rows; uncertain estimates stay low. */
+  closingMotion?: number | null;
   start: number | null;
-  evidence: { stop?: RideEventEvidence; close?: RideEventEvidence; start?: RideEventEvidence };
-  candidates: { close?: AcousticCandidate; start?: AcousticCandidate };
+  evidence: Partial<Record<'stop' | 'open' | 'close' | 'closingMotion' | 'start', RideEventEvidence>>;
+  candidates: Partial<Record<'open' | 'close' | 'closingMotion' | 'start', AcousticCandidate>>;
   /** Bounds for automated arrival analysis, not a request for user review. */
   analysisWindowS: [number, number] | null;
   note?: string;
@@ -220,3 +257,358 @@ export const PORTAL_REVIEW = {
   method: 'user-marker' as const,
   note: '25.50 s exposed. The westbound file ends before this section; no chainage inferred.',
 };
+
+/** 2026-10-16 field measurements; old rows and snapshot remain unchanged. */
+const FIELD_1016_RIDE_LOG: RideStop[] = [
+  { recording: "ride-1016-west-core", station: "中山公园", direction: "UP",
+    stop: null, open: null, close: null, closingMotion: null, start: null,
+    evidence: {
+    }, candidates: {
+    }, analysisWindowS: null,
+    note: "Traction and next-station announcement already present near the left boundary; no complete origin door/start cycle captured.",
+  },
+  { recording: "ride-1016-west-core", station: "娄山关路", direction: "UP",
+    stop: 130, open: 131.52, close: 150.336, closingMotion: 153.37, start: 157.74,
+    evidence: {
+      stop: {"confidence": "medium","method": "spectral-knee","bandHz": [650,900],"ridgeFallDb": 3.41,"lowBeforeDb": -24.36,"lowAfterDb": -27.44,"lowFallDb": 3.08,"floorDb": -25.19,"ambiguous": false,"score": 3.84,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 12.83,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 156.37,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -30.99,"powerAt": 157.74,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 131.52,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 153.37,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 157.74,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 150.336,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [110,133],
+  },
+  { recording: "ride-1016-west-core", station: "威宁路", direction: "UP",
+    stop: 289, open: 294.25, close: null, closingMotion: null, start: null,
+    evidence: {
+      stop: {"confidence": "low","method": "spectral-knee","bandHz": [650,920],"ridgeFallDb": 2.23,"lowBeforeDb": -26.38,"lowAfterDb": -26.88,"lowFallDb": 0.5,"floorDb": -26.98,"ambiguous": false,"score": 2.58,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "low","method": "opening-band-step","ambiguous": true,"edgeLimited": false,"gainDb": 13.29,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+    }, candidates: {
+      open: {"at": 294.25,"searchRadiusS": 3,"evidence": "opening-band-step"},
+    }, analysisWindowS: [275,296],
+  },
+  { recording: "ride-1016-west-end", station: "淞虹路", direction: "UP",
+    stop: 78, open: 82.29, close: 120.768, closingMotion: 123.7, start: 129.54,
+    evidence: {
+      stop: {"confidence": "medium","method": "spectral-knee","bandHz": [600,900],"ridgeFallDb": 3.76,"lowBeforeDb": -25.24,"lowAfterDb": -26.0,"lowFallDb": 0.75,"floorDb": -26.45,"ambiguous": false,"score": 3.36,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "low","method": "opening-band-step","ambiguous": true,"edgeLimited": false,"gainDb": 7.42,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 126.7,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -31.47,"powerAt": 129.54,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 82.29,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 123.7,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 129.54,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 120.768,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [65,94],
+  },
+  { recording: "ride-1016-west-end", station: "虹桥2号航站楼", direction: "UP",
+    stop: 453, open: 455.82, close: 495.616, closingMotion: 498.62, start: 503.6,
+    evidence: {
+      stop: {"confidence": "low","method": "spectral-knee","bandHz": [650,940],"ridgeFallDb": 2.29,"lowBeforeDb": -23.16,"lowAfterDb": -26.21,"lowFallDb": 3.06,"floorDb": -27.03,"ambiguous": true,"score": 2.38,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 12.12,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 501.62,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -32.21,"powerAt": 503.6,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 455.82,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 498.62,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 503.6,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 495.616,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [440,475],
+  },
+  { recording: "ride-1016-west-end", station: "虹桥火车站", direction: "UP",
+    stop: 579, open: 584.66, close: 617.536, closingMotion: 619.13, start: 625.62,
+    evidence: {
+      stop: {"confidence": "high","method": "spectral-knee","bandHz": [600,900],"ridgeFallDb": 8.52,"lowBeforeDb": -23.64,"lowAfterDb": -25.15,"lowFallDb": 1.5,"floorDb": -26.16,"ambiguous": false,"score": 8.58,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "low","method": "opening-band-step","ambiguous": true,"edgeLimited": false,"gainDb": 11.09,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 622.13,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -27.16,"powerAt": 625.62,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 584.66,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 619.13,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 625.62,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 617.536,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [565,598],
+  },
+  { recording: "ride-1016-west-end", station: "国家会展中心", direction: "UP",
+    stop: 765, open: 767.91, close: 809.664, closingMotion: 812.57, start: 818.02,
+    evidence: {
+      stop: {"confidence": "high","method": "spectral-knee","bandHz": [650,900],"ridgeFallDb": 7.68,"lowBeforeDb": -23.03,"lowAfterDb": -23.81,"lowFallDb": 0.78,"floorDb": -23.84,"ambiguous": false,"score": 7.96,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 7.09,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 815.57,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -25.49,"powerAt": 818.02,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 767.91,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 812.57,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 818.02,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 809.664,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [755,790],
+  },
+  { recording: "ride-1016-west-end", station: "蟠祥路·国家会计学院", direction: "UP",
+    stop: 946, open: 948.72, close: null, closingMotion: null, start: null,
+    evidence: {
+      stop: {"confidence": "medium","method": "spectral-knee","bandHz": [650,900],"ridgeFallDb": 5.71,"lowBeforeDb": -21.05,"lowAfterDb": -21.63,"lowFallDb": 0.58,"floorDb": -22.12,"ambiguous": false,"score": 6.6,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "low","method": "opening-band-step","ambiguous": true,"edgeLimited": false,"gainDb": 0.88,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+    }, candidates: {
+      open: {"at": 948.72,"searchRadiusS": 3,"evidence": "opening-band-step"},
+    }, analysisWindowS: [935,951],
+    note: "Terminating announcement at 907–917 s. File ends at 951 s, shortly after low-confidence opening candidate; no closing, reversal or onward departure captured.",
+  },
+  { recording: "ride-1016-east-end", station: "虹桥火车站", direction: "DN",
+    stop: null, open: null, close: 4.992, closingMotion: 7.94, start: 19.94,
+    evidence: {
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 10.94,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -27.63,"powerAt": 19.94,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      closingMotion: {"at": 7.94,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 19.94,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 4.992,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: null,
+    note: "【假设】Filename route starts at 国家会展中心, but next/arrival PA establishes the captured first interval as 虹桥火车站→虹桥2号航站楼. Initial stop/open not captured.",
+  },
+  { recording: "ride-1016-east-end", station: "虹桥2号航站楼", direction: "DN",
+    stop: 81, open: 86.22, close: 122.048, closingMotion: 124.97, start: 135.52,
+    evidence: {
+      stop: {"confidence": "medium","method": "spectral-knee","bandHz": [650,900],"ridgeFallDb": 5.0,"lowBeforeDb": -22.54,"lowAfterDb": -22.88,"lowFallDb": 0.35,"floorDb": -22.85,"ambiguous": false,"score": 4.97,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 10.3,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 127.97,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -28.39,"powerAt": 135.52,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 86.22,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 124.97,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 135.52,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 122.048,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [73,88],
+  },
+  { recording: "ride-1016-east-end", station: "淞虹路", direction: "DN",
+    stop: 454, open: 457.95, close: null, closingMotion: null, start: null,
+    evidence: {
+      stop: {"confidence": "high","method": "spectral-knee","bandHz": [650,900],"ridgeFallDb": 10.77,"lowBeforeDb": -24.57,"lowAfterDb": -25.67,"lowFallDb": 1.1,"floorDb": -25.97,"ambiguous": false,"score": 7.61,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 7.51,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+    }, candidates: {
+      open: {"at": 457.95,"searchRadiusS": 3,"evidence": "opening-band-step"},
+    }, analysisWindowS: [440,487.54],
+  },
+  { recording: "ride-1016-east-night", station: "北新泾", direction: "DN",
+    stop: 68, open: 71.63, close: 107.264, closingMotion: 110.2, start: 114.69,
+    evidence: {
+      stop: {"confidence": "high","method": "spectral-knee","bandHz": [600,900],"ridgeFallDb": 11.75,"lowBeforeDb": -25.23,"lowAfterDb": -26.06,"lowFallDb": 0.83,"floorDb": -26.2,"ambiguous": false,"score": 12.01,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 12.65,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 113.2,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -29.52,"powerAt": 114.69,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 71.63,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 110.2,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 114.69,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 107.264,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [55,73],
+  },
+  { recording: "ride-1016-east-night", station: "威宁路", direction: "DN",
+    stop: 234, open: 234.75, close: 270.208, closingMotion: 273.18, start: 279.44,
+    evidence: {
+      stop: {"confidence": "low","method": "spectral-knee","bandHz": [650,920],"ridgeFallDb": 3.16,"lowBeforeDb": -24.09,"lowAfterDb": -23.86,"lowFallDb": -0.23,"floorDb": -24.93,"ambiguous": true,"score": 2.48,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "low","method": "opening-band-step","ambiguous": true,"edgeLimited": false,"gainDb": 10.51,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 276.18,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -31.43,"powerAt": 279.44,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 234.75,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 273.18,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 279.44,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 270.208,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [217,234],
+  },
+  { recording: "ride-1016-east-night", station: "娄山关路", direction: "DN",
+    stop: 409, open: 412.74, close: 458.176, closingMotion: 461.16, start: 468.61,
+    evidence: {
+      stop: {"confidence": "high","method": "spectral-knee","bandHz": [650,900],"ridgeFallDb": 8.63,"lowBeforeDb": -18.62,"lowAfterDb": -21.75,"lowFallDb": 3.13,"floorDb": -21.73,"ambiguous": false,"score": 10.93,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 10.52,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 464.16,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -31.06,"powerAt": 466.05,"rollingConfirmed": true},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 412.74,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 461.16,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 468.61,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 458.176,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [397,419],
+  },
+  { recording: "ride-1016-east-night", station: "中山公园", direction: "DN",
+    stop: 606, open: 610.1, close: 651.2, closingMotion: 654.15, start: 660.98,
+    evidence: {
+      stop: {"confidence": "high","method": "spectral-knee","bandHz": [650,900],"ridgeFallDb": 10.27,"lowBeforeDb": -26.41,"lowAfterDb": -27.17,"lowFallDb": 0.76,"floorDb": -26.39,"ambiguous": false,"score": 9.17,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 14.03,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 657.15,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -30.08,"powerAt": 660.98,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 610.1,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 654.15,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 660.98,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 651.2,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [592,618],
+  },
+  { recording: "ride-1016-east-night", station: "江苏路", direction: "DN",
+    stop: 789, open: 794.41, close: 850.176, closingMotion: 853.14, start: 857.82,
+    evidence: {
+      stop: {"confidence": "low","method": "spectral-knee","bandHz": [550,900],"ridgeFallDb": 4.82,"lowBeforeDb": -19.22,"lowAfterDb": -24.94,"lowFallDb": 5.72,"floorDb": -27.3,"ambiguous": false,"score": 5.3,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 14.35,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 856.14,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -30.96,"powerAt": 857.82,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 794.41,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 853.14,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 857.82,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 850.176,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [772,800],
+  },
+  { recording: "ride-1016-east-night", station: "静安寺", direction: "DN",
+    stop: 1012, open: 1014.78, close: 1032.192, closingMotion: 1035.14, start: 1040.54,
+    evidence: {
+      stop: {"confidence": "high","method": "spectral-knee","bandHz": [650,900],"ridgeFallDb": 12.44,"lowBeforeDb": -24.52,"lowAfterDb": -26.83,"lowFallDb": 2.31,"floorDb": -26.92,"ambiguous": false,"score": 13.66,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 12.79,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 1038.14,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -29.18,"powerAt": 1040.54,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 1014.78,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 1035.14,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 1040.54,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 1032.192,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [996,1016],
+  },
+  { recording: "ride-1016-east-night", station: "南京西路", direction: "DN",
+    stop: 1167, open: 1168.47, close: 1200.192, closingMotion: 1203.13, start: 1210,
+    evidence: {
+      stop: {"confidence": "medium","method": "spectral-knee","bandHz": [600,900],"ridgeFallDb": 5.7,"lowBeforeDb": -24.48,"lowAfterDb": -24.8,"lowFallDb": 0.32,"floorDb": -24.77,"ambiguous": false,"score": 3.54,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 13.68,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 1206.13,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+      start: {"confidence": "low","method": "rising-traction-band","note": "Switching-tone rule did not return a stable cue; spectral review of the rising 0.5–0.95 kHz band. Estimate retained, excluded from means."},
+    }, candidates: {
+      open: {"at": 1168.47,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 1203.13,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      close: {"at": 1200.192,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+      start: {"at": 1210,"searchRadiusS": 3,"evidence": "rising-traction-band"},
+    }, analysisWindowS: [1154,1182],
+  },
+  { recording: "ride-1016-east-night", station: "人民广场", direction: "DN",
+    stop: 1326, open: 1329.17, close: 1370.112, closingMotion: 1373.08, start: 1380.48,
+    evidence: {
+      stop: {"confidence": "high","method": "spectral-knee","bandHz": [650,900],"ridgeFallDb": 7.83,"lowBeforeDb": -25.89,"lowAfterDb": -26.8,"lowFallDb": 0.91,"floorDb": -26.58,"ambiguous": false,"score": 8.03,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 8.5,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 1376.08,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -30.86,"powerAt": 1380.48,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 1329.17,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 1373.08,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 1380.48,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 1370.112,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [1313,1341],
+  },
+  { recording: "ride-1016-east-night", station: "南京东路", direction: "DN",
+    stop: 1483, open: 1487.86, close: 1526.208, closingMotion: 1529.18, start: 1536,
+    evidence: {
+      stop: {"confidence": "medium","method": "spectral-knee","bandHz": [600,900],"ridgeFallDb": 5.67,"lowBeforeDb": -25.28,"lowAfterDb": -26.47,"lowFallDb": 1.19,"floorDb": -26.47,"ambiguous": false,"score": 6.63,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 11.15,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 1532.18,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+      start: {"confidence": "low","method": "rising-traction-band","note": "Switching-tone rule did not return a stable cue; spectral review of the rising 0.5–0.95 kHz band. Estimate retained, excluded from means."},
+    }, candidates: {
+      open: {"at": 1487.86,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 1529.18,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      close: {"at": 1526.208,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+      start: {"at": 1536,"searchRadiusS": 3,"evidence": "rising-traction-band"},
+    }, analysisWindowS: [1470,1499],
+  },
+  { recording: "ride-1016-east-night", station: "陆家嘴", direction: "DN",
+    stop: 1672, open: 1678.54, close: 1709.184, closingMotion: 1712.17, start: 1716.72,
+    evidence: {
+      stop: {"confidence": "low","method": "spectral-knee","bandHz": [650,900],"ridgeFallDb": 6.91,"lowBeforeDb": -25.72,"lowAfterDb": -26.32,"lowFallDb": 0.6,"floorDb": -26.38,"ambiguous": true,"score": 4.65,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 10.67,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+      closingMotion: {"confidence": "low","method": "door-impact-duration","impactAt": 1715.17,"travelS": 3,"note": "【假设】Mechanical impact minus 3 s travel measured in the video. This inferred onset stays low and is excluded from means."},
+      start: {"confidence": "medium","method": "traction-switch-and-rolling","floorDb": -29.09,"powerAt": 1716.72,"rollingConfirmed": false,"note": "Switching/traction cue without a sustained low-band confirmation; video shows motor sound can precede movement by about 2 s. Medium, not frame-verified."},
+      close: {"confidence": "high","method": "closing-tone-pulses","note": "Warning onset, not mechanical closing or a spoken announcement. Source-specific bands reviewed."},
+    }, candidates: {
+      open: {"at": 1678.54,"searchRadiusS": 3,"evidence": "opening-band-step"},
+      closingMotion: {"at": 1712.17,"searchRadiusS": 3,"evidence": "door-impact-duration"},
+      start: {"at": 1716.72,"searchRadiusS": 3,"evidence": "traction-switch-and-rolling"},
+      close: {"at": 1709.184,"searchRadiusS": 1,"evidence": "closing-tone-pulses"},
+    }, analysisWindowS: [1662,1685],
+  },
+  { recording: "ride-1016-east-night", station: "浦东南路", direction: "DN",
+    stop: 1829, open: 1833.72, close: null, closingMotion: null, start: null,
+    evidence: {
+      stop: {"confidence": "medium","method": "spectral-knee","bandHz": [650,900],"ridgeFallDb": 4.63,"lowBeforeDb": -26.07,"lowAfterDb": -26.53,"lowFallDb": 0.47,"floorDb": -26.5,"ambiguous": false,"score": 3.64,"edgeLimited": false,"preContextLimited": false},
+      open: {"confidence": "medium","method": "opening-band-step","ambiguous": false,"edgeLimited": false,"gainDb": 11.59,"note": "Local 400–2400 Hz band step after the estimated stop. Not a separate opening warning."},
+    }, candidates: {
+      open: {"at": 1833.72,"searchRadiusS": 3,"evidence": "opening-band-step"},
+    }, analysisWindowS: [1819,1845],
+  },
+];
+RIDE_LOG.push(...FIELD_1016_RIDE_LOG);
+
+export type RideMeasuredEvent = 'stop' | 'open' | 'closingMotion' | 'start' | 'close';
+export const RIDE_MEASURED_EVENTS: readonly RideMeasuredEvent[] = ['stop', 'open', 'closingMotion', 'start', 'close'];
+
+/** Confidence is event-specific: a weak opening never invalidates a strong
+ * stop→start dwell; a weak stop never enters either run or dwell means. */
+export function usableRideEvent(row: RideStop, event: RideMeasuredEvent): boolean {
+  const value = row[event];
+  return typeof value === 'number' && Number.isFinite(value) &&
+    row.evidence[event] !== undefined && row.evidence[event]!.confidence !== 'low';
+}
+
+/** Observed-only summaries. Never pair recordings, impute boundaries, or mix
+ * the old immutable plan snapshot with the current clock-matched plan. */
+export function summarizeRideLog(rows: readonly RideStop[]) {
+  const runs: number[] = [], dwells: number[] = [], openingLags: number[] = [];
+  const warningToStart: number[] = [], closingToStart: number[] = [];
+  const pairedRuns: number[] = [], pairedDwells: number[] = [];
+  const events = Object.fromEntries(RIDE_MEASURED_EVENTS.map(event => [event,
+    { high: 0, medium: 0, low: 0, missing: 0 }])) as Record<RideMeasuredEvent,
+      { high: number; medium: number; low: number; missing: number }>;
+  const previousBySource = new Map<RecordingId, RideStop>();
+  for (const row of rows) {
+    for (const event of RIDE_MEASURED_EVENTS) {
+      const value = row[event], evidence = row.evidence[event];
+      if (typeof value !== 'number' || !Number.isFinite(value) || !evidence) events[event].missing++;
+      else events[event][evidence.confidence]++;
+    }
+    const hasDwell = usableRideEvent(row, 'stop') && usableRideEvent(row, 'start');
+    const dwell = hasDwell ? row.start! - row.stop! : null;
+    if (dwell !== null && dwell >= 0) dwells.push(dwell);
+    if (usableRideEvent(row, 'stop') && usableRideEvent(row, 'open') && row.open! >= row.stop!)
+      openingLags.push(row.open! - row.stop!);
+    if (usableRideEvent(row, 'close') && usableRideEvent(row, 'start') && row.start! >= row.close!)
+      warningToStart.push(row.start! - row.close!);
+    if (usableRideEvent(row, 'closingMotion') && usableRideEvent(row, 'start') && row.start! >= row.closingMotion!)
+      closingToStart.push(row.start! - row.closingMotion!);
+    const previous = previousBySource.get(row.recording);
+    if (previous && previous.direction === row.direction && usableRideEvent(previous, 'start') && usableRideEvent(row, 'stop')) {
+      const run = row.stop! - previous.start!;
+      if (run >= 0) {
+        runs.push(run);
+        if (dwell !== null && dwell >= 0) { pairedRuns.push(run); pairedDwells.push(dwell); }
+      }
+    }
+    previousBySource.set(row.recording, row);
+  }
+  const metric = (values: number[]) => ({ count: values.length,
+    meanS: values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length * 100) / 100 : null });
+  return { rows: rows.length, events, run: metric(runs), dwell: metric(dwells),
+    openingLag: metric(openingLags), warningToStart: metric(warningToStart), closingToStart: metric(closingToStart),
+    paired: { count: pairedRuns.length, runMeanS: metric(pairedRuns).meanS, dwellMeanS: metric(pairedDwells).meanS } };
+}

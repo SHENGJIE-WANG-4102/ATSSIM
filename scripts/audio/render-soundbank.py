@@ -89,7 +89,7 @@ def main():
         raise ValueError('Unexpected audio output directory')
     out.mkdir(parents=True, exist_ok=True)
     source_root = pathlib.Path(manifest['sourceRoot'])
-    sources = {s['id']: source_root / s['filename'] for s in manifest['sources']}
+    sources = {s['id']: pathlib.Path(s['path']) if s.get('path') else source_root / s['filename'] for s in manifest['sources']}
     if any(not p.is_file() for p in sources.values()):
         raise ValueError('A source file is missing')
     cache = {}
@@ -140,7 +140,10 @@ def main():
     print(f'Original carriage PA reference: {voice_reference:.2f} LUFS', flush=True)
     library = {}
     needed = {id for c in clips for id in c.get('composition', [])}
-    active_parts = [p for p in manifest['parts'] if not selected or p['id'] in needed]
+    selected_parts = set(manifest.get('onlyParts') or [])
+    if selected_parts - {p['id'] for p in manifest['parts']}:
+        raise ValueError('Unknown --parts library id')
+    active_parts = [p for p in manifest['parts'] if not selected or p['id'] in needed or p['id'] in selected_parts]
     replacing = {c['id'] for c in clips} | {p['id'] for p in active_parts}
     measurements = [m for m in previous['measurements'] if m['id'] not in replacing] if previous else []
     # Constant source gains are deliberately independent of clip selection.

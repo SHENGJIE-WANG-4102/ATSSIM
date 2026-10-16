@@ -26,11 +26,43 @@ export interface OriginalAnnouncement {
   transferRange?: [number, number]; terminalOnly?: boolean;
   delayS?: number | null; advanceS?: number; measuredAdvance?: boolean;
 }
-/** User-supplied additional source: only the two door-direction sentences are
- * extracted; no station-name/safety/body material from this recording is used.
+export const VOICE_SOURCES = [
+  // User-supplied door reference: only the two door-direction sentences.
+  { id: 'door-reference', filename: '嘉定北~江苏路车内110561录音.wav', durationS: 2684.84 },
+  // User decision (D89): also use the cabin calibration video for missing BXJ.
+  { id: 'cabin-reference', filename: 'VID_20261016_195626_DOLBY.mp4', durationS: 203.244563 },
+] as const;
+/** D89: missing western names and terminal sentences only. No existing part
+ * is replaced. 【假设】 repeated PA phrases match the stock voice separately
+ * in each language; this is an acoustic comparison, not speaker authentication.
+ * Every new cut has its own local file, independent of the original WAVs.
+ * Chinese BXJ comes from the user-designated cabin video. Any suspected
+ * passenger overlap is excluded.
  */
-export const VOICE_SOURCES = [{ id: 'door-reference', filename: '嘉定北~江苏路车内110561录音.wav', durationS: 2684.84 }] as const;
+export const FIELD_1016_VOICE_PARTS: readonly VoicePart[] = ([
+  { id: 'zh-name-gjh', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '国家会展中心', source: 'ride-1016-west-end', range: [642.28, 644.00], confidence: 'medium' },
+  { id: 'en-name-gjh', language: 'en', speaker: 'onboard-en', role: 'name', name: '国家会展中心', source: 'ride-1016-west-end', range: [661.74, 664.88], confidence: 'medium' },
+  { id: 'zh-name-hqz', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '虹桥火车站', source: 'ride-1016-west-end', range: [519.36, 520.60], confidence: 'medium' },
+  { id: 'en-name-hqz', language: 'en', speaker: 'onboard-en', role: 'name', name: '虹桥火车站', source: 'ride-1016-west-end', range: [548.44, 550.56], confidence: 'medium' },
+  { id: 'zh-name-hq2', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '虹桥2号航站楼', source: 'ride-1016-west-end', range: [146.36, 148.20], confidence: 'medium' },
+  { id: 'en-name-hq2', language: 'en', speaker: 'onboard-en', role: 'name', name: '虹桥2号航站楼', source: 'ride-1016-west-end', range: [181.56, 184.12], confidence: 'medium' },
+  { id: 'zh-name-shr', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '淞虹路', source: 'ride-1016-east-end', range: [142.07, 143.03], confidence: 'medium' },
+  { id: 'en-name-shr', language: 'en', speaker: 'onboard-en', role: 'name', name: '淞虹路', source: 'ride-1016-west-end', range: [52.08, 53.44], confidence: 'medium' },
+  { id: 'zh-name-bxj', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '北新泾', source: 'cabin-reference', range: [25.78, 26.84], confidence: 'medium' },
+  { id: 'en-name-bxj', language: 'en', speaker: 'onboard-en', role: 'name', name: '北新泾', source: 'ride-1016-east-night', range: [39.70, 41.12], confidence: 'medium' },
+  { id: 'zh-name-wnl', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '威宁路', source: 'ride-1016-west-core', range: [173.88, 174.84], confidence: 'medium' },
+  { id: 'en-name-wnl', language: 'en', speaker: 'onboard-en', role: 'name', name: '威宁路', source: 'ride-1016-west-core', range: [192.16, 193.28], confidence: 'medium' },
+  { id: 'zh-name-lsg', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '娄山关路', source: 'ride-1016-west-core', range: [13.40, 14.56], confidence: 'medium' },
+  { id: 'en-name-lsg', language: 'en', speaker: 'onboard-en', role: 'name', name: '娄山关路', source: 'ride-1016-west-core', range: [34.36, 35.92], confidence: 'medium' },
+  { id: 'zh-name-zsg', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '中山公园', source: 'ride-1016-east-night', range: [483.60, 484.82], confidence: 'medium' },
+  { id: 'en-name-zsg', language: 'en', speaker: 'onboard-en', role: 'name', name: '中山公园', source: 'ride-1016-east-night', range: [504.50, 505.66], confidence: 'medium' },
+  { id: 'en-name-pxl', language: 'en', speaker: 'onboard-en', role: 'name', name: '蟠祥路·国家会计学院', source: 'ride-1016-west-end', range: [917.52, 921.84], confidence: 'medium' },
+  { id: 'zh-clearout-pxl', language: 'zh', speaker: 'onboard-zh', role: 'clearout', source: 'ride-1016-west-end', range: [912.74, 914.94], confidence: 'medium' },
+  { id: 'en-next-terminal-pxl', language: 'en', speaker: 'onboard-en', role: 'terminal-next', source: 'ride-1016-west-end', range: [853.72, 857.04], confidence: 'medium' },
+  { id: 'en-arrived-terminal-pxl', language: 'en', speaker: 'onboard-en', role: 'terminal-arrived', source: 'ride-1016-west-end', range: [915.32, 917.24], confidence: 'medium' },
+] satisfies VoicePart[]).map(p => ({ ...p, effects: p.language === 'zh' ? 'clean-speech-zh' : 'clean-speech-en', file: `voice-${p.id}.mp3` }));
 export const VOICE_PARTS: readonly VoicePart[] = [
+  ...FIELD_1016_VOICE_PARTS,
   // 用户决定：江苏路站名借站台录音。【假设】英文用专名江苏 + Road；
   // this is mixed-source pronunciation, not an original English station name.
   { id: 'zh-name-jsl', language: 'zh', speaker: 'platform-zh', role: 'name', name: '江苏路', source: 'platform-01', range: [55.90, 56.78], confidence: 'medium' },
@@ -207,6 +239,17 @@ export function onboardDoorSide(station: number, direction: 'DN' | 'UP', destina
 }
 const rendered: SoundClip[] = [];
 const announcements: OnboardAnnouncement[] = [];
+/** Explicitly authorised JSL proper-name borrowing is the sole mixed-voice
+ * exception. A future extra speaker must not silently enter a recipe. */
+export function compatibleVoiceRecipe(recipe: readonly VoicePart[], station: string): boolean {
+  return (['zh', 'en'] as const).every(language => {
+    const group = recipe.filter(p => p.language === language);
+    const speakers = new Set(group.map(p => p.speaker));
+    if (speakers.size <= 1) return true;
+    return station === '江苏路' && language === 'zh' && group.every(p => p.speaker === 'onboard-zh' ||
+      p.speaker === 'platform-zh' && (p.id === 'zh-name-jsl' || p.id === 'jsl-proper-name'));
+  });
+}
 const destinationId = (name: string) => STATIONS.find(s => s.name === name)?.id.toLowerCase();
 const originalClip = (a: OriginalAnnouncement): SoundClip => ({ id: a.id, file: `${a.id}.mp3`,
   kind: a.type === 'next' ? 'interior-departure' : 'interior-arrival', station: a.station,
@@ -216,6 +259,7 @@ const originalClip = (a: OriginalAnnouncement): SoundClip => ({ id: a.id, file: 
 rendered.push(...ORIGINAL_ONBOARD.map(originalClip));
 function composed(station: string, direction: 'DN' | 'UP', destination: string, side: 'L' | 'R', type: 'next' | 'arrived', recipe: string[]): SoundClip | undefined {
   if (!recipe.length || recipe.some(id => !parts.has(id))) return undefined;
+  if (!compatibleVoiceRecipe(recipe.map(id => parts.get(id)!), station)) throw new Error(`Incompatible PA speakers: ${station}`);
   const st = STATIONS.find(s => s.name === station)!;
   const id = `composed-${type}-${direction.toLowerCase()}-${st.id.toLowerCase()}-${destinationId(destination)}-${side.toLowerCase()}`;
   const first = parts.get(recipe[0])!;
@@ -276,6 +320,54 @@ for (let st = first; st <= last; st++) for (const direction of ['DN', 'UP'] as c
     if (type === 'next') slot.next = { clipId: clip.id, phraseAt: base?.range[0] ?? 0, delayS: base?.delayS ?? null, confidence: clip.confidence };
     else slot.arrived = { clipId: clip.id, phraseAt: base?.range[0] ?? 0,
       advanceS: base?.advanceS ?? ONBOARD_ARRIVAL_ADVANCE_S, measuredAdvance: base?.measuredAdvance ?? false, confidence: clip.confidence };
+  }
+  announcements.push(slot);
+}
+/** Original terminal PA is catalogued separately so the 10-14 timing means
+ * above remain unchanged. CN clear-out belongs inside this arrival message. */
+export const FIELD_1016_TERMINAL_CLIP: SoundClip = {
+  id: 'original-arrived-up-pxl', file: 'original-arrived-up-pxl.mp3', kind: 'interior-arrival',
+  station: '蟠祥路·国家会计学院', direction: 'UP', side: 'shared', source: 'ride-1016-west-end',
+  range: [907.20, 934.80], both: false, confidence: 'medium', provenance: 'original',
+  recordedDestination: '蟠祥路·国家会计学院', doorSide: 'L',
+};
+// Only previously absent western slots are added; the legacy loop and all its
+// original/composed selections stay as they were. Missing names suppress the
+// affected language, allowing an independently available English sentence.
+for (let st = 0; st < first; st++) for (const direction of ['DN', 'UP'] as const) for (const destination of ONBOARD_DESTINATIONS) {
+  if (st === 0 && (direction !== 'UP' || destination !== STATIONS[0].name)) continue;
+  const station = STATIONS[st], nameId = station.id.toLowerCase(), destId = destinationId(destination)!;
+  const side = onboardDoorSide(st, direction, destination), door = side === 'L' ? 'left' : 'right';
+  const terminal = st === 0;
+  const missing: string[] = [];
+  if (!parts.has(`zh-name-${nameId}`)) missing.push('中文站名／报站句');
+  if (!parts.has(`en-name-${nameId}`)) missing.push('英文站名／报站句');
+  const slot: OnboardAnnouncement = { station: station.name, direction, destination, doorSide: side,
+    source: 'ride-1016-west-end', missingSentences: missing };
+  for (const type of ['next', 'arrived'] as const) {
+    if (terminal && type === 'arrived') {
+      slot.arrived = { clipId: FIELD_1016_TERMINAL_CLIP.id, phraseAt: 907.20, advanceS: 38.80,
+        measuredAdvance: false, confidence: FIELD_1016_TERMINAL_CLIP.confidence };
+      continue;
+    }
+    const recipe: string[] = [];
+    if (parts.has(`zh-name-${nameId}`)) {
+      if (type === 'next') recipe.push('zh-terminus', `zh-name-${destId}`, 'zh-next', `zh-name-${nameId}`);
+      else recipe.push(`zh-name-${nameId}`, 'zh-arrived');
+      recipe.push(`zh-${door}`);
+      if (type === 'next') recipe.push('zh-running-safety');
+    }
+    if (parts.has(`en-name-${nameId}`)) {
+      if (type === 'next' && destination === '浦东1号2号航站楼') recipe.push('en-terminus', 'en-name-pda');
+      recipe.push(terminal ? 'en-next-terminal-pxl' : type === 'next' ? 'en-next' : 'en-arrived', `en-name-${nameId}`, `en-${door}`);
+    }
+    if (type === 'arrived' && parts.has(`zh-name-${nameId}`)) recipe.push('zh-arrival-safety');
+    const clip = composed(station.name, direction, destination, side, type, recipe);
+    if (!clip) continue;
+    slot.source = clip.source;
+    if (type === 'next') slot.next = { clipId: clip.id, phraseAt: 0, delayS: null, confidence: clip.confidence };
+    else slot.arrived = { clipId: clip.id, phraseAt: 0, advanceS: ONBOARD_ARRIVAL_ADVANCE_S,
+      measuredAdvance: false, confidence: clip.confidence };
   }
   announcements.push(slot);
 }

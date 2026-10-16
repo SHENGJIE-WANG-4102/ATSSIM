@@ -14,15 +14,20 @@ const out = resolve('public', SOUNDBANK_DIRECTORY);
 mkdirSync(out, { recursive: true });
 execFileSync('git', ['check-ignore', out], { stdio: 'pipe' });
 // Validate all sources before writing any clips.
-for (const source of [...RECORDING_SOURCES, ...VOICE_SOURCES]) {
-  const path = join(sourceRoot, source.filename);
-  if (!existsSync(path)) throw new Error(`Missing source: ${path}`);
-}
+const sources = [...RECORDING_SOURCES, ...VOICE_SOURCES].map(source => {
+  const dated = 'recordedDate' in source && source.recordedDate
+    ? join(sourceRoot, source.recordedDate.slice(5), source.filename) : undefined;
+  const path = [join(sourceRoot, source.filename), dated].find(p => p && existsSync(p));
+  if (!path) throw new Error(`Missing source: ${source.filename}`);
+  return { ...source, path };
+});
 const analysis = resolve('work/recordings/analysis');
 mkdirSync(analysis, { recursive: true });
 const onlyAt = process.argv.indexOf('--only');
 const only = onlyAt < 0 ? undefined : process.argv[onlyAt + 1].split(',');
+const partsAt = process.argv.indexOf('--parts');
+const onlyParts = partsAt < 0 ? undefined : process.argv[partsAt + 1].split(',');
 const manifest = join(analysis, 'render-manifest.json');
-writeFileSync(manifest, JSON.stringify({ sourceRoot, out, only, clips: SOUND_BANK, parts: VOICE_PARTS, gainReferences: SOURCE_GAIN_REFERENCES, sources: [...RECORDING_SOURCES, ...VOICE_SOURCES], crossfadeS: VOICE_CROSSFADE_S }));
+writeFileSync(manifest, JSON.stringify({ sourceRoot, out, only, onlyParts, clips: SOUND_BANK, parts: VOICE_PARTS, gainReferences: SOURCE_GAIN_REFERENCES, sources, crossfadeS: VOICE_CROSSFADE_S }));
 execFileSync(process.env.AUDIO_PYTHON ?? 'python', ['scripts/audio/render-soundbank.py', manifest], { stdio: 'inherit' });
 console.log(`Rendered and verified ${only?.length ?? SOUND_BANK.length} local mono MP3 clips in ${out}`);

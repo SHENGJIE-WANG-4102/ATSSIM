@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SOUND_BANK, SOUNDBANK_DIRECTORY, clipDuration } from '../../src/data/soundbank';
 import { ONBOARD_ANNOUNCEMENTS, ONBOARD_NEXT_DELAY_S, ONBOARD_ARRIVAL_ADVANCE_S,
-  ONBOARD_DESTINATIONS, ORIGINAL_ONBOARD, VOICE_PARTS, VOICE_SOURCES } from '../../src/data/onboardbank';
+  ONBOARD_DESTINATIONS, ORIGINAL_ONBOARD, VOICE_PARTS, VOICE_SOURCES, compatibleVoiceRecipe } from '../../src/data/onboardbank';
 import { RECORDING_SOURCES } from '../../src/data/ridelog';
 import { STATIONS } from '../../src/data/line2';
 const ids = new Set<string>(), files = new Set<string>();
@@ -19,6 +19,7 @@ for (const clip of SOUND_BANK) {
   if (!existsSync(join('public', SOUNDBANK_DIRECTORY, clip.file))) throw new Error(`Missing local slice: ${clip.file}`);
   for (const at of [clip.stopAt, clip.startAt, clip.otherAt]) if (at !== undefined && (at < 0 || at >= clipDuration(clip) && !(clip.anchorAfterTail && at === clip.stopAt && clip.range[0] + at < source.durationS))) throw new Error(`Invalid anchor: ${clip.id}`);
   for (const part of clip.composition ?? []) if (!VOICE_PARTS.some(p => p.id === part)) throw new Error(`Missing composition part: ${part}`);
+  if (clip.composition && !compatibleVoiceRecipe(clip.composition.map(id => VOICE_PARTS.find(p => p.id === id)!), clip.station)) throw new Error(`Incompatible PA speakers: ${clip.id}`);
 }
 for (const entry of ONBOARD_ANNOUNCEMENTS) for (const id of [entry.next?.clipId, entry.arrived?.clipId]) {
   if (!id) continue;
@@ -33,14 +34,15 @@ for (const part of VOICE_PARTS) {
   if (!source || part.range[0] < 0 || part.range[1] > source.durationS || part.range[1] <= part.range[0]) throw new Error(`Invalid voice range: ${part.id}`);
   if (part.file && !existsSync(join('public', SOUNDBANK_DIRECTORY, part.file))) throw new Error(`Missing standalone voice: ${part.id}`);
 }
-console.log(`Verified ${SOUND_BANK.length + VOICE_PARTS.filter(p => p.file).length} local files; ${ORIGINAL_ONBOARD.length} whole originals, ${VOICE_PARTS.length} library parts.`);
+console.log(`Verified ${SOUND_BANK.length + VOICE_PARTS.filter(p => p.file).length} local files; ${SOUND_BANK.filter(c => c.provenance === 'original').length} whole originals, ${VOICE_PARTS.length} library parts.`);
 console.log(`Complete PA means: departure +${ONBOARD_NEXT_DELAY_S.toFixed(2)} s; arrival -${ONBOARD_ARRIVAL_ADVANCE_S.toFixed(2)} s.`);
 console.log('\n| 站 | 方向 | 蟠祥路 | 广兰路 | 机场 |');
 console.log('|---|---|---|---|---|');
-const first = STATIONS.findIndex(s => s.id === 'JSL'), last = STATIONS.findIndex(s => s.id === 'GLL');
+const first = 0, last = STATIONS.findIndex(s => s.id === 'GLL');
 for (let st = first; st <= last; st++) for (const dir of ['DN', 'UP'] as const) {
   const statuses = ONBOARD_DESTINATIONS.map(dest => {
-    const row = ONBOARD_ANNOUNCEMENTS.find(a => a.station === STATIONS[st].name && a.direction === dir && a.destination === dest)!;
+    const row = ONBOARD_ANNOUNCEMENTS.find(a => a.station === STATIONS[st].name && a.direction === dir && a.destination === dest);
+    if (!row) return '—';
     const clips = [row.next?.clipId, row.arrived?.clipId].map(id => SOUND_BANK.find(c => c.id === id));
     if (clips.some(c => !c)) return '缺';
     return (clips.every(c => c!.provenance === 'original') ? 'original' : 'composed') + (row.missingSentences.length ? '†' : '');

@@ -3,7 +3,8 @@ import { SOUND_BANK, clipDuration, ONBOARD_ANNOUNCEMENTS, ONBOARD_NEXT_DELAY_S, 
 import { StationAudio, StationSoundPlanner, compatibleBoth, platformAnnouncement, predictStationStop, stationFrame, stationSoundEnabled,
   isUndergroundStation, RecordedSoundPlayer, type StationAudioFrame, type StationTrain, type StationSoundCommand } from '../src/ui/stationaudio';
 import { OnboardAudio, OnboardSoundPlanner, cabinVolumes, onboardFrame, type OnboardAudioFrame } from '../src/ui/onboardaudio';
-import { VOICE_PARTS, ORIGINAL_ONBOARD, ONBOARD_DESTINATIONS, onboardAnnouncement, onboardDoorSide, VOICE_CROSSFADE_S, RECORDED_VOLUME_GAINS } from '../src/data/onboardbank';
+import { VOICE_PARTS, ORIGINAL_ONBOARD, ONBOARD_DESTINATIONS, onboardAnnouncement, onboardDoorSide, VOICE_CROSSFADE_S, RECORDED_VOLUME_GAINS,
+  FIELD_1016_VOICE_PARTS, FIELD_1016_TERMINAL_CLIP, compatibleVoiceRecipe } from '../src/data/onboardbank';
 import { Audio } from '../src/ui/audio';
 import { DoorAudio, DoorSoundPlanner, doorCycleSplit, type DoorAudioFrame } from '../src/ui/dooraudio';
 import { DOOR_TAKES } from '../src/data/doorbank';
@@ -504,8 +505,59 @@ describe('whole carriage PA, exact terminus and pre-rendered compositions', () =
     }
   });
   it('cannot replace an absent station or terminus name with another station', () => {
-    expect(onboardAnnouncement('虹桥2号航站楼', 'DN', '广兰路', 'L')).toBeUndefined();
+    expect(onboardAnnouncement('唐镇', 'DN', '广兰路', 'L')).toBeUndefined();
     expect(onboardAnnouncement('静安寺', 'DN', '淞虹路', 'L')).toBeUndefined();
+  });
+  it('adds western PA from the available names, with independent local files for every new cut', () => {
+    for (const station of ['国家会展中心', '虹桥火车站', '虹桥2号航站楼', '淞虹路', '威宁路', '娄山关路', '中山公园']) {
+      for (const dir of ['DN', 'UP'] as const) for (const dest of ONBOARD_DESTINATIONS) {
+        const a = pa(station, dir, dest);
+        expect(a.missingSentences).toEqual([]);
+        for (const id of [a.next!.clipId, a.arrived!.clipId]) {
+          const c = clip(id);
+          expect(c.composition).toContain(`zh-name-${STATIONS.find(s => s.name === station)!.id.toLowerCase()}`);
+          expect(c.composition).toContain(`en-name-${STATIONS.find(s => s.name === station)!.id.toLowerCase()}`);
+        }
+      }
+    }
+    expect(FIELD_1016_VOICE_PARTS.every(p => p.file?.endsWith('.mp3'))).toBe(true);
+    expect(new Set(FIELD_1016_VOICE_PARTS.map(p => p.file)).size).toBe(FIELD_1016_VOICE_PARTS.length);
+  });
+  it('fills Chinese BXJ from the cabin video while retaining its recorded English name', () => {
+    const name = VOICE_PARTS.find(p => p.id === 'zh-name-bxj')!;
+    expect(name.source).toBe('cabin-reference');
+    expect(name.range).toEqual([25.78, 26.84]);
+    expect(VOICE_PARTS.find(p => p.id === 'en-name-bxj')!.source).toBe('ride-1016-east-night');
+    for (const dir of ['DN', 'UP'] as const) for (const dest of ONBOARD_DESTINATIONS) {
+      const a = pa('北新泾', dir, dest);
+      expect(a.missingSentences).toEqual([]);
+      for (const id of [a.next!.clipId, a.arrived!.clipId]) {
+        const recipe = clip(id).composition!;
+        expect(recipe).toContain('en-name-bxj');
+        expect(recipe).toContain('zh-name-bxj');
+        expect(recipe.indexOf('zh-name-bxj')).toBeLessThan(recipe.indexOf('en-name-bxj'));
+      }
+    }
+  });
+  it('restricts terminal clear-out to the westbound PXL terminal arrival and keeps its full source range', () => {
+    const a = pa('蟠祥路·国家会计学院', 'UP', '蟠祥路·国家会计学院');
+    expect(clip(a.arrived!.clipId)).toEqual(FIELD_1016_TERMINAL_CLIP);
+    expect(clip(a.arrived!.clipId).range).toEqual([907.20, 934.80]);
+    expect(clip(a.next!.clipId).composition).toContain('en-next-terminal-pxl');
+    expect(clip(a.next!.clipId).composition).toContain('en-name-pxl');
+    expect(onboardAnnouncement('蟠祥路·国家会计学院', 'DN', '广兰路', 'L')).toBeUndefined();
+    expect(onboardAnnouncement('蟠祥路·国家会计学院', 'UP', '浦东1号2号航站楼', 'L')).toBeUndefined();
+    expect(ORIGINAL_ONBOARD.some(row => row.id === FIELD_1016_TERMINAL_CLIP.id)).toBe(false);
+  });
+  it('rejects different speakers within a language except the explicit JSL proper-name exception', () => {
+    const zh = VOICE_PARTS.find(p => p.id === 'zh-next')!;
+    const platform = VOICE_PARTS.find(p => p.id === 'zh-name-jsl')!;
+    expect(compatibleVoiceRecipe([zh, platform], '虹桥火车站')).toBe(false);
+    expect(compatibleVoiceRecipe([zh, platform], '江苏路')).toBe(true);
+    expect(compatibleVoiceRecipe([zh, { ...platform, id: 'another-platform-name' }], '江苏路')).toBe(false);
+    for (const c of SOUND_BANK.filter(c => c.composition)) {
+      expect(compatibleVoiceRecipe(c.composition!.map(id => VOICE_PARTS.find(p => p.id === id)!), c.station)).toBe(true);
+    }
   });
   it('records every composed source part and a 30 ms join budget', () => {
     expect(VOICE_CROSSFADE_S).toBe(.03);
