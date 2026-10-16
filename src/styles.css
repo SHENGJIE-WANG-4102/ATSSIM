@@ -337,15 +337,28 @@ tr.recovered td.txt { color: var(--ok); }
 .first-last .pb-title { display: grid; grid-template-columns: 1fr 1fr; font-size: 1.7cqw; font-weight: 400; }
 .first-last .pb-title small { display: block; font-size: 1.25cqw; white-space: nowrap; }
 .pb-times-values { width: 100%; }
-.pb-dest { background: #163f9c; padding: .5cqw 1cqw; }
+.pb-dest { background: #163f9c; padding: .5cqw 1cqw; --pb-label: 4.4cqw; }
 .pb-to { display: flex; justify-content: space-between; gap: 1cqw; font-size: 2.1cqw; white-space: nowrap; overflow: hidden; }
-.pb-to-en { display: flex; gap: .8cqw; font: 2.1cqw/1.15 Arial, sans-serif; color: #fff; white-space: nowrap; overflow: hidden; min-height: 2.5cqw; }
+.pb-to-en { display: flex; gap: 1cqw; font: 2.1cqw/1.15 Arial, sans-serif; color: #fff; white-space: nowrap; overflow: hidden; min-height: 2.5cqw; }
 .pb-prefix { flex: 0 0 auto; }
+/* 开往 / To share a label column; the Chinese and English names centre on one
+ * axis to its right, as on the platform screens (10-16 photos) */
+.pb:not(.pb-schedule) .pb-to > span:first-child:not(:only-child),
+.pb:not(.pb-schedule) .pb-prefix:not(:empty) { flex: 0 0 var(--pb-label); }
+.pb:not(.pb-schedule) .pb-to > span + span { flex: 1; min-width: 0; text-align: center; overflow: hidden; }
 .pb-prefix:empty { display: none; }
 .pb-en-window { display: block; position: relative; flex: 1; min-width: 0; overflow: hidden; text-align: center; }
 .pb-en-window > span { display: inline-block; white-space: nowrap; }
 .pb-en-window > .pb-measure { position: absolute; width: max-content; visibility: hidden; left: 0; }
 .pb-info { flex: .55 1 0; align-items: center; justify-content: center; text-align: center; gap: .3cqw; }
+/* Classic column proportions from the 10-16 photos (淞虹路, 江苏路): in a train box the
+ * title bar, countdown and destination are about 30 / 39 / 31 % of its height, and the
+ * clock / station box is as tall as a title bar, about 31 % of a train box. */
+.pis-side .pb-info { flex: .31 1 0; }
+.pis-side .pb-title { flex: .30 1 0; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 0; }
+.pis-side .first-last .pb-title { display: grid; align-content: center; }
+.pis-side .pb-digits { flex: .39 1 0; }
+.pis-side .pb-dest { flex: .31 1 0; min-height: 0; display: flex; flex-direction: column; justify-content: center; }
 .pb-clockrow { display: flex; align-items: baseline; justify-content: center; gap: .8cqw; }
 .pb-info .pb-clock { line-height: 1; white-space: nowrap; font: 700 4.4cqw 'DSEG7 Classic', var(--font-mono); color: #a4e4ff; }
 .pb-info .pb-date { font-size: 2cqw; white-space: nowrap; }
@@ -383,10 +396,10 @@ tr.recovered td.txt { color: var(--ok); }
 .pis-wide .pb-digits { font-size: 4.2cqw; }
 .pis-wide .pb-next .pb-title { font-size: 1.25cqw; }
 .pis-wide .pb-next .pb-digits { font-size: 2.6cqw; }
-.pis-wide .pb-dest { background: transparent; padding: .4cqw .65cqw; }
+.pis-wide .pb-dest { background: transparent; padding: .4cqw .65cqw; --pb-label: 2.7cqw; }
 .pis-wide .pb-to { font-size: 1.25cqw; gap: .4cqw; color: #fff3a4; }
 .pis-wide .pb-to-en { font-size: 1.2cqw; min-height: 1.4cqw; gap: .4cqw; color: #fff3a4; }
-.pis-wide .pb-first .pb-dest { margin-bottom: .7cqw; }
+.pis-wide .pb-first .pb-dest { margin-bottom: .7cqw; --pb-label: 3.5cqw; }
 .pis-wide .pb-first .pb-to { font-size: 1.65cqw; }
 .pis-wide .pb-first .pb-to-en { font-size: 1.15cqw; min-height: 1.5cqw; }
 .pis-wide .pb-schedule .pb-dest { order: 0; }
