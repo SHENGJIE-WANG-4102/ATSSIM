@@ -506,6 +506,13 @@ export const OPERATIONS = {
    *  speed; the D72 morning plan's 40 s gaps lost about 60 s per turn,
    *  and once queued (next train standing at the signal) a cycle took 3'30". */
   platformTurnClear: { GLL: 60 } as Record<string, number>,
+  /** Direct passenger retirement boundaries, from the depot portal topology.
+   * A daily circulation chooses homes within the yards' balanced quotas. */
+  depotReturns: [
+    { depot: 'BZL', dir: 'UP', station: 'SHR' },
+    { depot: 'LYD', dir: 'DN', station: 'LYL' },
+    { depot: 'CSD', dir: 'DN', station: 'YDD' },
+  ] as { depot: string; dir: 'UP' | 'DN'; station: string }[],
   /** overnight stabling at terminal tails (approx) */
   // (蟠祥路: its two turnback tracks and the two places in the DN storage tail)
   terminalStabling: { PXL: 4, PDA: 2 } as Record<string, number>,

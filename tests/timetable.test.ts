@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { Sim } from '../src/sim/engine';
-import { validatePlan, applyOverlay, OVERLAY_PRESETS, terminalOccupancy, TEMPLATES, dayPeriods, yardNeed, serviceStructureIssues, platformBerth, blockTasks, allocateTerminalServices, buildStops, dwellFactorAt, outboundWindow, type ServiceRequest } from '../src/sim/timetable';
+import { validatePlan, applyOverlay, OVERLAY_PRESETS, terminalOccupancy, TEMPLATES, dayPeriods, yardNeed, depotLedger, serviceStructureIssues, platformBerth, blockTasks, allocateTerminalServices, buildStops, dwellFactorAt, outboundWindow, MAX_DIAGRAM_SHIFT_S, type ServiceRequest } from '../src/sim/timetable';
 import { buildTopology } from '../src/sim/topology';
 import { computeRunTimes } from '../src/sim/dynamics';
 import { plannedDwell } from '../src/sim/calibration';
@@ -16,6 +16,46 @@ import { FIRST_LAST } from '../src/data/firstlast';
 import { readFileSync } from 'node:fs';
 
 const fmtIssues = (xs: { code: string; text: string }[]) => xs.map((i) => `${i.code} ${i.text}`).join('\n');
+
+describe('daily depot homes', () => {
+  for (const dayType of ['weekday', 'weekend'] as const) {
+    const sim = new Sim({ dayType, dateLabel: 'daily depot ledger', startTime: 14400, seed: 1 });
+    it(`${dayType}: closes every yard and carries the last passengers to its entry`, () => {
+      const ledger = depotLedger(sim.topo, sim.plan);
+      expect(ledger.initial).toEqual(sim.depotStock);
+      expect(ledger.final).toEqual(ledger.initial);
+      ledger.peak.forEach((n, depot) => expect(n).toBeLessThanOrEqual(sim.topo.depots[depot].capacity));
+      for (const block of sim.plan.blocks) {
+        if (block.end.kind !== 'depot') continue;
+        const last = block.trips.map(id => sim.plan.trips[id]).filter(t => !t.cancelled && t.revenue).at(-1)!;
+        const depot = sim.topo.depots[block.end.depot];
+        const home = OPERATIONS.depotReturns.find(rule => rule.depot === depot.key)!;
+        expect([last.dir, STATIONS[last.to].id], `block ${block.svc}`).toEqual([home.dir, home.station]);
+      }
+      expect(sim.plan.trips.filter(t => !t.cancelled && !t.revenue && t.from === 30 && t.to === 28)).toHaveLength(0);
+      expect(validatePlan(sim.planCtx, sim.plan).filter(issue => issue.severity === 'error')).toEqual([]);
+      expect(sim.plan.fleetPeak).toBeLessThanOrEqual(86);
+    });
+    it(`${dayType}: rejects one train returning to the wrong yard`, () => {
+      const plan = structuredClone(sim.plan);
+      const from = sim.topo.depots.findIndex(yard => yard.key === 'LYD');
+      const to = sim.topo.depots.findIndex(yard => yard.key === 'CSD');
+      const block = plan.blocks.find(block => block.end.kind === 'depot' && block.end.depot === from)!;
+      block.end = { kind: 'depot', depot: to };
+      const errors = validatePlan(sim.planCtx, plan).filter(issue => issue.severity === 'error');
+      expect(errors.filter(issue => issue.code === 'YARD_BALANCE')).toHaveLength(2);
+      expect(errors.some(issue => issue.code === 'YARD_CAPACITY')).toBe(true);
+    });
+    it(`${dayType}: detects intraday overflow even when the final balance closes`, () => {
+      const plan = structuredClone(sim.plan);
+      const block = plan.blocks.find(block => block.end.kind === 'depot')!;
+      plan.trips[block.trips.at(-1)!].stops.at(-1)!.arr = 14400 - 301;
+      const issues = validatePlan(sim.planCtx, plan);
+      expect(issues.some(issue => issue.code === 'YARD_CAPACITY')).toBe(true);
+      expect(issues.some(issue => issue.code === 'YARD_BALANCE')).toBe(false);
+    });
+  }
+});
 
 describe('D73 calibrated service anchors', () => {
   const H = (h: number, m = 0) => h * 3600 + m * 60;
@@ -88,7 +128,7 @@ describe('D79–D81 Gaode service distribution', () => {
   const sim = new Sim({ dayType: 'weekday', dateLabel: 'Gaode bins', startTime: 14400, seed: 1 });
   const s = sim;
   const checks = [['北新泾', 'UP'], ['世纪公园', 'UP'], ['世纪公园', 'DN'], ['张江高科', 'UP'], ['张江高科', 'DN']] as const;
-  it('leaves at most twelve two-train misses across all checked windows and no three-train misses', () => {
+  it('leaves at most eleven two-train misses across all checked windows and no three-train misses', () => {
     let bad = 0;
     for (const [name, dir] of checks) {
       const gaode = new TextDecoder().decode(readFileSync(`reference/timetable-gaode/${name}-${dir}-weekday.txt`))
@@ -106,12 +146,13 @@ describe('D79–D81 Gaode service distribution', () => {
         }
       }
     }
-    expect(bad).toBeLessThanOrEqual(12);
+    expect(bad).toBeLessThanOrEqual(11);
   });
   it('keeps the last GLL westbound short service at 20:55 and uses LYL for late carrying returns',()=>{
     expect(s.plan.trips.some(t=>!t.cancelled&&t.revenue&&t.dir==='UP'&&t.from===22&&t.to===0&&t.stops[0].dep===20*3600+55*60)).toBe(true);
     expect(s.plan.trips.filter(t=>!t.cancelled&&t.revenue&&t.dir==='DN'&&t.to===19&&t.stops.at(-1)!.arr>=22.5*3600&&t.stops.at(-1)!.arr<23.5*3600).length).toBeGreaterThanOrEqual(4);
-    expect(s.plan.trips.some(t=>!t.cancelled&&t.revenue&&t.dir==='UP'&&t.from===19&&t.stops[0].dep>=22*3600)).toBe(true);
+    const returns=s.plan.trips.filter(t=>!t.cancelled&&t.revenue&&t.dir==='DN'&&t.to===19&&t.stops.at(-1)!.arr>=22.5*3600);
+    for(const trip of returns) expect(s.plan.blocks[trip.block].end).toEqual({kind:'depot',depot:s.topo.depots.findIndex(yard=>yard.key==='LYD')});
   });
 });
 
@@ -209,14 +250,15 @@ describe('laid-out service protection', () => {
 describe('D72 timetable structure', () => {
   const H = (h: number, m = 0) => h * 3600 + m * 60;
   const make = (dayType: DayType) => new Sim({ dayType, dateLabel: 'structure', startTime: H(4), seed: 1 });
-  it('uses a 150-second weekday AM core headway', () => {
+  it('uses a 150-second weekday AM core headway within the bounded diagram shift', () => {
     expect(TEMPLATES.weekdayAM.headway).toBe(150);
     const sim = make('weekday');
     for (const dir of ['DN', 'UP'] as const) {
       const times = sim.plan.trips.filter(t => !t.cancelled && t.dir === dir && t.revenue && t.to !== (dir === 'DN' ? 4 : 22))
         .flatMap(t => t.stops.filter(s => s.st === (dir === 'DN' ? 4 : 22) && s.dep >= H(7, 30) && s.dep < H(8, 30)).map(s => s.dep)).sort((a, b) => a - b);
       expect(times.length).toBeGreaterThan(20);
-      for (let i = 1; i < times.length; i++) expect(Math.abs(times[i] - times[i - 1] - 150)).toBeLessThan(1);
+      for (let i = 1; i < times.length; i++) expect(Math.abs(times[i] - times[i - 1] - 150)).toBeLessThanOrEqual(2 * MAX_DIAGRAM_SHIFT_S + .001);
+      expect(Math.abs((times.at(-1)! - times[0]) / (times.length - 1) - 150)).toBeLessThan(1);
     }
   });
   it('keeps short routes at 20:30, then closes them with passenger-carrying withdrawals', () => {

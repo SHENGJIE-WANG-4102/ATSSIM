@@ -8,7 +8,7 @@ import { gradePermille } from './gradient';
 import { buildTopology, linkChain, type Topology } from './topology';
 import { computeRunTimes, type RunTimes } from './dynamics';
 import {
-  generatePlan, type PlanContext,
+  generatePlan, initialDepotStock, type PlanContext,
 } from './timetable';
 import type {
   ActiveRoute, AlarmLevel, Command, DayType, Fault, Plan, PlatformState, SectionState, SignalState, SimConfig,
@@ -257,32 +257,7 @@ export class Sim {
   }
 
   private initialDepotStock(): number[] {
-    const { plan, topo } = this;
-    const stock = topo.depots.map(() => 0);
-    const ev: { t: number; d: number; v: number }[] = [];
-    for (const b of plan.blocks) {
-      if (b.start.kind === 'depot') ev.push({ t: b.start.time, d: b.start.depot, v: -1 });
-      if (b.end.kind === 'depot') {
-        const last = plan.trips[b.trips[b.trips.length - 1]];
-        ev.push({ t: last.stops[last.stops.length - 1].arr + 300, d: b.end.depot, v: 1 });
-      }
-    }
-    ev.sort((a, b) => a.t - b.t);
-    const bal = topo.depots.map(() => 0);
-    for (const e of ev) {
-      bal[e.d] += e.v;
-      stock[e.d] = Math.max(stock[e.d], -bal[e.d]);
-    }
-    const stabled = plan.blocks.filter((b) => b.start.kind === 'stable').length;
-    let total = stock.reduce((a, b) => a + b, 0) + stabled;
-    // distribute the remaining fleet as spares, each to the yard with the most free places
-    while (total < LINE_INFO.fleet) {
-      let best = 0;
-      for (let k = 1; k < stock.length; k++) if (topo.depots[k].capacity - stock[k] > topo.depots[best].capacity - stock[best]) best = k;
-      stock[best]++;
-      total++;
-    }
-    return stock;
+    return initialDepotStock(this.topo, this.plan);
   }
 
   // ------------------------------------------------------------ bookkeeping

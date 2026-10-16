@@ -167,8 +167,6 @@ interface ServiceData {
   shortClose?: number;
   carryingClose?: { from: number; to: number };
   lateHeadway: number;
-  lateReturns?: { from: number; every: number; terminal: number };
-  lateOrigins?: { countFrom: number; from: number; to: number; every: number; origin: number; terminal: number };
   standby: StandbyWindow[];
 }
 const SERVICE_DATA: Record<DayType, ServiceData> = {
@@ -193,8 +191,6 @@ const SERVICE_DATA: Record<DayType, ServiceData> = {
     shortClose: H(20, 55),
     carryingClose: { from: H(20, 50), to: H(21) },
     lateHeadway: 240,
-    lateReturns: { from: H(22, 30), every: 2, terminal: 19 },
-    lateOrigins: { countFrom: H(22), from: H(22, 10), to: H(22, 30), every: 4, origin: 19, terminal: 4 },
     standby: [{ from: H(11, 30), need: H(16), to: H(20, 30) }],
   },
   weekend: {
@@ -418,17 +414,55 @@ export interface OverlayReuse {
 export function yardNeed(topo: Topology, plan: Plan): number[] {
   const ev: { t: number; d: number; v: number }[] = [];
   for (const b of plan.blocks) {
-    if (!b.trips.some((id) => !plan.trips[id].cancelled)) continue;
+    const live = b.trips.map(id => plan.trips[id]).filter(trip => !trip.cancelled);
+    if (!live.length) continue;
     if (b.start.kind === 'depot') ev.push({ t: b.start.time, d: b.start.depot, v: -1 });
     if (b.end.kind === 'depot') {
-      const last = plan.trips[b.trips[b.trips.length - 1]];
+      const last = live.at(-1)!;
       ev.push({ t: last.stops[last.stops.length - 1].arr + 300, d: b.end.depot, v: 1 });
     }
   }
-  ev.sort((a, b) => a.t - b.t);
+  ev.sort((a, b) => a.t - b.t || a.v - b.v);
   const bal = topo.depots.map(() => 0), need = topo.depots.map(() => 0);
   for (const e of ev) { bal[e.d] += e.v; need[e.d] = Math.max(need[e.d], -bal[e.d]); }
   return need;
+}
+
+/** Physical morning stock, including unused spares. Shared by initialization
+ * and the daily ledger, so validation cannot silently invent extra vehicles. */
+export function initialDepotStock(topo: Topology, plan: Plan): number[] {
+  const stock = yardNeed(topo, plan);
+  let fleet = stock.reduce((a, b) => a + b, 0)
+    + plan.blocks.filter(block => block.start.kind === 'stable').length;
+  while (fleet < LINE_INFO.fleet) {
+    let depot = 0;
+    for (let d = 1; d < stock.length; d++)
+      if (topo.depots[d].capacity - stock[d] > topo.depots[depot].capacity - stock[depot]) depot = d;
+    stock[depot]++;
+    fleet++;
+  }
+  return stock;
+}
+
+export function depotLedger(topo: Topology, plan: Plan) {
+  const initial = initialDepotStock(topo, plan);
+  const events: { time: number; depot: number; delta: number; block: number }[] = [];
+  for (const block of plan.blocks) {
+    const live = block.trips.map(id => plan.trips[id]).filter(trip => !trip.cancelled);
+    if (!live.length) continue;
+    if (block.start.kind === 'depot') events.push({ time: block.start.time, depot: block.start.depot, delta: -1, block: block.id });
+    if (block.end.kind === 'depot') events.push({ time: live.at(-1)!.stops.at(-1)!.arr + 300, depot: block.end.depot, delta: 1, block: block.id });
+  }
+  events.sort((a, b) => a.time - b.time || a.delta - b.delta);
+  const final = initial.slice(), peak = initial.slice(), peakAt = topo.depots.map(() => OPENING.dayStart);
+  for (const event of events) {
+    final[event.depot] += event.delta;
+    if (final[event.depot] > peak[event.depot]) {
+      peak[event.depot] = final[event.depot];
+      peakAt[event.depot] = event.time;
+    }
+  }
+  return { initial, final, peak, peakAt, events };
 }
 
 /** `shift`: per yard, how many of its earliest morning exits another yard
@@ -737,24 +771,6 @@ function layoutService(ctx: PlanContext) {
       .sort((a, b) => a.stops[0].dep - b.stops[0].dep).at(-1)!;
     last.stops = buildStops(ctx, dir, from, to, dep, true, factorAt);
   }
-  if (service.lateReturns) {
-    const rule = service.lateReturns;
-    const duties = trips.filter(t => t.dir === 'DN' && t.from === W && t.revenue
-      && t.stops.find(p => p.st === rule.terminal)!.arr >= rule.from).sort((a, b) => a.stops[0].dep - b.stops[0].dep);
-    for (const [i, t] of duties.entries()) if (i % rule.every === 0 && ![OPERATIONS.lastBigEastboundDep, OPERATIONS.lastLateEastboundDep].includes(t.stops[0].dep)) {
-      trimRoute(t, t.from, rule.terminal, 'wd');
-    }
-  }
-  if (service.lateOrigins) {
-    const rule = service.lateOrigins;
-    const duties = trips.filter(t => t.dir === 'UP' && t.from === E && t.revenue
-      && t.stops.find(p => p.st === rule.origin)!.dep >= rule.countFrom).sort((a, b) => a.stops[0].dep - b.stops[0].dep);
-    for (const [i, t] of duties.entries()) {
-      const dep = t.stops.find(p => p.st === rule.origin)!.dep;
-      if (i % rule.every !== 0 || dep < rule.from || dep >= rule.to || t.stops[0].dep === OPERATIONS.lastBigWestboundDep) continue;
-      trimRoute(t, rule.origin, rule.terminal, 'wd');
-    }
-  }
   for (const [id, trip] of trips.entries()) trip.id = id;
   return { requests: trips, periods, firstService: new Set(firstService.map(service => service.id)) };
 }
@@ -989,13 +1005,13 @@ export function allocateTerminalServices(ctx: PlanContext, requests: readonly Se
   return { services, supply };
 }
 
-/** Match the laid-out services to rolling stock, then resolve bounded timing
- * conflicts. Neither step may change a service's route or cancel it. */
+/** Match draft requests to stock and daily homes, publish their final passenger
+ * boundaries, then resolve bounded timing conflicts. Published routes are fixed. */
 export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[]): Plan {
   const { topo } = ctx;
   const { requests, periods, firstService: published } = layoutService(ctx);
   const { services, supply } = allocateTerminalServices(ctx, requests, published);
-  const trips: GenTrip[] = [];
+  const drafts: GenTrip[] = [];
   const serviceStructure = new Map<Trip, ServiceIdentity>();
   const requestIssues: PlanIssue[] = [];
   for (const service of services) {
@@ -1012,18 +1028,23 @@ export function generatePlan(ctx: PlanContext, shift?: number[], stock?: number[
       requestIssues.push({ severity: 'error', code: 'SERVICE_STRUCTURE', t: request.stops[0].dep,
         text: `服务请求 ${request.id} 的固定交路或核心时隙被改写` });
     }
-    const trip = addTo(trips, service.dir, service.kind, service.from, service.to, service.stops.map(stop => ({ ...stop })), service.revenue);
+    const trip = addTo(drafts, service.dir, service.kind, service.from, service.to, service.stops.map(stop => ({ ...stop })), service.revenue);
     if (service.standby) trip.standby = true;
-    serviceStructure.set(trip, serviceIdentity(trip));
   }
-  const firstService = trips.filter(trip => published.has(trip.id));
   const W = 0, E = topo.stations.length - 1;
-  const originalDepartures = new Map(trips.map(t => [t, t.stops[0].dep]));
-  const anchors = new Set(firstService.map(t => t.id));
-  for (const trip of trips) if (isPublishedOrigin(ctx, trip)) anchors.add(trip.id);
-  spaceServiceDepartures(trips, anchors);
-  const anchorTrips = trips.filter(t => anchors.has(t.id));
-  const blocks = circulate(ctx, trips, [W, E, 4, 22, 1, 19, 28], periods, undefined, undefined, 0, undefined, undefined, shift, stock, supply);
+  const requestedDepartures = new Map(drafts.map(trip => [trip.id, trip.stops[0].dep]));
+  const anchors = new Set(published);
+  for (const trip of drafts) if (isPublishedOrigin(ctx, trip)) anchors.add(trip.id);
+  spaceServiceDepartures(drafts, anchors);
+  const blocks = circulate(ctx, drafts, [W, E, 4, 22, 1, 19, 28], periods, undefined, undefined, 0, undefined, undefined, shift, stock, supply);
+  // This is the publication boundary. Matching above selects retirement
+  // destinations; subsequent conflict handling cannot change those choices.
+  const trips = drafts.map(trip => ({ ...trip, stops: trip.stops.map(stop => ({ ...stop })) }));
+  const firstService = trips.filter(trip => published.has(trip.id));
+  const anchorTrips = trips.filter(trip => anchors.has(trip.id));
+  const originalDepartures = new Map(trips.filter(trip => requestedDepartures.has(trip.id))
+    .map(trip => [trip, requestedDepartures.get(trip.id)!]));
+  for (const trip of trips.slice(0, services.length)) serviceStructure.set(trip, serviceIdentity(trip));
   finishDepotMoves(trips, blocks);
   resolveTimingConflicts(ctx, trips, blocks, new Set(anchorTrips.map(t => t.id)), originalDepartures);
   addFixedRuns(ctx, trips, blocks, ctx.fixedRuns ?? FIXED_LATE_TRAINS);
@@ -1138,7 +1159,9 @@ const TIMING_ROUNDS = 64;
 function resolveTimingConflicts(ctx: PlanContext, trips: GenTrip[], blocks: Block[], protectedIds: Set<number>, serviceDepartures: Map<GenTrip, number>) {
   const original = trips.map(t => serviceDepartures.get(t) ?? t.stops[0].dep);
   const plan: Plan = { dayType: ctx.dayType, trips, blocks, periods: [], overlays: [], fleetPeak: 0 };
-  const errors = () => validatePlan(ctx, plan).filter(i => i.severity === 'error');
+  // Fixed late runs have not been attached yet, so the daily stock ledger
+  // is checked on the finished plan, not on this temporary timing draft.
+  const errors = () => validatePlan(ctx, plan, false).filter(i => i.severity === 'error');
   const cost = (issues: PlanIssue[]) => issues.reduce((sum, issue) =>
     sum + (issue.code === 'HEADWAY' ? 100 + Math.max(0, MIN_HEADWAY - (issue.gap ?? 0)) : 1000), 0);
   for (let round = 0; round < TIMING_ROUNDS; round++) {
@@ -1331,7 +1354,15 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
   const factorAt = (t: number) => dwellFactorAt(ctx.dayType, t);
   const pool = trips.filter((t) => t.overlay === overlay && !t.cancelled);
   const continuing = new Set(supply?.continuations.values());
-  const allForGaps = () => [...(baseTrips ?? []), ...trips.filter(t => t.block !== UNUSED_DEPOT_MOVE)];
+  let movementCount = -1;
+  let movementCache: GenTrip[] = [];
+  const allForGaps = () => {
+    if (movementCount !== trips.length) {
+      movementCache = [...(baseTrips ?? []), ...trips.filter(t => t.block !== UNUSED_DEPOT_MOVE)];
+      movementCount = trips.length;
+    }
+    return movementCache;
+  };
   const stablingNight: Record<number, number> = overlay ? {} : { 0: OPERATIONS.terminalStabling.PXL, [topo.stations.length - 1]: OPERATIONS.terminalStabling.PDA, 22: OPERATIONS.lineStabling.GLL };
   // Overnight cars take the earliest departures, including the storage-tail
   // cars. Their places are freed before the arrival wave reaches the ends.
@@ -1426,15 +1457,25 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
   const depIndex = new Map<string, number[]>();
   let depIndexN = -1;
   const depsAt = (st: number, dir: TrackDir): number[] => {
-    if (depIndexN !== allForGaps().length) { depIndex.clear(); depIndexN = allForGaps().length; }
+    // Appending a draft movement invalidates the stream. Do not repeatedly
+    // allocate/filter the entire graph just to check its size in a slot search.
+    if (depIndexN !== trips.length) { depIndex.clear(); depIndexN = trips.length; }
     const k = `${st}${dir}`;
     let v = depIndex.get(k);
     if (!v) { v = streamDeps(st, dir); depIndex.set(k, v); }
     return v;
   };
   /** a trip keeps the minimum headway to every other train at every station on its path (P1) */
-  const pathClear = (stops: PlanStop[], dir: TrackDir) =>
-    stops.every(p => depsAt(p.st, dir).every(x => Math.abs(x - p.dep) >= MIN_HEADWAY));
+  const pathClear = (stops: PlanStop[], dir: TrackDir) => stops.every(stop => {
+    const departures = depsAt(stop.st, dir);
+    let lo = 0, hi = departures.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (departures[mid] <= stop.dep - MIN_HEADWAY) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo === departures.length || departures[lo] >= stop.dep + MIN_HEADWAY;
+  });
   /** stops of a move starting at or before `latest` that fit between the other trains along the whole path */
   const fitBefore = (dir: TrackDir, latest: number, build: (t0: number) => PlanStop[], continuation?: GenTrip, accept: (st: PlanStop[]) => boolean = () => true): PlanStop[] | null => {
     const protection = continuation ? new DepIndex(allForGaps().filter(t => t !== continuation)) : null;
@@ -1820,6 +1861,8 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
         ? platformBerth(topo, T, 'DN') : topo.stations[T].turnbackBerths[0] } : { kind: 'stable', station: T });
     }
   }
+  if (!overlay) allocateDepotHomes(ctx, trips, pool, sinks.filter(A => A.next === undefined && !endOf.has(A.id)),
+    startOf, endOf, allForGaps, factorAt);
   /**
    * An added train that cannot get back to the depot between the trains of
    * the peak build-up takes over a base duty whose train has not yet left
@@ -1918,6 +1961,8 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
       if (next) {
         const feeder = trips[next.prev!];
         feeder.block = UNUSED_DEPOT_MOVE;
+        depIndexN = -1;
+        movementCount = -1;
         feeder.next = undefined; startOf.delete(feeder.id);
         A.next = next.id; next.prev = A.id;
         continue;
@@ -2069,6 +2114,107 @@ function circulate(ctx: PlanContext, trips: GenTrip[], terminals: number[], peri
   return blocks;
 }
 
+/** Allocate daily homes during draft matching, without consulting validation
+ * failures. Published services are frozen only after this allocation finishes. */
+function allocateDepotHomes(ctx: PlanContext, trips: GenTrip[], services: GenTrip[], sinks: GenTrip[],
+  starts: Map<number, Block['start']>, ends: Map<number, Block['end']>,
+  movements: () => GenTrip[], factor: (t: number) => number) {
+  const { topo } = ctx;
+  const arrival = (trip: Trip) => trip.stops.at(-1)!.arr;
+  const rules = OPERATIONS.depotReturns.map(rule => ({ depot: depotIndex(topo, rule.depot),
+    dir: rule.dir, station: STATIONS.findIndex(st => st.id === rule.station) }));
+  const reachable = (trip: Trip, rule: typeof rules[number]) => trip.dir === rule.dir
+    && (trip.dir === 'DN' ? trip.from < rule.station : trip.from > rule.station);
+  // Reserve the actual cars supplying the fixed late trains. Their last
+  // revenue destination and home belong to that fixed service's data.
+  const special = new Map<number, number>();
+  const fixedExits = topo.depots.map(() => 0), fixedReturns = topo.depots.map(() => 0);
+  for (const run of ctx.fixedRuns ?? FIXED_LATE_TRAINS) {
+    const origin = STATIONS.findIndex(st => st.id === run.from);
+    const dir: TrackDir = STATIONS.findIndex(st => st.id === run.to) > origin ? 'DN' : 'UP';
+    for (const departure of run.departures) {
+      fixedReturns[depotIndex(topo, run.depotTo)]++;
+      const candidate = sinks.filter(trip => !special.has(trip.id) && trip.dir !== dir
+        && (trip.to === 0 || trip.to === topo.stations.length - 1)
+        && (dir === 'DN' ? trip.to <= origin : trip.to >= origin)
+        && arrival(trip) >= departure - MAX_LAYOVER
+        && buildStops(ctx, dir, trip.to, origin, arrival(trip) + minTurn(trip.to), false, 1).at(-1)!.arr <= departure - 45)
+        .sort((a, b) => arrival(b) - arrival(a))[0];
+      if (candidate) special.set(candidate.id, depotIndex(topo, run.depotTo));
+      else fixedExits[depotIndex(topo, run.depotFrom)]++;
+    }
+  }
+  const returns = sinks.filter(trip => !special.has(trip.id));
+  const quota = topo.depots.map((_, depot) => [...starts.values()].filter(start => start.kind === 'depot' && start.depot === depot).length);
+  for (const depot of topo.depots) quota[depot.id] += fixedExits[depot.id] - fixedReturns[depot.id];
+
+  // A yard with fewer reachable returns than exits cannot close its daily
+  // account. Supply a draft positioning move from the nearest other yard;
+  // revenue requests and their clocks stay intact. This is also needed when
+  // mandatory fixed trains return more cars to a yard than it originally sent.
+  const serviceIds = new Set(services.map(trip => trip.id));
+  for (const rule of rules) {
+    let excess = quota[rule.depot] - returns.filter(trip => reachable(trip, rule)).length;
+    if (excess <= 0) continue;
+    const heads = [...starts.entries()].filter(([id, start]) => start.kind === 'depot'
+      && start.depot === rule.depot && !serviceIds.has(id) && trips[id].next !== undefined)
+      .map(([id]) => trips[id]).sort((a, b) => b.stops[0].dep - a.stops[0].dep);
+    for (const head of heads) {
+      if (excess <= 0) break;
+      const next = trips[head.next!];
+      const candidates = topo.depots.map((_, depot) => depot).filter(depot => depot !== rule.depot)
+        .sort((a, b) => Number(quota[a] >= 0) - Number(quota[b] >= 0)
+          || Math.abs(topo.depots[a].junctionChain - topo.stations[next.from].chain)
+            - Math.abs(topo.depots[b].junctionChain - topo.stations[next.from].chain));
+      for (const depot of candidates) {
+        const dir: TrackDir = topo.stations[next.from].chain < topo.depots[depot].junctionChain ? 'UP' : 'DN';
+        const from = exitStation(topo, depot, dir);
+        const latest = next.stops[0].dep - (dir === next.dir ? 0 : minTurn(next.from)) - 10;
+        const index = new DepIndex(movements().filter(trip => trip !== head && trip !== next));
+        let fitted = false;
+        for (const revenue of [true, false]) {
+          let start = latest - buildStops(ctx, dir, from, next.from, 0, revenue, factor).at(-1)!.arr;
+          for (let k = 0; k < 8; k++) start -= buildStops(ctx, dir, from, next.from, start, revenue, factor).at(-1)!.arr - latest;
+          for (let offset = 0; offset <= 1200; offset += 5) {
+            const stops = buildStops(ctx, dir, from, next.from, start - offset, revenue, factor);
+            if (depotStartTime(ctx, depot, { dir, stops }) < OPENING.dayStart || !index.clear(stops, dir)) continue;
+            if (!frontTurnClear(ctx, movements(), { dir, to: next.from, stops }, next.stops[0].dep, new Set([head.id, next.id]))) continue;
+            Object.assign(head, { dir, from, stops, revenue, kind: revenue ? 'ins' : 'empty' });
+            starts.set(head.id, { kind: 'depot', depot, time: 0 });
+            fitted = true;
+            break;
+          }
+          if (fitted) break;
+        }
+        if (fitted) { quota[rule.depot]--; quota[depot]++; excess--; break; }
+      }
+    }
+  }
+  // 【假设】 Distribute equivalent direct returns evenly through their
+  // withdrawal stream. No day type, individual trip, or reference-bin rule.
+  const total = quota.slice(), seen = topo.depots.map(() => 0);
+  const counts = new Map(rules.map(rule => [rule.depot, returns.filter(trip => reachable(trip, rule)).length]));
+  const ordered = returns.slice().sort((a, b) => arrival(a) - arrival(b));
+  for (const trip of ordered) {
+    const eligible = rules.filter(rule => reachable(trip, rule));
+    for (const rule of eligible) seen[rule.depot]++;
+    const deficit = (rule: typeof rules[number]) => Math.floor(total[rule.depot] * seen[rule.depot] / counts.get(rule.depot)!) - (total[rule.depot] - quota[rule.depot]);
+    const home = eligible.filter(rule => quota[rule.depot] > 0).sort((a, b) => deficit(b) - deficit(a)
+      || Math.abs(topo.stations[a.station].chain - topo.stations[trip.to].chain)
+        - Math.abs(topo.stations[b.station].chain - topo.stations[trip.to].chain))[0];
+    if (!home) continue; // An infeasible daily balance remains a validation error.
+    quota[home.depot]--;
+    if (trip.stops.some(stop => stop.st === home.station)) trimRoute(trip, trip.from, home.station, 'wd');
+    else {
+      const stops = buildStops(ctx, trip.dir, trip.to, home.station, arrival(trip) + 45, true, factor);
+      trip.to = home.station;
+      trip.kind = 'wd';
+      trip.stops = [...trip.stops.slice(0, -1), { ...trip.stops.at(-1)!, dep: stops[0].dep }, ...stops.slice(1)];
+    }
+    ends.set(trip.id, { kind: 'depot', depot: home.depot });
+  }
+}
+
 /** A returning service replaces an earlier depot feeder for the same duty.
  * Run after feeder fitting/FIFO assignment as well: their order may change.
  * 【假设】 D79: keep the arriving train in service instead of a needless yard swap. */
@@ -2163,9 +2309,8 @@ function fitOpeningFeeders(ctx: PlanContext, blocks: Block[], trips: GenTrip[], 
     const depots = topo.depots.map((_, d) => d).sort((a, z) =>
       Math.abs(topo.depots[a].junctionChain - topo.stations[target].chain) - Math.abs(topo.depots[z].junctionChain - topo.stations[target].chain));
     let fitted = false;
-    const need = yardNeed(topo, plan);
     for (const depot of depots) {
-      if (b.start.kind === 'depot' && depot !== b.start.depot && need[depot] >= topo.depots[depot].capacity) continue;
+      if (b.start.kind === 'depot' && depot !== b.start.depot) continue;
       const dir: TrackDir = topo.stations[target].chain < topo.depots[depot].junctionChain ? 'UP' : 'DN';
       const origin = exitStation(topo, depot, dir);
       if (origin === target) continue;
@@ -3006,7 +3151,7 @@ export interface PlanIssue {
   /** Circulations contributing to this conflict; used by pure overlay fitting. */
   blocks?: number[];
   severity: 'error' | 'warn';
-  code: 'SERVICE_STRUCTURE' | 'TURN_SHORT' | 'BLOCK_BREAK' | 'TERMINAL_FULL' | 'TAIL_ORDER' | 'FRONT_CONFLICT' | 'LAYOVER_LONG' | 'DEPOT_CONFLICT' | 'HEADWAY' | 'FLEET' | 'TIME_ORDER' | 'UNASSIGNED' | 'STABLE_CONFLICT' | 'TURN_HEADWAY';
+  code: 'SERVICE_STRUCTURE' | 'TURN_SHORT' | 'BLOCK_BREAK' | 'TERMINAL_FULL' | 'TAIL_ORDER' | 'FRONT_CONFLICT' | 'LAYOVER_LONG' | 'DEPOT_CONFLICT' | 'HEADWAY' | 'FLEET' | 'TIME_ORDER' | 'UNASSIGNED' | 'STABLE_CONFLICT' | 'TURN_HEADWAY' | 'YARD_CAPACITY' | 'YARD_BALANCE';
   t: number;
   text: string;
 }
@@ -3109,11 +3254,22 @@ class DepIndex {
  * Errors make the plan infeasible for the signalling model; warnings are
  * tight but workable.
  */
-export function validatePlan(ctx: PlanContext, plan: Plan): PlanIssue[] {
+export function validatePlan(ctx: PlanContext, plan: Plan, checkDepotStock = true): PlanIssue[] {
   const { topo } = ctx;
   const out: PlanIssue[] = [...(generationIssues.get(plan) ?? [])];
   const name = (st: number) => STATIONS[st].name;
   const live = plan.trips.filter((t) => !t.cancelled);
+  if (checkDepotStock) {
+    const ledger = depotLedger(topo, plan);
+    for (const [depot, yard] of topo.depots.entries()) {
+      if (ledger.peak[depot] > yard.capacity)
+        out.push({ severity: 'error', code: 'YARD_CAPACITY', t: ledger.peakAt[depot],
+          text: `${yard.name} 库存峰值 ${ledger.peak[depot]} 列，超过库位 ${yard.capacity} 列` });
+      if (ledger.final[depot] !== ledger.initial[depot])
+        out.push({ severity: 'error', code: 'YARD_BALANCE', t: ledger.events.at(-1)?.time ?? OPENING.dayStart,
+          text: `${yard.name} 夜间库存 ${ledger.final[depot]} 列，次日早晨需 ${ledger.initial[depot]} 列（含备车）` });
+    }
+  }
   // Line stabling (正线存车) must hold as many trains at night as leave it in
   // the morning, or the next day starts a train short.
   for (const [id, n] of Object.entries(OPERATIONS.lineStabling)) {
