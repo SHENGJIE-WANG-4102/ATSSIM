@@ -443,14 +443,6 @@ export function computeBody(sim: Sim, tr: Train) {
   tr.body = body;
 }
 
-/** Tail point of the train (position, direction of travel at the tail). */
-export function tailOf(_sim: Sim, tr: Train): { link: number; off: number; dir: Dir } {
-  const last = tr.body[tr.body.length - 1];
-  const histEntry = tr.hist[tr.hist.length - tr.body.length] ?? tr.hist[0];
-  const dir = histEntry.link === last.link ? histEntry.dir : tr.dir;
-  return { link: last.link, off: dir === 1 ? last.from : last.to, dir };
-}
-
 /** Change ends: head becomes the old tail. */
 export function reverseTrain(sim: Sim, tr: Train) {
   const segs = tr.body.slice();

@@ -1,6 +1,6 @@
 import type { Sim } from './engine';
 import { type Command, type Plan } from './model';
-import { addExtraTrain, applyOverlay, OVERLAY_PRESETS, validatePlan, fleetPeak, type PlanIssue } from './timetable';
+import { addExtraTrain, applyOverlay, OVERLAY_PRESETS, validatePlan, fleetPeak, depotMoves, sortDepotMoves, type PlanIssue } from './timetable';
 import { validateCommand } from './commands';
 
 export type PlanCommand = Extract<Command, { c: 'overlay' | 'addTrain' }>;
@@ -43,6 +43,8 @@ export function preparePlan(sim: Sim, cmd: PlanCommand): PlanPreview {
     skipped = result.skipped;
     extended = result.extended.map(x => ({ block: x.block, last: x.last }));
     label = preset.label;
+    // (trips of a dropped duty belong to no duty, not to whichever takes its number)
+    for (const b of plan.blocks) if (b.id >= firstBlock && b.trips.every(id => plan.trips[id].cancelled)) for (const id of b.trips) plan.trips[id].block = -1;
     plan.blocks = plan.blocks.filter(b => b.id < firstBlock || b.trips.some(id => !plan.trips[id].cancelled));
     plan.blocks.forEach((b, id) => { b.id = id; for (const trip of b.trips) plan.trips[trip].block = id; });
   }
@@ -78,21 +80,14 @@ export function yardShortfall(sim: Sim, plan: Plan): PlanIssue | undefined {
 /** The shortfall and the circulation whose departure from the yard first overdraws it. */
 function yardCheck(sim: Sim, plan: Plan): { issue: PlanIssue; block: number } | undefined {
   const balance = sim.depotStock.slice();
-  const moves: { at: number; depot: number; delta: number; block: number }[] = [];
-  for (const block of plan.blocks) {
-    if (block.start.kind === 'depot' && block.train === undefined && !sim.blockDone.has(block.id)
-      && block.trips.some(id => !plan.trips[id].cancelled)) moves.push({ at: Math.max(sim.t, block.start.time), depot: block.start.depot, delta: -1, block: block.id });
-    if (block.withdrawal && !sim.blockDone.has(block.id)) moves.push({at:block.withdrawal.at,depot:block.withdrawal.depot,delta:1,block:block.id});
-    else if (block.end.kind === 'depot' && !sim.blockDone.has(block.id)) {
-      const trips = block.trips.map(id => plan.trips[id]).filter(trip => !trip.cancelled);
-      const last = trips[trips.length - 1];
-      if (last) moves.push({ at: last.stops[last.stops.length - 1].arr + 300, depot: block.end.depot, delta: 1, block: block.id });
-    }
-  }
-  moves.sort((a, b) => a.at - b.at || a.delta - b.delta);
+  // (a duty already out has drawn its car; a finished one has returned it;
+  // a pending exit cannot happen before now)
+  const moves = sortDepotMoves(depotMoves(plan.blocks, plan.trips)
+    .filter(m => !sim.blockDone.has(m.block) && !(m.delta < 0 && plan.blocks[m.block].train !== undefined))
+    .map(m => m.delta < 0 ? { ...m, time: Math.max(sim.t, m.time) } : m));
   for (const move of moves) {
     balance[move.depot] += move.delta;
-    if (balance[move.depot] < 0) return { issue: { severity: 'error', code: 'FLEET', t: move.at, text: `${sim.topo.depots[move.depot].name} 预计库存不足` }, block: move.block };
+    if (balance[move.depot] < 0) return { issue: { severity: 'error', code: 'FLEET', t: move.time, text: `${sim.topo.depots[move.depot].name} 预计库存不足` }, block: move.block };
   }
   return undefined;
 }

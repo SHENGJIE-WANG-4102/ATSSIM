@@ -8,7 +8,7 @@ import type { StopTask, Train } from './model';
 import { STATIONS, LINE_INFO } from '../data/line2';
 import { callCrowd } from './radio';
 
-import { profile, boardingDemand, passengerMinimum, RIDERSHIP_TARGET } from './calibration';
+import { boardingDemand, inPeakSection, passengerMinimum, RIDERSHIP_TARGET } from './calibration';
 
 // Assumption: directional boarding demand starts 15 minutes before the first
 // usable train. A closed service cannot accumulate hours of rush-hour demand
@@ -33,8 +33,6 @@ function boardingWindows(sim: Sim) {
   }
   return windows;
 }
-
-export function demandProfile(sim: Sim, t: number): number { return profile(sim.plan.dayType, t); }
 
 /** Integrate the base service windows once. Persist the scale in checkpoints:
  * cancelling service during faults must not redistribute that lost demand. */
@@ -121,8 +119,7 @@ export function boardAndAlight(sim: Sim, tr: Train, platform: number, task: Stop
   sim.ridership.boardings[st][hour] += board;
   sim.ridership.alightings[st][hour] += alight;
   sim.ridership.maxLoad = Math.max(sim.ridership.maxLoad, tr.load);
-  const h = sim.t / 3600;
-  if (sim.plan.dayType === 'weekday' && st >= 4 && st <= 22 && ((h >= 6.8333 && h < 9.5) || (h >= 16.8333 && h < 19.5)))
+  if (inPeakSection(sim.plan.dayType, st, sim.t))
     sim.ridership.peakSectionLoad = Math.max(sim.ridership.peakSectionLoad, tr.load);
   return passengerMinimum(board, alight, tr.load > LINE_INFO.capacity * .95, ps.surge);
 }
@@ -154,7 +151,6 @@ export function boardWhileOpen(sim: Sim, tr: Train, platform: number, task: Stop
   const hour = Math.min(27, Math.floor(sim.t / 3600));
   sim.ridership.boardings[st][hour] += board;
   sim.ridership.maxLoad = Math.max(sim.ridership.maxLoad, tr.load);
-  const h = sim.t / 3600;
-  if (sim.plan.dayType === 'weekday' && st >= 4 && st <= 22 && ((h >= 6.8333 && h < 9.5) || (h >= 16.8333 && h < 19.5)))
+  if (inPeakSection(sim.plan.dayType, st, sim.t))
     sim.ridership.peakSectionLoad = Math.max(sim.ridership.peakSectionLoad, tr.load);
 }

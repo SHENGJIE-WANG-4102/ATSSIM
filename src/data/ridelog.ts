@@ -27,7 +27,6 @@ export type RideDirection = 'DN' | 'UP';
 export const LEGACY_RECORDING_IDS = ['ride-east', 'ride-west', 'platform-01', 'platform-03'] as const;
 export const FIELD_1016_RECORDING_IDS = ['ride-1016-west-core', 'ride-1016-west-end', 'ride-1016-east-end', 'ride-1016-east-night'] as const;
 export type RecordingId = typeof LEGACY_RECORDING_IDS[number] | typeof FIELD_1016_RECORDING_IDS[number];
-export const RIDELOG_PRECISION_S = 3;
 
 export interface RecordingSource {
   id: RecordingId;
@@ -244,18 +243,6 @@ export const RIDE_MODEL_BASELINE = {
     { direction: 'DN', from: '金科路', to: '广兰路', runS: 130.6, dwellS: 0 },
     { direction: 'UP', from: '广兰路', to: '金科路', runS: 130.5, dwellS: 20.22 },
   ],
-};
-
-/** User markers in the long eastbound file; chainage conversion is a separate task. */
-export const PORTAL_REVIEW = {
-  recording: 'ride-east' as RecordingId,
-  direction: 'DN' as RideDirection,
-  from: '龙阳路', to: '张江高科',
-  reviewS: [1790, 1910] as [number, number],
-  exitTunnel: 1815.21, enterTunnel: 1840.71,
-  confidence: 'high' as RideConfidence,
-  method: 'user-marker' as const,
-  note: '25.50 s exposed. The westbound file ends before this section; no chainage inferred.',
 };
 
 /** 2026-10-16 field measurements; old rows and snapshot remain unchanged. */

@@ -82,15 +82,6 @@ export const C = {
 export const FONT_CN = '"Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", "Source Han Sans SC", "Hiragino Sans GB", "WenQuanYi Micro Hei", sans-serif';
 export const FONT_MONO = '"JetBrains Mono", "Consolas", "Menlo", monospace';
 
-/** minimum sizes on the 3840×2160 design canvas at 100 % UI scale */
-export const SIZE = {
-  min: 20,
-  station: 40,
-  trainWindow: 30,
-  body: 24,
-  control: 56,
-};
-
 export const hex = (c: number) => `#${c.toString(16).padStart(6, '0')}`;
 
 export const DESIGN_W = 3840;

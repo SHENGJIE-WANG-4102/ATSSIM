@@ -15,7 +15,7 @@ import { takeVehicle, putVehicle } from './yard';
 import { callRmPreset, unsafeAhead, openCall } from './radio';
 import { applyEB, grantRM, setMode, distToNextSignal } from './onboard';
 import { openDoors, closeDoors } from './psd';
-import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation, departureBerthAfterReverse, depotTasks } from './timetable';
+import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation, departureBerthAfterReverse, depotTasks, DEPOT_ENTRY_CLEAR } from './timetable';
 import { STATIONS, LINE_INFO, OPERATIONS } from '../data/line2';
 import { boardAndAlight, boardWhileOpen } from './passengers';
 import { dmiNote } from './dmi';
@@ -532,9 +532,11 @@ function spawnStabled(sim: Sim, b: Block) {
   // place body ending at the berth, then reverse so the head faces the platform
   const headOff = berth.offset;
   const tr = newTrain(sim, b, berth.link, headOff, berth.dir, [{ link: berth.link, dir: berth.dir }], sim.stabledPool.shift() ?? '0200');
-  void l;
-  const first = sim.plan.trips[b.trips.find(id => !sim.plan.trips[id].cancelled)!];
-  if (b.start.berth === undefined || (berth.kind !== 'platform' && ((l.chainB - l.chainA) * berth.dir > 0) !== (first.dir === 'DN'))) reverseTrain(sim, tr);
+  // (a duty cancelled before its spawn still has its car standing here; face
+  // it as its first planned trip would)
+  const first = sim.plan.trips[b.trips.find(id => !sim.plan.trips[id].cancelled) ?? b.trips[0]];
+  const facesFirst = !first || ((l.chainB - l.chainA) * berth.dir > 0) === (first.dir === 'DN');
+  if (b.start.berth === undefined || (berth.kind !== 'platform' && !facesFirst)) reverseTrain(sim, tr);
   tr.tasks = blockTasks(topo, sim.plan, b);
   tr.lastStation = st.index;
   b.train = tr.id;
@@ -1946,7 +1948,7 @@ export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
             : task.k === 'depot' ? topo.depots[task.depot].junctionChain : at;
         distance += Math.abs(target-at); at = target;
       }
-      b.withdrawal = { depot: home.depot, at: sim.t + 60 + distance/10 + tasks.filter(task=>task.k==='reverse').length*120 + 300 };
+      b.withdrawal = { depot: home.depot, at: sim.t + 60 + distance/10 + tasks.filter(task=>task.k==='reverse').length*120 + DEPOT_ENTRY_CLEAR };
     }
     const unfinished = tr.tripId >= 0 && !plan.trips[tr.tripId].completed ? [tr.tripId] : [];
     standbyTakeover(sim, b.id, [...unfinished, ...tail], `列车${tr.svc}退出服务`);
@@ -2133,14 +2135,6 @@ function skipMissedCycle(sim: Sim, tr: Train, current: StopTask) {
   tr.tasks = [current, { ...reverse, chosen: -1 }, ...tr.tasks.slice(target)];
   sim.planDirty = true;
   return { ok: true, msg: `取消${cancelled.size}趟未开行车次，按原图接续${sim.plan.trips[(tr.tasks[2] as StopTask).trip].no}；已完成车次及原始晚点记录保留` };
-}
-
-/** Optimistic reachability: maximum line speed, minimum door cycles and cab
- * changes and acceleration/braking ceilings, ignoring all congestion and route delays. If even this cannot
- * reach any future original origin slot, withdrawing cannot lose a usable
- * future assignment. This does not retime plans or erase historical delay. */
-export function hasReachableFutureOrigin(sim: Sim, tr: Train): boolean {
-  return reachableFutureOrigin(sim, tr) >= 0;
 }
 
 function reachableFutureOrigin(sim: Sim, tr: Train): number {

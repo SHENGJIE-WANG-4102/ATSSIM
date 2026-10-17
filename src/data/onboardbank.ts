@@ -8,7 +8,6 @@
  */
 import { STATIONS } from './line2';
 import type { SoundClip, AnnouncementDoorSide } from './soundbank';
-export const ANNOUNCEMENT_LUFS = -16;
 export const VOICE_CROSSFADE_S = .03;
 export const RECORDED_VOLUME_GAINS = { small: .6, medium: 1, large: 1.45 } as const;
 export type RecordedVolume = keyof typeof RECORDED_VOLUME_GAINS;
@@ -217,15 +216,6 @@ export interface OnboardAnnouncement {
   next?: { clipId: string; phraseAt: number; delayS: number | null; confidence: SoundClip['confidence'] };
   arrived?: { clipId: string; phraseAt: number; advanceS: number; measuredAdvance: boolean; confidence: SoundClip['confidence'] };
 }
-/** Special transfer sentences remain inside the arrival message. These are
- * metadata/deletion bounds, never a separately scheduled extra broadcast.
- */
-export const SPECIAL_ONBOARD = ORIGINAL_ONBOARD.filter(a => a.transferRange).map(a => ({
-  station: a.station, direction: a.direction, type: 'special' as const,
-  source: a.source, recordedDestination: a.recordedDestination, range: a.transferRange!,
-  offsetToStopS: a.transferRange![0] - a.range[0] - a.advanceS!,
-  confidence: a.measuredAdvance ? a.confidence : 'low' as const,
-}));
 export const ONBOARD_DESTINATIONS = ['蟠祥路·国家会计学院', '广兰路', '浦东1号2号航站楼'] as const;
 /** User decision: use complete compatible recordings before compositions.
  * New sources stay outside ORIGINAL_ONBOARD to preserve the old timing means.

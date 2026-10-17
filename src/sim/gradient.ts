@@ -129,11 +129,6 @@ export function gradeAccelAt(p: Profile, head: number, s: number, len = LINE_INF
   return -G * (heightAt(p, head) - heightAt(p, head - s * len)) / len;
 }
 
-/** gravity along the travel of a train (m/s², + = helps it along) */
-export function gradeAccel(topo: Topology, link: number, off: number, dir: Dir, len = LINE_INFO.trainLength): number {
-  return gradeAccelAt(profileOf(topo), linkChain(topo, link, off), chainSense(topo, link, dir), len);
-}
-
 /** grade under the head in the direction of travel (‰, + = climbing) */
 export function gradePermille(topo: Topology, link: number, off: number, dir: Dir): number {
   const s = chainSense(topo, link, dir);

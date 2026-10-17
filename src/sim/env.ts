@@ -149,7 +149,10 @@ export function addPossession(sim: Sim, west: number, to: number): Possession {
 function possessionClear(sim: Sim, p: Possession): boolean {
   const secs = new Set(p.sections);
   const { topo } = sim;
-  const crosses = (a:number,b:number) => p.sections.some(id => {
+  // (a quick bound first: most remaining paths lie wholly outside the work)
+  let lo = Infinity, hi = -Infinity;
+  for (const id of p.sections) { lo = Math.min(lo, topo.sections[id].chainFrom); hi = Math.max(hi, topo.sections[id].chainTo); }
+  const crosses = (a:number,b:number) => lo < Math.max(a,b) && hi > Math.min(a,b) && p.sections.some(id => {
     const section=topo.sections[id];
     return section.chainFrom < Math.max(a,b) && section.chainTo > Math.min(a,b);
   });

@@ -3,7 +3,7 @@
  * injection by difficulty, run metrics and the scored end-of-run report.
  */
 import type { Sim } from './engine';
-import type { DayType, Metrics, ScenarioReport, Train, FaultKind } from './model';
+import type { DayType, Metrics, ScenarioReport, Train } from './model';
 import { STATIONS, LINE_INFO, HQ_LATE_RUN, type FixedRun } from '../data/line2';
 import { closeStation } from './holiday';
 import { injectFault } from './faults';
@@ -606,10 +606,6 @@ function injectRandom(sim: Sim, kind: string): string {
       return setWeather(sim, { rain: true, duration: dur(1500) }).msg;
   }
   return '';
-}
-
-export function isFaultKind(k: string): k is FaultKind {
-  return ['trainComm', 'trainDto', 'zcFail', 'axle', 'switch', 'signal', 'psd', 'trainFail', 'surge', 'pecu', 'trackPerson'].includes(k);
 }
 
 export { LINE_INFO };

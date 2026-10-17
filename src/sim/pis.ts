@@ -113,16 +113,19 @@ export function computePis(sim: Sim, station: number): PisData {
   // Never invent a vehicle for an unassigned/cancelled/withdrawn duty.
   for (const trip of sim.plan.trips) {
     if (trip.from !== station || !trip.revenue || trip.cancelled || trip.completed || listed.has(trip.id)) continue;
-    const first = trip.stops[0], block = sim.plan.blocks?.[trip.block];
-    if (!first?.stop || first.noBoard || first.dep < sim.t || !block?.trips.includes(trip.id)) continue;
+    const first = trip.stops[0], block = sim.plan.blocks[trip.block];
+    if (!first?.stop || first.noBoard || !block?.trips.includes(trip.id)) continue;
     const platform = topo.stations[station].platforms[trip.dir];
     if (sim.plat[platform].skip) continue;
     const vehicle = sim.trainList.find(t => t.block === block.id);
     const assigned = vehicle ? !vehicle.failed && !vehicle.withdrawn && !vehicle.skipStations.has(station)
       && vehicle.tasks.some(t => t.k === 'stop' && t.trip === trip.id)
-      : block.train === undefined && block.start.kind === 'depot' && block.start.time >= sim.t;
+      : block.train === undefined && block.start.kind === 'depot' && block.start.time >= sim.t && first.dep >= sim.t;
     if (!assigned) continue;
-    out[trip.dir].push({ dest: STATIONS[trip.to].name, destSt: trip.to, eta: first.dep-sim.t,
+    // a late car still to come keeps its place on the board, delayed by its
+    // present lateness, rather than counting to zero and vanishing
+    const expected = first.dep + (vehicle ? Math.max(0, vehicle.delay) : 0);
+    out[trip.dir].push({ dest: STATIONS[trip.to].name, destSt: trip.to, eta: Math.max(0, expected - sim.t),
       status: 'eta', trip: trip.no, load: vehicle ? Math.min(1.3, vehicle.load/LINE_INFO.capacity) : 0 });
   }
   for (const k of ['DN', 'UP'] as const) out[k] = out[k].sort((a, b) => a.eta - b.eta).slice(0, 3);

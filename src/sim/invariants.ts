@@ -91,17 +91,6 @@ export function newIntegrity(): IntegrityState {
   return { violations: [], lastAt: new Map(), fsm: new Map(), prevV: new Map(), cycles: new Map(), counts: {}, stuckSince: new Map(), heldSince: new Map(), seq: 0 };
 }
 
-/** after a restore the observed history no longer applies */
-export function resetObservation(sim: Sim) {
-  const g = sim.integrity;
-  g.fsm.clear();
-  g.prevV.clear();
-  g.cycles.clear();
-  g.stuckSince.clear();
-  g.heldSince ??= new Map();
-  g.heldSince.clear();
-}
-
 function trainSnap(sim: Sim, tr: Train): Record<string, unknown> {
   return {
     id: tr.id, svc: tr.svc, trip: tr.tripNo, vehicle: tr.vehicle, link: tr.link, off: +tr.off.toFixed(2), dir: tr.dir,

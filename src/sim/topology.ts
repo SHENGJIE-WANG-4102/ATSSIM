@@ -1541,13 +1541,6 @@ export function nextLink(
   return { link: nl, dir: nlk.a === nid ? 1 : -1, node: nid };
 }
 
-/** Previous link (walking backwards from the a/b end opposite to dir). */
-export function prevLink(topo: Topology, link: number, dir: Dir, swPos: (sw: number) => 'N' | 'R' | null) {
-  const r = nextLink(topo, link, (dir === 1 ? -1 : 1) as Dir, swPos);
-  if (!r) return null;
-  return { link: r.link, dir: (r.dir === 1 ? -1 : 1) as Dir, node: r.node };
-}
-
 /** Interpolated schematic position of an offset along a link. */
 export function linkPoint(topo: Topology, link: number, offset: number): { row: number; x: number; y: number } {
   const l = topo.links[link];

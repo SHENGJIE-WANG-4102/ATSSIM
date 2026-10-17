@@ -2,6 +2,14 @@
 import type { DayType, TrackDir } from './model';
 import { STATIONS } from '../data/line2';
 export const RIDERSHIP_TARGET = { weekday: 1_090_000, weekend: 1_090_000 * 0.7 };
+/** Where and when the reported peak section load (高峰最大断面) is taken: weekdays,
+ * 淞虹路–广兰路, the morning and evening peak hours (h). */
+export const PEAK_SECTION = { day: 'weekday' as DayType, from: 'SHR', to: 'GLL', hours: [[6.8333, 9.5], [16.8333, 19.5]] };
+export function inPeakSection(day: DayType, station: number, t: number): boolean {
+ const id=(x: string)=>STATIONS.findIndex(st=>st.id===x), h=t/3600;
+ return day===PEAK_SECTION.day && station>=id(PEAK_SECTION.from) && station<=id(PEAK_SECTION.to)
+  && PEAK_SECTION.hours.some(([a,b])=>h>=a && h<b);
+}
 export const DOOR_CYCLE = 15; // 【假设】 stop/open 3 s + measured closing warning → start 12 s (D73)
 export const MIN_DWELL = 22; // door cycle + minimum 7 s passenger exchange (D73)
 export const MAX_EARLY_HOLD = 10;

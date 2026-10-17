@@ -202,7 +202,9 @@ export function findStandby(sim: Sim, from: number, tail: number[], minK = 0, ma
     applyStandby(plan, from, tail, best);
     amend?.(plan);
     const after = [...live(validatePlan(sim.planCtx, plan)), ...[yardShortfall(sim, plan)].filter(i => i !== undefined)];
-    if (!after.some(i=>i.code==='YARD_BALANCE'||i.code==='YARD_CAPACITY') && after.every(i => before!.has(issueKey(i)))) return best;
+    // (a yard imbalance the plan already had, with the same counts, does not
+    // block a takeover; one it creates or changes does)
+    if (after.every(i => before!.has(issueKey(i)))) return best;
     next.set(best.depot, best.k + 1);
   }
   return null;
