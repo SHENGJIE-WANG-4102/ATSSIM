@@ -789,7 +789,7 @@ remains an instructor setting but is not a soak gate: no real operating day has
 that fault rate (D23). A filtered run is never certified.
 
 **Status: certification pending.** Current results and remaining paper/model gaps
-are recorded in `docs/HANDOVER.md` and `docs/signalling-model.md`; unit-test or
+are recorded in `docs/design-decisions.md` and `docs/signalling-model.md`; unit-test or
 subset success does not establish that the complete stabilization pass is finished.
 
 `soak:quick` runs **18 complete service days**: weekday/weekend × base/ciie/hongqiao
