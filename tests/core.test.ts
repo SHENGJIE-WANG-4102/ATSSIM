@@ -18,6 +18,7 @@ import { platformBerth, tripTasks, addTurnback, blockTasks, turnbackAt, validate
 import { predictedLateness, RELIEF_DELAY } from '../src/sim/standby';
 import { OPERATIONS } from '../src/data/line2';
 import { MIN_DWELL } from '../src/sim/calibration';
+import { makeSim } from './helpers';
 
 const make = () => new Sim({ dayType: 'weekday', dateLabel: 'core', startTime: 14400, seed: 7, noPossessions: true });
 const advance = (sim: Sim, seconds: number) => { const end = sim.t + seconds; while (sim.t < end - 1e-6) sim.step(); };
@@ -209,7 +210,7 @@ describe('movement and radio regressions', () => {
   it('expires the retained ZC authority at standstill without reusing released routes', () => {
     const sim = make(); sim.autoRadio = false;
     let tr = sim.trainList.find(t => t.v > 5);
-    while (!tr && sim.t < 14500) { sim.step(); tr = sim.trainList.find(t => t.v > 5); }
+    while (!tr && sim.t < 20400) { sim.step(); tr = sim.trainList.find(t => t.v > 5); }
     expect(tr).toBeDefined(); const train = tr!;
     train.manual = true; train.mode = 'CM'; train.notch = 0;
     const protectedSignals = train.maSigs.slice();
@@ -998,7 +999,7 @@ describe('fault recovery service regulation', () => {
 
 describe('standby trains (D45)', () => {
   const live = () => {
-    const sim = new Sim({ dayType: 'weekday', dateLabel: 'standby', startTime: 7 * 3600, seed: 7, noPossessions: true, autoDispatch: true });
+    const sim = makeSim('weekday',7*3600,{dateLabel:'standby',seed:7,noPossessions:true,autoDispatch:true});
     advance(sim, 600);
     return sim;
   };
@@ -1039,13 +1040,20 @@ describe('standby trains (D45)', () => {
   it('relieves a late train: the standby runs its next departure on time, the late train goes home after its current trip', () => {
     const sim = live();
     // (the one whose current trip ends first: the test runs to its end)
-    const tr = sim.trainList.filter(t => t.inService && t.block >= 0 && t.tasks.some(x => x.k === 'stop' && x.trip === t.tripId && x.dep === null)
+    const candidates = sim.trainList.filter(t => t.inService && t.block >= 0 && t.tasks.some(x => x.k === 'stop' && x.trip === t.tripId && x.dep === null)
       && sim.plan.blocks[t.block].trips.indexOf(t.tripId) < sim.plan.blocks[t.block].trips.length - 3)
-      .sort((a, b) => sim.plan.trips[a.tripId].stops.at(-1)!.arr - sim.plan.trips[b.tripId].stops.at(-1)!.arr)[0];
-    tr.delay = 1200;
+      .sort((a, b) => sim.plan.trips[a.tripId].stops.at(-1)!.arr - sim.plan.trips[b.tripId].stops.at(-1)!.arr);
+    // At the real 07:10 peak not every duty has a reachable spare. Select
+    // an incident that can be relieved, keeping the same physical checks.
+    const incident=capture(sim),nBlocks=sim.plan.blocks.length;
+    let tr=candidates[0],r={ok:false,msg:'no reachable candidate'};
+    for(const candidate of candidates) {
+      restore(sim,incident);tr=sim.trains.get(candidate.id)!;tr.delay=1200;
+      r=sim.command({c:'standby',train:tr.id});
+      if(r.ok) break;
+    }
     expect(predictedLateness(sim, tr)).toBeGreaterThan(RELIEF_DELAY);
-    const current = tr.tripId; const nBlocks = sim.plan.blocks.length;
-    const r = sim.command({ c: 'standby', train: tr.id });
+    const current = tr.tripId;
     expect(r.ok, r.msg).toBe(true);
     expect(tr.relievedBy).toBe(sim.plan.blocks[nBlocks].svc);
     // the late train keeps no stop of a trip it handed over

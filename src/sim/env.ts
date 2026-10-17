@@ -149,12 +149,23 @@ export function addPossession(sim: Sim, west: number, to: number): Possession {
 function possessionClear(sim: Sim, p: Possession): boolean {
   const secs = new Set(p.sections);
   const { topo } = sim;
+  const crosses = (a:number,b:number) => p.sections.some(id => {
+    const section=topo.sections[id];
+    return section.chainFrom < Math.max(a,b) && section.chainTo > Math.min(a,b);
+  });
   const west = topo.sections[p.sections[0]]?.station ?? 0;
   for (const tr of sim.trainList) {
     if (tr.phase === 'stabled') continue;
     for (const b of tr.body) if (secs.has(topo.links[b.link].section)) return false;
     // trains still due to run through the interval
+    let from=sim.trainChain(tr);
     for (const t of tr.tasks) {
+      const to=t.k==='stop'||t.k==='reverse'?topo.stations[t.station].chain
+        :t.k==='stable'&&t.berth>=0?topo.stations[topo.berths[t.berth].station]?.chain
+          :t.k==='depot'?topo.depots[t.depot].junctionChain:undefined;
+      // Non-stopping empty moves can have no intermediate stop tasks. Their
+      // whole remaining path still has to clear before the work can start.
+      if(to!==undefined) {if(crosses(from,to)) return false;from=to;}
       if (t.k === 'stop' && Math.abs(t.station - west) <= 2) return false;
       if (t.k === 'depot') {
         const j = topo.depots[t.depot].junctionChain;
@@ -162,6 +173,18 @@ function possessionClear(sim: Sim, p: Possession): boolean {
         const lo = Math.min(j, ch);
         const hi = Math.max(j, ch);
         if (p.sections.some((s) => topo.sections[s].chainFrom < hi && topo.sections[s].chainTo > lo)) return false;
+      }
+    }
+  }
+  for(const block of sim.plan.blocks) {
+    if(block.train!==undefined||sim.blockDone.has(block.id)||block.start.kind!=='depot'||block.start.time>=p.to) continue;
+    let from=topo.depots[block.start.depot].junctionChain;
+    for(const trip of block.trips.map(id=>sim.plan.trips[id]).filter(t=>!t.cancelled&&!t.completed)) {
+      if(trip.stops[0].dep>=p.to) break;
+      for(const stop of trip.stops) {
+        const to=topo.stations[stop.st].chain;
+        if(crosses(from,to)) return false;
+        from=to;
       }
     }
   }

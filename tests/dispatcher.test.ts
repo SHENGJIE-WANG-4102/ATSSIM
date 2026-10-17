@@ -8,7 +8,7 @@ import { hotStandby, predictedLateness } from '../src/sim/standby';
 import type { StopTask, Train } from '../src/sim/model';
 import { makeSim, runFor, runUntil, assertNoCollision, assertIntegrity, pickTrain, dirOf } from './helpers';
 import { capture, restore } from '../src/sim/state';
-import { depotLedger } from '../src/sim/timetable';
+import { blockTasks, depotLedger } from '../src/sim/timetable';
 
 const st = (sim: Sim, name: string) => sim.topo.stations.find((s) => s.name === name)!;
 const H = 8 * 3600;
@@ -114,7 +114,11 @@ describe('dispatcher commands', () => {
     const added = sim.plan.trips.slice(before).filter(t => t.revenue && t.overlay?.startsWith('ciie'));
     // D79 keeps the base peak until 10:00. Only one candidate pair fits
     // this opening request; its return lacks a depot slot and is reported.
-    const service = added.filter(t => (t.from === 1 && t.to === 22) || (t.from === 22 && t.to === 1));
+    // An unavailable origin tail may move out to the next rear turnback;
+    // compare the requested section, which keeps its published calls.
+    const service = added.filter(t => t.dir==='DN'
+      ? t.stops.some(s=>s.st===1)&&t.to===22
+      : t.from>=22&&t.stops.some(s=>s.st===22)&&t.to===1);
     expect(service.length).toBe(2);
     const omitted = service.filter(t => t.cancelled);
     expect(omitted).toHaveLength(1);
@@ -212,10 +216,16 @@ describe('dispatcher commands', () => {
     const checkpoint = capture(sim);
     for (const [station, dir, home] of [[17, 'UP', 0], [24, 'DN', 2]] as const) {
       restore(sim, checkpoint);
-      const lost = sim.trainList.find(t => t.inService && !t.withdrawn && t.block >= 0
+      const pick = () => sim.trainList.find(t => t.inService && !t.withdrawn && t.block >= 0
         && sim.plan.blocks[t.block].end.kind === 'depot' && (sim.plan.blocks[t.block].end as {depot:number}).depot === home
-        && sim.plan.trips[t.tripId]?.dir === dir && sim.plan.trips[t.tripId].stops.some(s => s.st === station && s.dep > sim.t + 300 && s.dep < sim.t + 1000))!;
+        && sim.plan.trips[t.tripId]?.dir === dir && sim.plan.trips[t.tripId].stops.some(s => s.st === station && s.dep > sim.t + 300 && s.dep < sim.t + 1000));
+      // Depot reuse changes which duty carries the next call. Choose the
+      // incident from actual traffic, retaining the same short response window.
+      const until=sim.t+900;
+      while(!pick()&&sim.t<until) runFor(sim,30,stepCheck);
+      const lost=pick()!;
       expect(lost, `middle ${station}`).toBeDefined();
+      const incident=capture(sim);
       const trip = structuredClone(sim.plan.trips[lost.tripId]);
       const lostDuty = sim.plan.blocks[lost.block].trips.slice();
       const cut = trip.stops.findIndex(s => s.st === station);
@@ -228,7 +238,7 @@ describe('dispatcher commands', () => {
       const baseline = lostDuty.map(id=>sim.plan.trips[id]).filter(t => t.revenue && !t.cancelled && !t.completed && t.block !== lost.block && t.stops[0].dep >= now)
         .sort((a,b) => a.stops[0].dep-b.stops[0].dep)[0]?.stops[0].dep ?? Infinity;
 
-      restore(sim, checkpoint); sim.autoDispatch = true;
+      restore(sim, incident); sim.autoDispatch = true;
       const hot = sim.trainList.find(t => hotStandby(sim,t)?.station === station)!;
       const originalCount = sim.plan.trips.length;
       expect(sim.command({c:'withdraw',train:lost.id}).ok).toBe(true);
@@ -237,7 +247,14 @@ describe('dispatcher commands', () => {
       expect(sim.plan.trips[trip.id].cancelled).toBe(true);
       expect(suffix.stops.slice(1)).toEqual(trip.stops.slice(cut + 1));
       expect(suffix.stops[0].dep).toBe(trip.stops[cut].dep);
-      if (station === 24) expect(suffix.stops[0]).toMatchObject({stop:false,noBoard:true});
+      if (station === 24) {
+        expect(suffix.stops[0]).toMatchObject({stop:false,noBoard:true});
+        const cover=sim.plan.trips.slice(originalCount).find(t=>!t.revenue&&t.to===station)!;
+        expect(cover.standby).toBe(true);
+        expect(cover.stops.at(-1)!.stop).toBe(false);
+        const reverse=blockTasks(sim.topo,sim.plan,sim.plan.blocks[cover.block]).find(t=>t.k==='reverse'&&t.station===station);
+        expect(reverse?.k==='reverse'&&sim.topo.berths[reverse.chosen].link).toBe(hot.link);
+      }
       const ledger = depotLedger(sim.topo,sim.plan);
       expect(ledger.final).toEqual(ledger.initial);
       expect(suffix.stops[0].dep-now).toBeLessThan(1000);

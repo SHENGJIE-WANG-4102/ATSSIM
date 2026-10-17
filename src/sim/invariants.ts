@@ -279,12 +279,41 @@ function reachable<S extends string>(m: Machine<S>, from: S, to: S): boolean {
   return m.table.some((x) => x.from === from && m.table.some((y) => y.from === x.to && y.to === to));
 }
 
-const observationKeys: Record<string, string[]> = {};
-function observe<S extends string>(sim: Sim, m: Machine<S>, id: number, state: S, seen: Set<string>, tr?: Train) {
+interface Observation { key: string; machine: string; id: number; seen: number; state?: string }
+interface Observations { epoch: number; entries: Observation[]; machines: Record<string, (Observation | undefined)[]> }
+// Runtime-only visitation marks avoid rebuilding/hashing a Set of every
+// entity at 10 Hz. Checkpoints keep the authoritative FSM map; restoring
+// its IntegrityState creates a fresh index, including disappeared entities.
+const observations = new WeakMap<IntegrityState, Observations>();
+function observationIndex(g: IntegrityState): Observations {
+  let index = observations.get(g);
+  if (!index) {
+    index = { epoch: 0, entries: [], machines: {} };
+    for (const [key,state] of g.fsm) {
+      const colon = key.indexOf(':'), machine = key.slice(0,colon), id = Number(key.slice(colon+1));
+      const entry = { key, machine, id, seen: 0, state };
+      (index.machines[machine] ??= [])[id] = entry;
+      index.entries.push(entry);
+    }
+    observations.set(g,index);
+  }
+  index.epoch++;
+  return index;
+}
+function observe<S extends string>(sim: Sim, m: Machine<S>, id: number, state: S, seen: Observations, tr?: Train) {
   const g = sim.integrity;
-  const keys = observationKeys[m.name] ??= [];
-  const key = keys[id] ??= `${m.name}:${id}`;
-  seen.add(key);
+  const entities = seen.machines[m.name] ??= [];
+  let entry = entities[id];
+  if (!entry) {
+    entry = entities[id] = { key: `${m.name}:${id}`, machine: m.name, id, seen: 0 };
+    seen.entries.push(entry);
+  }
+  entry.seen = seen.epoch;
+  // Only this observer writes the FSM map between restores. Most entities
+  // stay in the same state, so compare locally before its string-key lookup.
+  if (entry.state === state) return;
+  entry.state = state;
+  const key = entry.key;
   // an entity without a record is in the machine's rest state (a route not in sim.routes is idle)
   const prev = (g.fsm.get(key) ?? (m.name === 'route' ? 'idle' : undefined)) as S | undefined;
   if (prev === state) return;
@@ -306,7 +335,7 @@ function observe<S extends string>(sim: Sim, m: Machine<S>, id: number, state: S
 
 function observeMachines(sim: Sim) {
   const g = sim.integrity;
-  const seen = new Set<string>();
+  const seen = observationIndex(g);
   for (const tr of sim.trainList) {
     const id = tr.id;
     observe(sim, MODE, id, modeState(tr), seen, tr);
@@ -319,13 +348,17 @@ function observeMachines(sim: Sim) {
   for (const c of sim.calls) observe(sim, CALL, c.id, c.state, seen);
   for (const f of sim.faults) observe(sim, FAULT, f.id, f.stage, seen);
   // entities that disappeared: routes go back to idle; trains / calls / faults leave the observation
-  for (const [key, st] of g.fsm) {
-    if (seen.has(key)) continue;
-    if (key.startsWith('route:')) {
-      if (!reachable(ROUTE, st as never, 'idle' as never)) violate(sim, 'FSM', [], `进路[${key.slice(6)}]：${st}→idle 不在转换表中`, key);
+  let kept = 0;
+  for (const entry of seen.entries) {
+    if (entry.seen === seen.epoch) { seen.entries[kept++] = entry; continue; }
+    const {key,machine,id} = entry, st = g.fsm.get(key);
+    if (machine === 'route' && st !== undefined) {
+      if (!reachable(ROUTE, st as never, 'idle' as never)) violate(sim, 'FSM', [], `进路[${id}]：${st}→idle 不在转换表中`, key);
     }
     g.fsm.delete(key);
+    seen.machines[machine][id] = undefined;
   }
+  seen.entries.length = kept;
 }
 
 // ---------------------------------------------------------------- liveness (1 Hz)

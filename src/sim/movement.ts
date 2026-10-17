@@ -168,6 +168,10 @@ export function scanAhead(sim: Sim, tr: Train, goal: number, cap = MA_SCAN_CAP):
   // (a hot standby not yet called out does not queue for the platform, D70)
   const t0 = tr.tasks[0];
   const standing = t0?.k === 'stop' && (t0.standby || t0.stabledOut) && t0.dep !== null && t0.dep - sim.t > STANDBY_CALL;
+  // The preceding reversal (or overnight spawn) already placed the body at
+  // its registered berth. Withholding ARS alone still lets ATO creep to the
+  // exit signal. Keep authority here until the scheduled call-out instead.
+  if (standing && !tr.manual) obstacle(res, 0, t0.standby ? '热备待命' : '存车待发', 'REGULATION');
   if (pulloutStart && !standing) {
     const holder = trainInSection(sim, topo.links[berth.link].section, tr.id);
     if (holder >= 0) obstacle(res, 0, '折返发车站台有车，等待平台出清', 'BERTH_WAIT', false, holder);
@@ -486,12 +490,14 @@ export function advance(sim: Sim, tr: Train, ds: number): boolean {
     const sigId = topo.signalByEntry.get(nx.node * 65536 + nx.link);
     if (sigId !== undefined) {
       if (!passAuthorised(sim, tr, sigId, ds - rem)) spad(sim, tr, sigId);
-      sim.onSignalPassed(tr, sigId);
     }
     tr.link = nx.link;
     tr.dir = nx.dir;
     tr.off = nx.dir === 1 ? 0 : topo.links[nx.link].len;
     tr.hist.push({ link: nx.link, dir: nx.dir });
+    // The cab is now inside the signal. A pull-out may change RM to ATP
+    // here, whose immediate authority scan must start from this new link.
+    if (sigId !== undefined) sim.onSignalPassed(tr, sigId);
   }
   return true;
 }
@@ -741,11 +747,15 @@ export function updateTrainMotion(sim: Sim, tr: Train, dt: number) {
   // Distinguish the new restrictive braking target from the authority already
   // issued. Do not replace an issued EOA with an unreachable one under a train.
   const prevEoa = tr.lastMa - tr.lastDs;
-  if (!rm && !tr.maCut && Number.isFinite(prevEoa) && scan.maDist < prevEoa - 0.5 && scan.maDist < (v0 * v0) / (2 * PERF.bEbGuaranteed)) {
+  if (!rm && tr.v > .01 && !tr.maCut && Number.isFinite(prevEoa) && scan.maDist < prevEoa - 0.5 && scan.maDist < (v0 * v0) / (2 * PERF.bEbGuaranteed)) {
     tr.maCut = true;
     if (!tr.eb) triggerEB(sim, tr, `移动授权回撤(${scan.maReason})`, 'atp');
     sim.log('B', '信号', `列车 ${tr.svc}-${tr.tripNo} 移动授权被回撤（${scan.maReason}），紧急制动`, { key: `macut-${tr.id}`, code: scan.maCode, train: tr.id });
   }
+  // Accept the restrictive replacement in this braking step as soon as the
+  // train reaches standstill, rather than retaining a released route for
+  // one more step until the next call's standstill check.
+  if (tr.maCut && tr.v <= .01) tr.maCut = false;
   const issued = !rm && tr.maCut && tr.eb ? Math.max(0, prevEoa) : scan.maDist;
   if (!rm && tr.maCut && tr.eb) tr.maDist = issued;
   tr.lastDs = ds;
@@ -781,6 +791,11 @@ export function withdrawAuthority(sim: Sim, tr: Train) {
   tr.maFarCode = s.maCode;
   tr.maFarTrain = s.maTrain;
   tr.maSigs = s.maSignals;
+  // A mode change can arrive between motion ticks. Refresh the protection
+  // speeds along with its new authority, rather than retaining the speed
+  // limit of the previous position/mode until the next motion calculation.
+  tr.vPermit = tr.mode === 'RM' ? s.vBody : Math.max(0, Math.min(s.vBody, brakingSpeed(s.maDist,0,PERF.bPermit)));
+  tr.vEbi = (tr.mode === 'RM' ? s.vBody : Math.max(0, Math.min(s.vBody, brakingSpeed(s.maDist,0,PERF.bEbGuaranteed)))) + PERF.atpTolerance;
   if (s.maDist < tr.maDist) {
     tr.maDist = s.maDist;
     tr.maReason = s.maReason;

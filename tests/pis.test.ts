@@ -125,6 +125,26 @@ describe('PIS field cadence', () => {
 });
 
 describe('PIS actual task destination', () => {
+  it('counts down an assigned origin while its car is still on an earlier trip', () => {
+    const station=0, departure=21*3600+57*60;
+    const task={k:'stop',station,berth:0,trip:1,arr:null,dep:departure,revenue:true,doors:true};
+    const sim={
+      t:21*3600+50*60,
+      topo:{berths:[{platform:0},{platform:1}],platforms:[{track:'DN'},{track:'UP'}],stations:[{platforms:{DN:0,UP:1}}]},
+      trainList:[{block:0,failed:false,withdrawn:false,delay:0,phase:'run',stopDist:Infinity,v:10,load:0,
+        skipStations:new Set(),tasks:[{...task,berth:1,trip:0,arr:21*3600+51*60,dep:null},
+          ...Array.from({length:17},()=>({...task,station:1,trip:0})),task]}],
+      plan:{blocks:[{id:0,train:42,trips:[0,1],start:{kind:'depot',depot:0,time:18000}}],trips:[
+        {id:0,from:30,to:0,dir:'UP',stops:[]},
+        {id:1,block:0,no:'last-origin',from:station,to:30,dir:'DN',revenue:true,stops:[{st:station,arr:departure,dep:departure,stop:true},{st:30,arr:departure+5600,dep:departure+5600,stop:true}]},
+      ]},
+      plat:[{skip:false,surge:1,limitUntil:0},{skip:false,surge:1,limitUntil:0}],env:{wind:0,rain:false},alarms:new Map(),
+    } as unknown as Sim;
+    expect(formatPisCountdown(computePis(sim,station).DN[0])).toBe('07:00');
+    expect(computePis(sim,station).UP[0].destSt).toBe(station);
+    sim.trainList=[];
+    expect(computePis(sim,station).DN).toEqual([]);
+  });
   it.each(['LYL', 'YDD', 'SHR'] as const)('preserves %s both upstream and at its terminal arrival', (id) => {
     const dest = STATIONS.findIndex((s) => s.id === id);
     for (const terminal of [false, true]) {

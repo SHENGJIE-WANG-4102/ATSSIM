@@ -15,7 +15,7 @@ import { SEC, SW, PLT, SIG_ASPECT } from '../sim/model';
 import { STATIONS, LINE_INFO } from '../data/line2';
 import type { Store, Selection } from './store';
 import { C, FONT_CN, FONT_MONO, delayColor, loadColor } from './theme';
-import { Geometry, type P } from './geometry';
+import { Geometry, TRAIN_BODY_PX, type P } from './geometry';
 import { LabelIndex, textWidth, type Rect } from './labels';
 
 const LINE_COLORS: Record<string, number> = {
@@ -898,7 +898,9 @@ export class TrackView {
         const rowI = k % perCol;
         const x = yg.x + 10 + col * colW;
         const yy = yg.y + padTop + rowI * pitch + pitch / 2;
-        g.moveTo(x, yy).lineTo(x + colW - 12, yy).stroke({ width: 1.5, color: 0x2a3d50 });
+        const railEnd = x + colW - 12;
+        g.moveTo(x, yy).lineTo(railEnd, yy).stroke({ width: 2, color: 0x688096 });
+        g.moveTo(x, yy-3).lineTo(x, yy+3).moveTo(railEnd, yy-3).lineTo(railEnd, yy+3).stroke({ width: 1.5, color: 0x688096 });
         const vw = (colW - 18) / Math.max(1, y.perTrack) - 4;
         y.tracks[k].forEach((_, j) => {
           g.roundRect(x + 3 + j * (vw + 4), yy - Math.min(4, pitch / 2 - 1), vw, Math.min(8, pitch - 2), 2).fill({ color: 0x6f8ba6 });
@@ -925,20 +927,21 @@ export class TrackView {
       if (!tg) tg = this.createTrain(tr);
       const color = this.bodyColor(tr);
       const sel = this.store.selection?.kind === 'train' && this.store.selection.id === tr.id;
-      const bodyKey = `${tr.body.map((v) => v.toFixed(0)).join(',')}|${color}|${sel}`;
+      const bodyKey = `${tr.body.join(',')}|${tr.dir}|${tr.v < .05}|${this.z}|${color}|${sel}`;
       if (bodyKey !== tg.bodyKey) {
         tg.bodyKey = bodyKey;
         tg.body.clear();
         let drawn = false;
-        for (let i = 0; i < tr.body.length; i += 3) {
-          for (const s of this.geom.linkSpan(tr.body[i], tr.body[i + 1], tr.body[i + 2])) {
-            tg.body.moveTo(s.x1, s.y1).lineTo(s.x2, s.y2);
+        let tail: {x:number;y:number} | undefined;
+        for (const s of this.geom.trainBody(tr, TRAIN_BODY_PX[this.mode] / this.z)) {
+            if (!tail || Math.hypot(tail.x-s.x1,tail.y-s.y1)>.01) tg.body.moveTo(s.x1, s.y1);
+            tg.body.lineTo(s.x2, s.y2);
+            tail={x:s.x2,y:s.y2};
             drawn = true;
-          }
         }
         if (drawn) {
-          if (sel) tg.body.stroke({ width: w + 8, color: C.selection, alpha: 0.5, cap: 'round' });
-          tg.body.stroke({ width: w, color, cap: 'round' });
+          if (sel) tg.body.stroke({ width: (w + 8)/this.z, color: C.selection, alpha: 0.5, cap: 'butt', join: 'round' });
+          tg.body.stroke({ width: w/this.z, color, cap: 'butt', join: 'round' });
         }
       }
     }

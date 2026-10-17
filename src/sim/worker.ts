@@ -11,6 +11,11 @@ import { dayTypeOf, dateLabel, parseIso, isoDate } from './calendar';
 import { capture, restore, type Checkpoint } from './state';
 import { compactCheckpoints, exportDiagnostics, stringifyDiagnostics } from './diagnostics';
 import { preparePlan } from './planning';
+import { captureWarmup, readWarmup, restoreWarmup, warmupKey, writeWarmup } from './warmupCache';
+
+// Vite includes source text as build inputs. Any simulation/data change
+// changes the key automatically, including development worker reloads.
+const warmupSources = import.meta.glob(['./*.ts', '../data/*.ts'], { eager: true, query: '?raw', import: 'default' });
 
 declare const self: DedicatedWorkerGlobalScope;
 
@@ -26,6 +31,8 @@ let wantWindow = 0;
 let droppedWindow = 0;
 let windowStart = performance.now();
 let jumping = false;
+let starting = 0;
+let initializing = false;
 
 const SNAP_INTERVAL = 50; // ms (20 Hz)
 /** an operating day runs from 04:00 to the 03:45 rollover: every run-up stays inside it */
@@ -51,7 +58,9 @@ function post(msg: FromWorker, transfer: Transferable[] = []) {
 let wantPis = -1;
 let wantDmi = -1;
 
-function start(raw: SimConfig) {
+async function start(raw: SimConfig) {
+  const generation = ++starting;
+  initializing = true;
   const config: SimConfig = { ...raw, startTime: dayTime(raw.startTime) ?? DAY_FIRST, seed: Number.isFinite(raw.seed) ? raw.seed : 1 };
   sim = new Sim(config);
   sim.pisStation = wantPis;
@@ -65,8 +74,24 @@ function start(raw: SimConfig) {
   replayUntil = 0;
   checkpoint();
   // warm up from the start of the service day to the requested start time
-  if (config.startTime > sim.t) runUntil(config.startTime, true);
+  if (config.startTime > sim.t) {
+    let key: string | undefined;
+    try { key = await warmupKey(config, sim.plan, warmupSources); } catch { /* Normal warm-up below. */ }
+    const cached = key ? await readWarmup(key) : null;
+    if (generation !== starting) return;
+    if (cached && Math.abs(cached.t - config.startTime) < FIXED_DT + 1e-6) {
+      try { restoreWarmup(sim, cached); } catch { sim = new Sim(config); }
+    }
+    if (sim.t < config.startTime) {
+      runUntil(config.startTime, true);
+      if (key) void writeWarmup(key, captureWarmup(sim));
+    }
+  }
+  sim.pisStation = wantPis;
+  sim.dmiTrain = wantDmi;
   checkpoint();
+  initializing = false;
+  lastWall = performance.now();
   post({ type: 'ready', plan: sim.plan });
   flushEvents(true);
   sendSnapshot();
@@ -188,7 +213,7 @@ function rewind(to: number, replay: boolean) {
 }
 
 function tick() {
-  if (!sim || jumping) return;
+  if (!sim || jumping || initializing) return;
   const now = performance.now();
   const dtWall = Math.min(0.25, (now - lastWall) / 1000);
   lastWall = now;
@@ -226,8 +251,7 @@ function tick() {
     d.setDate(d.getDate() + 1);
     const keepSpeed = speed;
     const keepAuto = sim.autoRadio;
-    start({ dayType: dayTypeOf(d, false), dateLabel: dateLabel(d, false), date: isoDate(d), startTime: 4 * 3600, seed: sim.config.seed + 1, autoRadio: keepAuto, randomFaults: sim.randomLevel });
-    speed = keepSpeed;
+    void start({ dayType: dayTypeOf(d, false), dateLabel: dateLabel(d, false), date: isoDate(d), startTime: 4 * 3600, seed: sim.config.seed + 1, autoRadio: keepAuto, randomFaults: sim.randomLevel }).then(() => { speed = keepSpeed; });
     return;
   }
   if (now - lastSnap >= SNAP_INTERVAL) {
@@ -239,6 +263,7 @@ function tick() {
 
 self.onmessage = (e: MessageEvent<ToWorker>) => {
   const m = e.data;
+  if (initializing && !['init', 'restart', 'speed', 'pause', 'pis', 'dmi'].includes(m.type)) return;
   switch (m.type) {
     case 'init':
     case 'restart':

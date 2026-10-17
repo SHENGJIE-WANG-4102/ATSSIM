@@ -76,6 +76,7 @@ export function timeToStop(v: number, d: number): number {
 export function computePis(sim: Sim, station: number): PisData {
   const { topo } = sim;
   const out: PisData = { station, DN: [], UP: [], notice: '' };
+  const listed = new Set<number>();
   for (const tr of sim.trainList) {
     if (tr.failed && tr.phase !== 'dwell') continue;
     let prevEta = sim.t;
@@ -102,9 +103,27 @@ export function computePis(sim: Sim, station: number): PisData {
       const dest = t.dep === null ? STATIONS[station].name : trip ? STATIONS[trip.to].name : tr.destText;
       // a train starting here waits for its planned departure
       if (status === 'eta' && t.dep !== null && t.arr === null) eta = Math.max(eta, t.dep - 60);
-      out[track].push({ dest, ...(t.noBoard ? { noBoard: true } : {}), destSt: t.dep === null ? station : trip ? trip.to : -1, dwellRemaining: i === 0 && tr.phase === 'dwell' && t.dep !== null ? Math.max(0, tr.dwellUntil - sim.t) : undefined, eta: Math.max(0, eta - sim.t), status, trip: tr.tripNo, load: Math.min(1.3, tr.load / LINE_INFO.capacity) });
+      listed.add(t.trip);
+      out[track].push({ dest, ...(t.noBoard ? { noBoard: true } : {}), destSt: t.dep === null ? station : trip ? trip.to : -1, dwellRemaining: i === 0 && tr.phase === 'dwell' && t.dep !== null ? Math.max(0, tr.dwellUntil - sim.t) : undefined, eta: Math.max(0, eta - sim.t), status, trip: trip?.no ?? tr.tripNo, load: Math.min(1.3, tr.load / LINE_INFO.capacity) });
       break;
     }
+  }
+  // Origin boards also count down an assigned departure while its car is
+  // still in a tail track, an earlier trip, or waiting for its yard exit.
+  // Never invent a vehicle for an unassigned/cancelled/withdrawn duty.
+  for (const trip of sim.plan.trips) {
+    if (trip.from !== station || !trip.revenue || trip.cancelled || trip.completed || listed.has(trip.id)) continue;
+    const first = trip.stops[0], block = sim.plan.blocks?.[trip.block];
+    if (!first?.stop || first.noBoard || first.dep < sim.t || !block?.trips.includes(trip.id)) continue;
+    const platform = topo.stations[station].platforms[trip.dir];
+    if (sim.plat[platform].skip) continue;
+    const vehicle = sim.trainList.find(t => t.block === block.id);
+    const assigned = vehicle ? !vehicle.failed && !vehicle.withdrawn && !vehicle.skipStations.has(station)
+      && vehicle.tasks.some(t => t.k === 'stop' && t.trip === trip.id)
+      : block.train === undefined && block.start.kind === 'depot' && block.start.time >= sim.t;
+    if (!assigned) continue;
+    out[trip.dir].push({ dest: STATIONS[trip.to].name, destSt: trip.to, eta: first.dep-sim.t,
+      status: 'eta', trip: trip.no, load: vehicle ? Math.min(1.3, vehicle.load/LINE_INFO.capacity) : 0 });
   }
   for (const k of ['DN', 'UP'] as const) out[k] = out[k].sort((a, b) => a.eta - b.eta).slice(0, 3);
   // per platform: passed by every train (跳停 / 封站), and the next and the last

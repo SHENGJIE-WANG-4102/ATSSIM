@@ -301,7 +301,16 @@ function resolveDepot(sim: Sim, tr: Train): void {
   if (dp.transferPaths.some((p) => p.stub === tr.link || p.links.includes(tr.link))) return;
   if (!(Math.abs(sim.trainChain(tr) - topo.stations[dp.station].chain) < 2500)) return;
   const cur = depotBerth(topo, task);
-  const free = (b: number) => leadStubBerths(topo, task.depot, b).every((x) => !berthBusy(sim, x, tr.id));
+  const free = (b: number) => leadStubBerths(topo, task.depot, b).every((x) => !berthBusy(sim, x, tr.id)
+    // A following return cannot claim the only turnback of a train already
+    // arriving ahead of it. That train must clear the common platform first.
+    && !sim.trainList.some(other => {
+      const stop=other.tasks[0], reverse=other.tasks[1];
+      return other!==tr && stop?.k==='stop' && stop.station===dp.station && stop.dep===null
+        && reverse?.k==='reverse' && reverse.berths.includes(x)
+        && Math.abs(sim.trainChain(other)-topo.stations[dp.station].chain)
+          < Math.abs(sim.trainChain(tr)-topo.stations[dp.station].chain);
+    }));
   // only a lead the train can still be routed to from where it is (before
   // changing ends, its next signal says which)
   const turning = tr.tasks.slice(0, i).some((t) => t.k === 'reverse');
@@ -1263,6 +1272,19 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
       return preserveClaim();
     }
     const sg = sim.sig[sig];
+    // Apply the shared-lead admission rule to already armed automatic routes
+    // as well. Otherwise a long layover in the stub can leave the following
+    // return's old green route open past the earlier route-setting check.
+    if (goalTask.k==='stop' && topo.berths[goal].kind==='platform') {
+      const depot=topo.depots.findIndex(d=>d.station===goalTask.station);
+      const exit=depot>=0 && goingIn(sim,tr,depot) ? exitOnLead(sim,tr,depot) : undefined;
+      if (exit) {
+        const active=sg.route>=0?sim.routes.get(sg.route):undefined;
+        if (active && !active.entered && !active.manual) cancelRoute(sim,sig);
+        setArsWait(sim,tr,'REGULATION',exit.id,sig,'回段车让出段换端车先出');
+        return {train:tr,signal:sig,route:rid,prio:plannedTime(goalTask,sim.t),eta,ready:false,dist,via};
+      }
+    }
     if (topo.berths[goal].reverse && tr.level === 'TBTC') {
       setArsWait(sim, tr, 'DIRECTION_WAIT', -1, sig, 'TBTC不能自动反向区间折返，须恢复CBTC');
       return { train: tr, signal: sig, route: rid, prio: plannedTime(goalTask, sim.t), eta, ready: false, dist, via };
@@ -1368,7 +1390,7 @@ export function trainDesire(sim: Sim, tr: Train): Desire | null {
         const D = own.dep!;
         // (not one going in over the shared lead this train stands on: it cannot pass)
         const lead = sharedLeadUnder(sim, tr);
-        const before = sim.trainList.find((o) => o !== tr && !o.failed && !(lead >= 0 && goingIn(sim, o, lead)) && o.tasks.some((t) => t.k === 'stop' && t.berth === own.berth
+        const before = sim.trainList.find((o) => o !== tr && !o.failed && !(lead >= 0 && (goingIn(sim, o, lead) || waitsForTrain(sim, o, tr.id))) && o.tasks.some((t) => t.k === 'stop' && t.berth === own.berth
           && t.arr !== null && t.dep !== null && t.dep - t.arr > 1 && t.dep < D - 1 && t.dep > D - 900));
         if (before) {
           ok = false;
@@ -1566,6 +1588,21 @@ function sharedLeadUnder(sim: Sim, tr: Train): number {
     && tr.body.some((b) => b.link === p.stub || p.links.includes(b.link))));
 }
 
+/** Timetable priority cannot ask an exit to wait for a main-line train
+ * queued behind the arrival that is itself yielding to this shared lead.
+ * Only remove that scheduling wait; route locking/occupancy still apply. */
+function waitsForTrain(sim: Sim, from: Train, target: number): boolean {
+  const seen = new Set<number>();
+  let tr: Train | undefined = from;
+  while (tr && tr.v < .2 && !seen.has(tr.id)) {
+    if (tr.id === target) return true;
+    seen.add(tr.id);
+    const next = tr.halt.train >= 0 ? tr.halt.train : tr.arsWait?.train ?? -1;
+    tr = sim.trains.get(next);
+  }
+  return false;
+}
+
 /** the train goes into `depot` after its remaining stops at the depot's station */
 function goingIn(sim: Sim, tr: Train, depot: number): boolean {
   const i = tr.tasks.findIndex((t) => t.k === 'depot');
@@ -1577,7 +1614,9 @@ function goingIn(sim: Sim, tr: Train, depot: number): boolean {
 function exitOnLead(sim: Sim, self: Train, depot: number): Train | undefined {
   const station = sim.topo.depots[depot].station;
   return sim.trainList.find((o) => o !== self && !o.failed && sharedLeadUnder(sim, o) === depot
-    && o.tasks.some((t) => t.k === 'stop' && t.note === '出段换端' && t.station === station));
+    && (o.tasks.some((t) => t.k === 'stop' && t.note === '出段换端' && t.station === station)
+      || (o.tbStage === 'arrive' || o.tbStage === 'depart' || o.phase === 'reversing')
+        && o.tasks.some(t => t.k === 'stop' && t.station === station)));
 }
 
 /** all turnback berths at the station are occupied and another train is queued to turn back */

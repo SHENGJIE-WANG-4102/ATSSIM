@@ -10,6 +10,9 @@
  * switches and signals stay readable.
  */
 import type { Topology, TLink } from '../sim/topology';
+import type { TrainSnap } from '../sim/model';
+
+export const TRAIN_BODY_PX = { overview: 22, detail: 64 } as const;
 
 export interface P { row: number; x: number; y: number }
 
@@ -288,6 +291,50 @@ export class Geometry {
       const e = Math.min(cb, rd.to);
       out.push({ x1: this.chainX(c0, r), y1: rd.top + yRel, x2: this.chainX(e, r), y2: rd.top + yRel });
       c0 = e;
+    }
+    return out;
+  }
+
+  /** Fixed-size symbol, traced backwards over the body's actual route.
+   * Beyond the physical tail only an unambiguous occupied rail is used. */
+  trainBody(tr: Pick<TrainSnap, 'link' | 'off' | 'dir' | 'body' | 'v' | 'phase'>, length: number) {
+    const out: { x1: number; y1: number; x2: number; y2: number }[] = [];
+    let link = tr.link, off = tr.off, dir = tr.dir, remaining = length;
+    const occupied = new Set<number>();
+    for (let i = 0; i < tr.body.length; i += 3) occupied.add(this.topo.links[tr.body[i]].section);
+    // Centre a parked glyph on the real footprint without moving the train.
+    if (tr.v < .05 && tr.body.length === 3 && this.topo.berths.some(b => b.link === link && Math.abs(b.offset-off) < 5)) {
+      const segments = this.linkSegs(link);
+      if (segments.length === 1) {
+        const s = segments[0], scale = Math.hypot(s.x2-s.x1,s.y2-s.y1)/this.topo.links[link].len;
+        if (scale > 0) off = Math.min(this.topo.links[link].len, Math.max(0, (tr.body[1]+tr.body[2])/2 + dir*length/(2*scale)));
+      }
+    }
+    const visited = new Set<number>();
+    for (let i = 0; i < 100 && remaining > .001; i++) {
+      if (visited.has(link)) break;
+      visited.add(link);
+      const l = this.topo.links[link], end = dir === 1 ? 0 : l.len;
+      let segments = this.linkSpan(link, Math.min(off,end), Math.max(off,end));
+      if (dir === 1) segments = segments.reverse().map(s => ({x1:s.x2,y1:s.y2,x2:s.x1,y2:s.y1}));
+      for (const s of segments) {
+        const distance = Math.hypot(s.x2-s.x1,s.y2-s.y1);
+        if (distance < .001) continue;
+        const f = Math.min(1,remaining/distance);
+        out.push({...s,x2:s.x1+(s.x2-s.x1)*f,y2:s.y1+(s.y2-s.y1)*f});
+        remaining -= distance*f;
+        if (remaining < .001) break;
+      }
+      const node = dir === 1 ? l.a : l.b;
+      const bodyNext = tr.body[(i+1)*3];
+      const candidates = this.topo.nodes[node].links.filter(id => id !== link && !visited.has(id)
+        && occupied.has(this.topo.links[id].section));
+      const next = bodyNext !== undefined && this.topo.nodes[node].links.includes(bodyNext) ? bodyNext
+        : candidates.length === 1 ? candidates[0] : undefined;
+      if (next === undefined) break;
+      link = next;
+      dir = this.topo.links[link].b === node ? 1 : -1;
+      off = dir === 1 ? this.topo.links[link].len : 0;
     }
     return out;
   }
