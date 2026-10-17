@@ -755,13 +755,16 @@ export class TrackView {
     const detail = this.mode === 'detail';
     const { topo } = this;
 
+    // train symbols first: the section display occupancy follows them
+    const symbolOcc = this.updateTrainBodies(snap);
+
     // sections
     for (let i = 0; i < this.sectionG.length; i++) {
       const f = snap.sections[i];
       let c: number;
       if (f & SEC.DIST) c = this.blink ? C.disturbed : 0x6a1a1a;
       else if (f & SEC.PRESET) c = blinkSlow ? C.preset : 0x6a5a00;
-      else if (f & SEC.OCC) c = f & SEC.COMM ? C.occComm : C.occAxle;
+      else if (symbolOcc.has(i)) c = symbolOcc.get(i) ? C.occComm : C.occAxle;
       else if (f & SEC.GUIDE) c = C.routeGuide;
       else if (f & SEC.LOCK) c = f & SEC.ROUTEFLEET ? C.routeAuto : C.routeSet;
       else c = this.sectionMain[i] ? C.trackFree : C.trackFreeSide;
@@ -865,7 +868,6 @@ export class TrackView {
 
     // yards
     this.updateYards(snap);
-    this.updateTrainBodies(snap);
     this.placeDynamic(snap);
     this.drawSelection();
     // follow camera
@@ -918,7 +920,13 @@ export class TrackView {
     return C.trainCbtc;
   }
 
-  private updateTrainBodies(snap: Snapshot) {
+  /** Draw the fixed-length train symbols. Returns the sections they cover
+   * (true: only communicating CBTC trains), shown as occupied in place of the
+   * real train occupancy; signals and interlocking still use the real body. */
+  private updateTrainBodies(snap: Snapshot): Map<number, boolean> {
+    const occ = new Map<number, boolean>();
+    const swPos = (sw: number) => (snap.switches[sw] & SW.R ? 'R' : 'N') as 'N' | 'R';
+    const length = this.geom.trainLength();
     const seen = new Set<number>();
     const w = this.mode === 'detail' ? 13 : 10;
     for (const tr of snap.trains) {
@@ -927,13 +935,16 @@ export class TrackView {
       if (!tg) tg = this.createTrain(tr);
       const color = this.bodyColor(tr);
       const sel = this.store.selection?.kind === 'train' && this.store.selection.id === tr.id;
-      const bodyKey = `${tr.body.join(',')}|${tr.dir}|${tr.v < .05}|${this.z}|${color}|${sel}`;
+      const segs = this.geom.trainBody(tr, length, swPos);
+      const comm = tr.level === 'CBTC' && tr.comm;
+      for (const s of segs) occ.set(s.section, (occ.get(s.section) ?? true) && comm);
+      const bodyKey = `${segs.map(s => `${s.x1.toFixed(1)},${s.y1.toFixed(1)},${s.x2.toFixed(1)},${s.y2.toFixed(1)}`).join(';')}|${this.z}|${color}|${sel}`;
       if (bodyKey !== tg.bodyKey) {
         tg.bodyKey = bodyKey;
         tg.body.clear();
         let drawn = false;
         let tail: {x:number;y:number} | undefined;
-        for (const s of this.geom.trainBody(tr, this.geom.trainLength())) {
+        for (const s of segs) {
             if (!tail || Math.hypot(tail.x-s.x1,tail.y-s.y1)>.01) tg.body.moveTo(s.x1, s.y1);
             tg.body.lineTo(s.x2, s.y2);
             tail={x:s.x2,y:s.y2};
@@ -952,6 +963,7 @@ export class TrackView {
         this.trains.delete(id);
       }
     }
+    return occ;
   }
 
   private createTrain(tr: TrainSnap): TrainGfx {

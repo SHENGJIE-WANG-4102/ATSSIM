@@ -295,30 +295,31 @@ export class Geometry {
   }
 
   private drawnTrain?: number;
-  /** Drawn train length (world units): the drawn platform length scaled by
-   * train / platform length, one value for the whole drawing. The schematic is
-   * not to scale, so a train symbol is sized against the platforms it stops at. */
+  /** Drawn train length (world units): the shortest drawn platform in this
+   * drawing scaled by train / platform length. One value for every train, and a
+   * train standing at any platform stays inside it. The schematic is not to
+   * scale, so the symbol is sized against the platforms, not the real metres. */
   trainLength(): number {
     if (this.drawnTrain === undefined) {
       const half = LINE_INFO.platformLength / 2;
       const lens = this.topo.stations
         .filter((s) => s.chain >= this.p.chainFrom && s.chain <= this.p.chainTo && this.pos[this.topo.links[this.topo.platforms[s.platforms.DN].link].a])
-        .map((s) => { const r = this.chainRow(s.chain); return this.chainX(s.chain + half, r) - this.chainX(s.chain - half, r); })
-        .sort((a, b) => a - b);
-      this.drawnTrain = (lens.length ? lens[lens.length >> 1] : 0) * LINE_INFO.trainLength / LINE_INFO.platformLength;
+        .map((s) => { const r = this.chainRow(s.chain); return this.chainX(s.chain + half, r) - this.chainX(s.chain - half, r); });
+      this.drawnTrain = (lens.length ? Math.min(...lens) : 0) * LINE_INFO.trainLength / LINE_INFO.platformLength;
     }
     return this.drawnTrain;
   }
 
-  /** Fixed-size symbol, traced backwards over the body's actual route.
-   * Beyond the physical tail only an unambiguous occupied rail is used. */
-  trainBody(tr: Pick<TrainSnap, 'link' | 'off' | 'dir' | 'body' | 'v' | 'phase'>, length: number) {
-    const out: { x1: number; y1: number; x2: number; y2: number }[] = [];
+  /** Fixed-length symbol traced backwards from the head: first over the body's
+   * own links, beyond the physical tail over the track behind it as the
+   * switches lie. Each piece carries its section: the display occupancy is
+   * taken from the symbol, the interlocking keeps the real body. */
+  trainBody(tr: Pick<TrainSnap, 'link' | 'off' | 'dir' | 'body' | 'v'>, length: number, swPos: (sw: number) => 'N' | 'R') {
+    const out: { x1: number; y1: number; x2: number; y2: number; section: number }[] = [];
     let link = tr.link, off = tr.off, dir = tr.dir, remaining = length;
-    const occupied = new Set<number>();
-    for (let i = 0; i < tr.body.length; i += 3) occupied.add(this.topo.links[tr.body[i]].section);
-    // Centre a parked glyph on the real footprint without moving the train.
-    if (tr.v < .05 && tr.body.length === 3 && this.topo.berths.some(b => b.link === link && Math.abs(b.offset-off) < 5)) {
+    // A train standing wholly on a platform or berth link is centred on its footprint.
+    if (tr.v < .05 && tr.body.length === 3
+      && (this.topo.platforms.some(p => p.link === link) || this.topo.berths.some(b => b.link === link && Math.abs(b.offset-off) < 5))) {
       const segments = this.linkSegs(link);
       if (segments.length === 1) {
         const s = segments[0], scale = Math.hypot(s.x2-s.x1,s.y2-s.y1)/this.topo.links[link].len;
@@ -336,16 +337,19 @@ export class Geometry {
         const distance = Math.hypot(s.x2-s.x1,s.y2-s.y1);
         if (distance < .001) continue;
         const f = Math.min(1,remaining/distance);
-        out.push({...s,x2:s.x1+(s.x2-s.x1)*f,y2:s.y1+(s.y2-s.y1)*f});
+        out.push({x1:s.x1,y1:s.y1,x2:s.x1+(s.x2-s.x1)*f,y2:s.y1+(s.y2-s.y1)*f,section:l.section});
         remaining -= distance*f;
         if (remaining < .001) break;
       }
       const node = dir === 1 ? l.a : l.b;
       const bodyNext = tr.body[(i+1)*3];
-      const candidates = this.topo.nodes[node].links.filter(id => id !== link && !visited.has(id)
-        && occupied.has(this.topo.links[id].section));
-      const next = bodyNext !== undefined && this.topo.nodes[node].links.includes(bodyNext) ? bodyNext
-        : candidates.length === 1 ? candidates[0] : undefined;
+      const n = this.topo.nodes[node];
+      // behind the tail: a switch is left by its toe from either leg, and from
+      // the toe by the leg it lies in (a position, not a route check)
+      const next = bodyNext !== undefined && n.links.includes(bodyNext) ? bodyNext
+        : n.kind === 'end' ? undefined
+          : n.kind === 'joint' ? n.links.find(id => id !== link)
+            : link !== n.toe ? n.toe : swPos(n.sw!) === 'R' ? n.reverse : n.normal;
       if (next === undefined) break;
       link = next;
       dir = this.topo.links[link].b === node ? 1 : -1;
