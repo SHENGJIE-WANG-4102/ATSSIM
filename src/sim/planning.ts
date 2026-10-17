@@ -1,5 +1,5 @@
 import type { Sim } from './engine';
-import { cancelTrip, type Command, type Plan } from './model';
+import { type Command, type Plan } from './model';
 import { addExtraTrain, applyOverlay, OVERLAY_PRESETS, validatePlan, fleetPeak, type PlanIssue } from './timetable';
 import { validateCommand } from './commands';
 
@@ -38,22 +38,11 @@ export function preparePlan(sim: Sim, cmd: PlanCommand): PlanPreview {
     if (!preset) return reject('无此加开模板');
     if (cmd.from < sim.t - 1e-6) return reject('加开开始时刻不能早于当前时刻');
     const result = applyOverlay(sim.planCtx, plan, { ...preset, from: cmd.from, to: cmd.to, headway: cmd.headway },
-      { now: sim.t, canExtend: (block, last) => canExtend(sim, block, last) });
+      { now: sim.t, canExtend: (block, last) => canExtend(sim, block, last),
+        stock: { at: sim.t, levels: sim.depotStock.slice(), departed: sim.plan.blocks.filter(block => block.train !== undefined).map(block => block.id), done: [...sim.blockDone] } });
     skipped = result.skipped;
     extended = result.extended.map(x => ({ block: x.block, last: x.last }));
     label = preset.label;
-    // Mid-day application cannot send a vehicle out in the past. Omit the whole
-    // circulation, including its return, and report the shortage once.
-    for (const b of plan.blocks.slice(firstBlock)) if (b.start.kind === 'depot' && b.start.time < sim.t) {
-      for (const id of b.trips) { const trip = plan.trips[id]; if (!trip.cancelled && trip.revenue) skipped++; cancelTrip(trip, '加开：出段时刻已过'); }
-    }
-    // An added circulation the yard cannot supply when it is due out (the
-    // yard's live stock, after the base plan's own draws) is not run: it is
-    // reported as a shortfall like a trip without a path, rather than the
-    // whole template being refused.
-    for (let short = yardCheck(sim, plan); short && short.block >= firstBlock; short = yardCheck(sim, plan)) {
-      for (const id of plan.blocks[short.block].trips) { const trip = plan.trips[id]; if (!trip.cancelled && trip.revenue) skipped++; cancelTrip(trip, '加开：车辆段库存不足'); }
-    }
     plan.blocks = plan.blocks.filter(b => b.id < firstBlock || b.trips.some(id => !plan.trips[id].cancelled));
     plan.blocks.forEach((b, id) => { b.id = id; for (const trip of b.trips) plan.trips[trip].block = id; });
   }
@@ -93,7 +82,8 @@ function yardCheck(sim: Sim, plan: Plan): { issue: PlanIssue; block: number } | 
   for (const block of plan.blocks) {
     if (block.start.kind === 'depot' && block.train === undefined && !sim.blockDone.has(block.id)
       && block.trips.some(id => !plan.trips[id].cancelled)) moves.push({ at: Math.max(sim.t, block.start.time), depot: block.start.depot, delta: -1, block: block.id });
-    if (block.end.kind === 'depot' && !sim.blockDone.has(block.id)) {
+    if (block.withdrawal && !sim.blockDone.has(block.id)) moves.push({at:block.withdrawal.at,depot:block.withdrawal.depot,delta:1,block:block.id});
+    else if (block.end.kind === 'depot' && !sim.blockDone.has(block.id)) {
       const trips = block.trips.map(id => plan.trips[id]).filter(trip => !trip.cancelled);
       const last = trips[trips.length - 1];
       if (last) moves.push({ at: last.stops[last.stops.length - 1].arr + 300, depot: block.end.depot, delta: 1, block: block.id });

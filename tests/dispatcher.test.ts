@@ -6,7 +6,9 @@ import type { Sim } from '../src/sim/engine';
 import { exchangePartner } from '../src/sim/ats';
 import { hotStandby, predictedLateness } from '../src/sim/standby';
 import type { StopTask, Train } from '../src/sim/model';
-import { makeSim, runFor, assertNoCollision, assertIntegrity, pickTrain, dirOf } from './helpers';
+import { makeSim, runFor, runUntil, assertNoCollision, assertIntegrity, pickTrain, dirOf } from './helpers';
+import { capture, restore } from '../src/sim/state';
+import { depotLedger } from '../src/sim/timetable';
 
 const st = (sim: Sim, name: string) => sim.topo.stations.find((s) => s.name === name)!;
 const H = 8 * 3600;
@@ -116,7 +118,7 @@ describe('dispatcher commands', () => {
     expect(service.length).toBe(2);
     const omitted = service.filter(t => t.cancelled);
     expect(omitted).toHaveLength(1);
-    expect(omitted.every(t => t.cancelReason === '加开：高峰间隔内无出段时隙')).toBe(true);
+    expect(omitted.every(t => t.cancelReason === '加开：通知时间或沿途进路不足，后续班次继续尝试')).toBe(true);
     expect(ov.msg).toContain('1 个车次因能力或库存不足未安排');
     const running = added.filter(t => !t.cancelled);
     expect(running.length).toBeGreaterThan(0);
@@ -159,11 +161,11 @@ describe('dispatcher commands', () => {
   it('hot standby (D70): stands in a turnback track, takes a lost train\'s departure, relieves a late one', () => {
     const sim = makeSim('weekday', 9 * 3600 + 55 * 60, { seed: 5 });
     const E = sim.topo.stations.length - 1;
-    const hots = () => sim.trainList.filter(t => hotStandby(sim, t));
+    const hots = () => sim.trainList.filter(t => [0, E].includes(hotStandby(sim, t)?.station ?? -1));
     const until = 13*3600;
     while (hots().length < 2 && sim.t < until) runFor(sim, 30, stepCheck);
     expect(hots().map(t => hotStandby(sim, t)!.station).sort((a, b) => a - b)).toEqual([0, E]);
-    expect(sim.snapshot().trains.filter(t => t.hot).length).toBe(2);
+    expect(sim.snapshot().trains.filter(t => t.hot).length).toBe(sim.trainList.filter(t => hotStandby(sim, t)).length);
     // it keeps to its track: the departure platform stays free for the turning trains
     for (const h of hots()) expect(sim.topo.stations[hotStandby(sim, h)!.station].turnbackBerths.map(b => sim.topo.berths[b].link)).toContain(h.link);
     const depFrom = (t: Train, st: number) => t.tasks.find((x): x is StopTask => x.k === 'stop' && x.station === st && x.arr === null && x.dep !== null);
@@ -201,6 +203,57 @@ describe('dispatcher commands', () => {
     expect(left - Dw.dep!).toBeLessThan(90);
     runFor(sim, 900, stepCheck);
     expect(hotStandby(sim, late)?.station).toBe(0);
+  },240_000);
+
+  it('middle hot spares recover the downstream part of a withdrawn core train over real routes', () => {
+    const sim = makeSim('weekday', 9 * 3600 + 55 * 60, { seed: 5 });
+    runUntil(sim, 12.5 * 3600, stepCheck);
+    expect(sim.trainList.flatMap(t => hotStandby(sim, t)?.station ?? []).sort((a,b) => a-b)).toEqual([0,17,24,30]);
+    const checkpoint = capture(sim);
+    for (const [station, dir, home] of [[17, 'UP', 0], [24, 'DN', 2]] as const) {
+      restore(sim, checkpoint);
+      const lost = sim.trainList.find(t => t.inService && !t.withdrawn && t.block >= 0
+        && sim.plan.blocks[t.block].end.kind === 'depot' && (sim.plan.blocks[t.block].end as {depot:number}).depot === home
+        && sim.plan.trips[t.tripId]?.dir === dir && sim.plan.trips[t.tripId].stops.some(s => s.st === station && s.dep > sim.t + 300 && s.dep < sim.t + 1000))!;
+      expect(lost, `middle ${station}`).toBeDefined();
+      const trip = structuredClone(sim.plan.trips[lost.tripId]);
+      const lostDuty = sim.plan.blocks[lost.block].trips.slice();
+      const cut = trip.stops.findIndex(s => s.st === station);
+      const now = sim.t;
+      // Same incident with only the end-terminal hot spares available.
+      for (const h of sim.trainList) if ([17,24].includes(hotStandby(sim,h)?.station ?? -1)) h.manual = true;
+      sim.autoDispatch = true;
+      expect(sim.command({c:'withdraw',train:lost.id}).ok).toBe(true);
+      expect(sim.plan.trips[trip.id].cancelled).toBe(true);
+      const baseline = lostDuty.map(id=>sim.plan.trips[id]).filter(t => t.revenue && !t.cancelled && !t.completed && t.block !== lost.block && t.stops[0].dep >= now)
+        .sort((a,b) => a.stops[0].dep-b.stops[0].dep)[0]?.stops[0].dep ?? Infinity;
+
+      restore(sim, checkpoint); sim.autoDispatch = true;
+      const hot = sim.trainList.find(t => hotStandby(sim,t)?.station === station)!;
+      const originalCount = sim.plan.trips.length;
+      expect(sim.command({c:'withdraw',train:lost.id}).ok).toBe(true);
+      const suffix = sim.plan.trips.slice(originalCount).find(t => t.revenue && t.from === station)!;
+      expect(suffix).toBeDefined();
+      expect(sim.plan.trips[trip.id].cancelled).toBe(true);
+      expect(suffix.stops.slice(1)).toEqual(trip.stops.slice(cut + 1));
+      expect(suffix.stops[0].dep).toBe(trip.stops[cut].dep);
+      if (station === 24) expect(suffix.stops[0]).toMatchObject({stop:false,noBoard:true});
+      const ledger = depotLedger(sim.topo,sim.plan);
+      expect(ledger.final).toEqual(ledger.initial);
+      expect(suffix.stops[0].dep-now).toBeLessThan(1000);
+      expect(baseline-suffix.stops[0].dep).toBeGreaterThan(1800);
+      const routes = new Set<string>();
+      const departureStation = suffix.stops.find(s => s.stop)!.st;
+      const scheduled = suffix.stops.find(s => s.st === departureStation)!.dep;
+      runFor(sim, scheduled-sim.t+120, s => {
+        stepCheck(s);
+        if (hot.nextSignal >= 0 && s.sig[hot.nextSignal].route >= 0) routes.add(s.topo.routes[s.sig[hot.nextSignal].route].name);
+      });
+      expect(routes.size).toBeGreaterThan(0);
+      const departure = sim.depLog.find(d => d.trip === suffix.id && d.st === departureStation);
+      expect(departure).toBeDefined();
+      expect(departure!.delay).toBeLessThan(60);
+    }
   },240_000);
 
   it('manual route cancel / set at a signal', () => {

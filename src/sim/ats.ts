@@ -524,7 +524,8 @@ function spawnStabled(sim: Sim, b: Block) {
   const headOff = berth.offset;
   const tr = newTrain(sim, b, berth.link, headOff, berth.dir, [{ link: berth.link, dir: berth.dir }], sim.stabledPool.shift() ?? '0200');
   void l;
-  if (b.start.berth === undefined) reverseTrain(sim, tr);
+  const first = sim.plan.trips[b.trips.find(id => !sim.plan.trips[id].cancelled)!];
+  if (b.start.berth === undefined || (berth.kind !== 'platform' && ((l.chainB - l.chainA) * berth.dir > 0) !== (first.dir === 'DN'))) reverseTrain(sim, tr);
   tr.tasks = blockTasks(topo, sim.plan, b);
   tr.lastStation = st.index;
   b.train = tr.id;
@@ -1894,7 +1895,22 @@ export function cmdWithdraw(sim: Sim, tr: Train, reason = '调度命令') {
       if (!plan.trips[tr.tripId].completed) cancelTrip(plan.trips[tr.tripId], `列车${tr.svc}退出服务（${reason}）`);
     }
     sim.planDirty = true;
-    standbyTakeover(sim, b.id, tail, `列车${tr.svc}退出服务`);
+    const home = tasks.at(-1);
+    if (home?.k === 'depot') {
+      // 【假设】Conservative stock-credit clock for an unplanned move: 36
+      // km/h over its physical task path, 120 s per cab change and 5 min
+      // entry clearance. Actual yard stock is still credited on real entry.
+      let at = sim.trainChain(tr), distance = 0;
+      for (const task of tasks) {
+        const target = task.k === 'stop' ? topo.stations[task.station].chain
+          : task.k === 'reverse' ? topo.stations[task.station].chain
+            : task.k === 'depot' ? topo.depots[task.depot].junctionChain : at;
+        distance += Math.abs(target-at); at = target;
+      }
+      b.withdrawal = { depot: home.depot, at: sim.t + 60 + distance/10 + tasks.filter(task=>task.k==='reverse').length*120 + 300 };
+    }
+    const unfinished = tr.tripId >= 0 && !plan.trips[tr.tripId].completed ? [tr.tripId] : [];
+    standbyTakeover(sim, b.id, [...unfinished, ...tail], `列车${tr.svc}退出服务`);
   }
   if (tr.phase === 'dwell' && tr.load > 0) { sim.passengersCleared += tr.load; sim.metrics.cleared += tr.load; tr.load = 0; }
   tr.tasks = tasks;
@@ -2308,7 +2324,8 @@ export function cmdRescue(sim: Sim, failed: Train, rescuer: Train) {
       sim.truncatedTrips.set(rescuer.tripId, nextSt ?? rescuer.lastStation);
       if (!sim.plan.trips[rescuer.tripId].completed) cancelTrip(sim.plan.trips[rescuer.tripId], why);
     }
-    standbyTakeover(sim, b.id, tail, `列车${rescuer.svc}担任救援`);
+    const unfinished = rescuer.tripId >= 0 && !sim.plan.trips[rescuer.tripId].completed ? [rescuer.tripId] : [];
+    standbyTakeover(sim, b.id, [...unfinished, ...tail], `列车${rescuer.svc}担任救援`);
   }
   rescuer.tasks = tasks;
   rescuer.inService = false;
@@ -2414,7 +2431,8 @@ function completeCoupling(sim: Sim, tr: Train) {
       sim.truncatedTrips.set(f.tripId, f.lastStation);
       if (!sim.plan.trips[f.tripId].completed) cancelTrip(sim.plan.trips[f.tripId], why);
     }
-    standbyTakeover(sim, b.id, tail, `故障列车${f.svc}连挂回段`);
+    const unfinished = f.tripId >= 0 && !sim.plan.trips[f.tripId].completed ? [f.tripId] : [];
+    standbyTakeover(sim, b.id, [...unfinished, ...tail], `故障列车${f.svc}连挂回段`);
   }
   const fault = sim.faults.find((x) => x.kind === 'trainFail' && x.target === f.id && !x.repaired);
   if (fault) { fault.repaired = true; }

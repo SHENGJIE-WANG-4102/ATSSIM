@@ -81,6 +81,9 @@ export interface Block {
   /** A standby took over its later trips (R1, D45): the trips it keeps end
    * in a withdrawal, not at `end`, so no standby takes them over in turn. */
   relieved?: boolean;
+  /** Actual withdrawal supersedes this train's former night home. `end`
+   * remains the planned home inherited by a replacement taking its duty. */
+  withdrawal?: { depot: number; at: number };
   /** train that is running this block (filled at runtime) */
   train?: number;
   /** Attached state for an integrity alarm. */

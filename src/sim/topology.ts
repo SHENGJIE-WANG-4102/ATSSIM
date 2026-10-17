@@ -1106,7 +1106,17 @@ export function buildTopology(): Topology {
   }
   // 广兰路: small-loop trains reverse at the middle-track platform (arriving eastbound)
   for (const lb of loops) {
-    if (lb.platLink === undefined) continue;
+    if (lb.platLink === undefined) {
+      // Both throats and their exit signals already exist. Register the
+      // usable stopping point; no interlocking rule changes.
+      const link = links[lb.middle[0]];
+      const id = addBerth({ kind: 'siding', link: link.id, offset: link.len / 2 + LINE_INFO.trainLength / 2,
+        dir: 1, platform: -1, station: lb.def.station, depot: -1, reverse: false, name: lb.def.name });
+      addBerth({ kind: 'siding', link: link.id, offset: link.len / 2 - LINE_INFO.trainLength / 2,
+        dir: -1, platform: -1, station: lb.def.station, depot: -1, reverse: false, name: lb.def.name });
+      stationStorage[lb.def.station].push(id);
+      continue;
+    }
     const id = berths.find((b) => b.link === lb.platLink && b.dir === 1)!.id;
     stationTurnback[lb.def.station].push(id);
   }

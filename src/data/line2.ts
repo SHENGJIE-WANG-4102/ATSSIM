@@ -513,16 +513,22 @@ export const OPERATIONS = {
     { depot: 'LYD', dir: 'DN', station: 'LYL' },
     { depot: 'CSD', dir: 'DN', station: 'YDD' },
   ] as { depot: string; dir: 'UP' | 'DN'; station: string }[],
-  /** overnight stabling at terminal tails (approx) */
-  // (蟠祥路: its two turnback tracks and the two places in the DN storage tail)
-  terminalStabling: { PXL: 4, PDA: 2 } as Record<string, number>,
-  /** overnight stabling on the line away from the ends (正线存车, D72):
-   *  广兰路, one train on the middle track (out at 05:28 westbound) and one
-   *  at the DN side platform (out at 06:00 eastbound), taken only after the
-   *  last eastbound movement has passed. With the 6 at the ends and the
-   *  yards' 92 places this holds the 100-train fleet.
-   *  【假设】 the real allocation is not published */
-  lineStabling: { GLL: 2 } as Record<string, number>,
+  /** 【假设】八列正线过夜车：端站留开班所需车，存车泊位依配线图。 */
+  overnightStabling: [
+    { station: 'PXL', count: 2, departure: 'DN', kind: 'terminal' },
+    { station: 'PDA', count: 1, departure: 'UP', kind: 'terminal' },
+    { station: 'GLL', count: 1, departure: 'UP', kind: 'platform', track: 'turnback' },
+    { station: 'GLL', count: 1, departure: 'DN', kind: 'platform' },
+    { station: 'KJG', count: 2, departure: 'UP', kind: 'origin', origin: 'LYL', nightAfter: 21 * 3600 + 40 * 60 },
+    { station: 'CXZ', count: 1, departure: 'DN', kind: 'feeder', nightAfter: 22 * 3600 + 30 * 60 },
+  ] as { station: string; count: number; departure: 'UP' | 'DN'; kind: 'terminal' | 'platform' | 'origin' | 'feeder'; origin?: string; track?: 'turnback'; nightAfter?: number }[],
+  /** 【假设】平峰热备共用夜间泊位；中途两处各一列，按配线方向进出。 */
+  hotStandby: [
+    { station: 'PXL', track: 'turnback', berth: 0 },
+    { station: 'PDA', track: 'turnback', berth: 0 },
+    { station: 'KJG', track: 'turnback', berth: 0, depot: 'BZL', incoming: 'DN' },
+    { station: 'CXZ', track: 'storage', berth: 0, depot: 'CSD', incoming: 'UP' },
+  ] as { station: string; track: 'turnback' | 'storage'; berth: number; depot?: string; incoming?: 'UP' | 'DN' }[],
   /** a train passing a platform without stopping (跨站/跳停) runs through it at no more than this (km/h) */
   platformPassKmh: 45,
   /** a train entering or leaving a platform it stops at runs at no more than this (km/h) */
