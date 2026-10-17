@@ -11,8 +11,7 @@
  */
 import type { Topology, TLink } from '../sim/topology';
 import type { TrainSnap } from '../sim/model';
-
-export const TRAIN_BODY_PX = { overview: 22, detail: 64 } as const;
+import { LINE_INFO } from '../data/line2';
 
 export interface P { row: number; x: number; y: number }
 
@@ -293,6 +292,22 @@ export class Geometry {
       c0 = e;
     }
     return out;
+  }
+
+  private drawnTrain?: number;
+  /** Drawn train length (world units): the drawn platform length scaled by
+   * train / platform length, one value for the whole drawing. The schematic is
+   * not to scale, so a train symbol is sized against the platforms it stops at. */
+  trainLength(): number {
+    if (this.drawnTrain === undefined) {
+      const half = LINE_INFO.platformLength / 2;
+      const lens = this.topo.stations
+        .filter((s) => s.chain >= this.p.chainFrom && s.chain <= this.p.chainTo && this.pos[this.topo.links[this.topo.platforms[s.platforms.DN].link].a])
+        .map((s) => { const r = this.chainRow(s.chain); return this.chainX(s.chain + half, r) - this.chainX(s.chain - half, r); })
+        .sort((a, b) => a - b);
+      this.drawnTrain = (lens.length ? lens[lens.length >> 1] : 0) * LINE_INFO.trainLength / LINE_INFO.platformLength;
+    }
+    return this.drawnTrain;
   }
 
   /** Fixed-size symbol, traced backwards over the body's actual route.

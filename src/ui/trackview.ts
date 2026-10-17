@@ -15,7 +15,7 @@ import { SEC, SW, PLT, SIG_ASPECT } from '../sim/model';
 import { STATIONS, LINE_INFO } from '../data/line2';
 import type { Store, Selection } from './store';
 import { C, FONT_CN, FONT_MONO, delayColor, loadColor } from './theme';
-import { Geometry, TRAIN_BODY_PX, type P } from './geometry';
+import { Geometry, type P } from './geometry';
 import { LabelIndex, textWidth, type Rect } from './labels';
 
 const LINE_COLORS: Record<string, number> = {
@@ -343,8 +343,8 @@ export class TrackView {
       if (!a) { this.platGfx.push(null); continue; }
       const row = geom.chainRow(st.chain);
       const top = geom.rows[row].top;
-      const x0 = geom.chainX(st.chain - 95, row);
-      const x1 = geom.chainX(st.chain + 95, row);
+      const x0 = geom.chainX(st.chain - LINE_INFO.platformLength / 2, row);
+      const x1 = geom.chainX(st.chain + LINE_INFO.platformLength / 2, row);
       const up = p.track === 'UP';
       let y0 = up ? top + L.upY + 9 : top + L.midY + 5;
       let y1 = up ? top + L.midY - 5 : top + L.dnY - 9;
@@ -933,7 +933,7 @@ export class TrackView {
         tg.body.clear();
         let drawn = false;
         let tail: {x:number;y:number} | undefined;
-        for (const s of this.geom.trainBody(tr, TRAIN_BODY_PX[this.mode] / this.z)) {
+        for (const s of this.geom.trainBody(tr, this.geom.trainLength())) {
             if (!tail || Math.hypot(tail.x-s.x1,tail.y-s.y1)>.01) tg.body.moveTo(s.x1, s.y1);
             tg.body.lineTo(s.x2, s.y2);
             tail={x:s.x2,y:s.y2};
