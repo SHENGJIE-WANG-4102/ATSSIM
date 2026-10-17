@@ -15,7 +15,7 @@ import { takeVehicle, putVehicle } from './yard';
 import { callRmPreset, unsafeAhead, openCall } from './radio';
 import { applyEB, grantRM, setMode, distToNextSignal } from './onboard';
 import { openDoors, closeDoors } from './psd';
-import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation, departureBerthAfterReverse, depotTasks, DEPOT_ENTRY_CLEAR } from './timetable';
+import { blockTasks, tripTasks, addTurnback, turnbackAt, buildStops, platformBerth, entryStation, departureBerthAfterReverse, depotTasks, DEPOT_ENTRY_CLEAR, serviceEnd } from './timetable';
 import { STATIONS, LINE_INFO, OPERATIONS } from '../data/line2';
 import { boardAndAlight, boardWhileOpen } from './passengers';
 import { dmiNote } from './dmi';
@@ -578,8 +578,8 @@ export function setTripFromTasks(sim: Sim, tr: Train) {
   if (tr.tripId !== trip.id) {
     tr.tripId = trip.id;
     tr.tripNo = trip.no;
-    tr.destStation = trip.to;
-    tr.destText = STATIONS[trip.to].name;
+    tr.destStation = serviceEnd(sim.plan, trip);
+    tr.destText = STATIONS[tr.destStation].name;
     tr.inService = trip.revenue;
     // Live delay belongs to this assignment, not the completed inbound trip.
     if (t.arr === null && t.dep !== null) tr.delay = Math.max(0, sim.t - t.dep);

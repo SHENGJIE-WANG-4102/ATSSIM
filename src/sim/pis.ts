@@ -8,6 +8,7 @@ import type { PisData, PisRow, TrackDir } from './model';
 import { STATIONS, LINE_INFO } from '../data/line2';
 import { FIRST_LAST } from '../data/firstlast';
 import { PERF } from './dynamics';
+import { serviceEnd } from './timetable';
 
 /** Platform countdown: it counts down to the train standing in the platform
  *  (an arriving train still counts), then reads 00:00 while it stands. */
@@ -100,11 +101,12 @@ export function computePis(sim: Sim, station: number): PisData {
       else if (i === 0 && tr.stopDist < 350) status = 'arriving';
       const trip = t.trip >= 0 ? sim.plan.trips[t.trip] : null;
       // a train terminating here is still listed by its destination name, as photographed (D86)
-      const dest = t.dep === null ? STATIONS[station].name : trip ? STATIONS[trip.to].name : tr.destText;
+      const end = t.dep === null ? station : trip ? serviceEnd(sim.plan, trip) : -1;
+      const dest = end >= 0 ? STATIONS[end].name : tr.destText;
       // a train starting here waits for its planned departure
       if (status === 'eta' && t.dep !== null && t.arr === null) eta = Math.max(eta, t.dep - 60);
       listed.add(t.trip);
-      out[track].push({ dest, ...(t.noBoard ? { noBoard: true } : {}), destSt: t.dep === null ? station : trip ? trip.to : -1, dwellRemaining: i === 0 && tr.phase === 'dwell' && t.dep !== null ? Math.max(0, tr.dwellUntil - sim.t) : undefined, eta: Math.max(0, eta - sim.t), status, trip: trip?.no ?? tr.tripNo, load: Math.min(1.3, tr.load / LINE_INFO.capacity) });
+      out[track].push({ dest, ...(t.noBoard ? { noBoard: true } : {}), destSt: end, dwellRemaining: i === 0 && tr.phase === 'dwell' && t.dep !== null ? Math.max(0, tr.dwellUntil - sim.t) : undefined, eta: Math.max(0, eta - sim.t), status, trip: trip?.no ?? tr.tripNo, load: Math.min(1.3, tr.load / LINE_INFO.capacity) });
       break;
     }
   }
@@ -125,7 +127,8 @@ export function computePis(sim: Sim, station: number): PisData {
     // a late car still to come keeps its place on the board, delayed by its
     // present lateness, rather than counting to zero and vanishing
     const expected = first.dep + (vehicle ? Math.max(0, vehicle.delay) : 0);
-    out[trip.dir].push({ dest: STATIONS[trip.to].name, destSt: trip.to, eta: Math.max(0, expected - sim.t),
+    const end = serviceEnd(sim.plan, trip);
+    out[trip.dir].push({ dest: STATIONS[end].name, destSt: end, eta: Math.max(0, expected - sim.t),
       status: 'eta', trip: trip.no, load: vehicle ? Math.min(1.3, vehicle.load/LINE_INFO.capacity) : 0 });
   }
   for (const k of ['DN', 'UP'] as const) out[k] = out[k].sort((a, b) => a.eta - b.eta).slice(0, 3);

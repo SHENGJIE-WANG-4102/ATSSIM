@@ -3586,6 +3586,20 @@ function returnSharesTurnExit(topo: Topology, depot: number, incoming: Trip, out
 }
 
 /** Task list for a block (from its first trip). */
+/** Where a passenger on `trip` is carried: a trip that runs through its last
+ * station without stopping (an opening feeder, D73) goes on as its block's next
+ * trip in the same direction, so destination displays name that trip's end. */
+export function serviceEnd(plan: Pick<Plan, 'trips' | 'blocks'>, trip: Trip): number {
+  for (let k = 0; k < 8 && trip.stops.at(-1)?.stop === false; k++) {
+    const block = plan.blocks[trip.block];
+    if (!block) break;
+    const next = block.trips.slice(block.trips.indexOf(trip.id) + 1).map(id => plan.trips[id]).find(t => !t.cancelled);
+    if (!next || next.dir !== trip.dir || next.from !== trip.to || !next.revenue) break;
+    trip = next;
+  }
+  return trip.to;
+}
+
 export function blockTasks(topo: Topology, plan: Plan, block: Block, fromTrip = 0): Task[] {
   const tasks: Task[] = [];
   const ids = block.trips.slice(fromTrip);
