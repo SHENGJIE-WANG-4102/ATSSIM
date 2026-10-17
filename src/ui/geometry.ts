@@ -317,9 +317,12 @@ export class Geometry {
   trainBody(tr: Pick<TrainSnap, 'link' | 'off' | 'dir' | 'body' | 'v'>, length: number, swPos: (sw: number) => 'N' | 'R') {
     const out: { x1: number; y1: number; x2: number; y2: number; section: number }[] = [];
     let link = tr.link, off = tr.off, dir = tr.dir, remaining = length;
-    // A train standing wholly on a platform or berth link is centred on its footprint.
+    // A train standing at a stabling berth (siding, turnback, storage) is centred
+    // on its footprint. Not at a platform: the head at the stopping point already
+    // keeps the symbol inside the shortest platform, and recentring there made it
+    // jump back each time a train stopped.
     if (tr.v < .05 && tr.body.length === 3
-      && (this.topo.platforms.some(p => p.link === link) || this.topo.berths.some(b => b.link === link && Math.abs(b.offset-off) < 5))) {
+      && this.topo.berths.some(b => b.link === link && b.kind !== 'platform' && Math.abs(b.offset-off) < 5)) {
       const segments = this.linkSegs(link);
       if (segments.length === 1) {
         const s = segments[0], scale = Math.hypot(s.x2-s.x1,s.y2-s.y1)/this.topo.links[link].len;

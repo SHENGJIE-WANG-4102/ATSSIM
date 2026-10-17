@@ -41,6 +41,12 @@ describe('fixed length train symbols',()=>{
     expect((segments[0].x1+segments[0].x2)/2).toBeCloseTo(50);
     expect(tr.off).toBe(800);
   });
+  it('keeps a train stopped at a platform anchored at its head',()=>{
+    const g=geometry();
+    g.topo.berths.push({link:0,offset:800,kind:'platform'} as Topology['berths'][number]);
+    const segments=g.trainBody({link:0,off:800,dir:1,body:[0,200,800],v:0},22,N);
+    expect(segments[0].x1).toBeCloseTo(80);
+  });
   it('continues behind the physical tail over the switch leg it lies in and reports the sections',()=>{
     const g=geometry();
     Object.assign(g.topo.nodes[1],{kind:'switch',sw:0,toe:0,normal:1,reverse:3});
