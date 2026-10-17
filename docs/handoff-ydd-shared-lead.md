@@ -2,7 +2,7 @@
 
 ## 现象
 
-用户压测诊断 `D:\Windows_Users\Downloads\line2-diagnostics-39885.json`（工作日；重放命令 `npx tsx work/probe/replay-delay.ts <文件>`，脚本在 Claude 的 worktree 里，可以照抄一份到自己的 `work/`）。远东大道下行 09:43–10:15 累计晚点约 5954 s，25 列，最大晚点 539 s。
+用户压测诊断 `D:\Windows_Users\Downloads\line2-diagnostics-39885.json`（工作日；重放命令 `npx tsx work/probe/replay-delay.ts <文件>`，脚本已放在主工作区 `work/probe/`）。远东大道下行 09:43–10:15 累计晚点约 5954 s，25 列，最大晚点 539 s。
 
 **基本图本身就有冲突，不是加开造成的**：
 - 车底 56：4091（淞虹路→远东大道，09:33:46 到）在远东大道出入段线 YDD1 折返，待发到 09:47:22，接着跑 4148。
