@@ -1612,13 +1612,18 @@ function goingIn(sim: Sim, tr: Train, depot: number): boolean {
   return tr.tasks.slice(0, i).every((t) => (t.k === 'stop' || t.k === 'reverse') && t.station === sim.topo.depots[depot].station);
 }
 
-/** a depot exit standing on the shared lead, still to change ends at the depot's station */
+/** A train standing on the shared lead this train will go in by (a depot
+ * exit changing ends, or a turnback waiting there): this train must not take
+ * the platform first, or neither could move (D82). A train on the depot's
+ * other lead (淞虹路 has two) is not in its way and does not hold it. */
 function exitOnLead(sim: Sim, self: Train, depot: number): Train | undefined {
-  const station = sim.topo.depots[depot].station;
-  return sim.trainList.find((o) => o !== self && !o.failed && sharedLeadUnder(sim, o) === depot
-    && (o.tasks.some((t) => t.k === 'stop' && t.note === '出段换端' && t.station === station)
-      || (o.tbStage === 'arrive' || o.tbStage === 'depart' || o.phase === 'reversing')
-        && o.tasks.some(t => t.k === 'stop' && t.station === station)));
+  const dp = sim.topo.depots[depot];
+  const task = self.tasks.find((t): t is DepotTask => t.k === 'depot');
+  const own = task?.berth !== undefined ? dp.entryBerths.indexOf(task.berth) : -1;
+  const paths = dp.transferPaths.filter((p, i) => p.flow === 'shared' && (own < 0 || i === own));
+  return sim.trainList.find((o) => o !== self && !o.failed
+    && o.body.some((b) => paths.some((p) => b.link === p.stub || p.links.includes(b.link)))
+    && o.tasks.some((t) => t.k === 'stop' && t.station === dp.station));
 }
 
 /** all turnback berths at the station are occupied and another train is queued to turn back */
