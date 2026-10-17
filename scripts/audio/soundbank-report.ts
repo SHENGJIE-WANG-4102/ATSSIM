@@ -6,7 +6,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { SOUND_BANK, SOUNDBANK_DIRECTORY, clipDuration } from '../../src/data/soundbank';
 import { ONBOARD_ANNOUNCEMENTS, ONBOARD_NEXT_DELAY_S, ONBOARD_ARRIVAL_ADVANCE_S,
-  ONBOARD_DESTINATIONS, ORIGINAL_ONBOARD, VOICE_PARTS, VOICE_SOURCES, compatibleVoiceRecipe } from '../../src/data/onboardbank';
+  ONBOARD_DESTINATIONS, RECORDED_ONBOARD, VOICE_PARTS, VOICE_SOURCES, compatibleVoiceRecipe } from '../../src/data/onboardbank';
 import { RECORDING_SOURCES } from '../../src/data/ridelog';
 import { STATIONS } from '../../src/data/line2';
 const ids = new Set<string>(), files = new Set<string>();
@@ -26,7 +26,7 @@ for (const entry of ONBOARD_ANNOUNCEMENTS) for (const id of [entry.next?.clipId,
   const clip = SOUND_BANK.find(c => c.id === id);
   if (!clip || clip.station !== entry.station || clip.direction !== entry.direction || clip.doorSide !== entry.doorSide) throw new Error(`Wrong PA identity/door: ${id}`);
 }
-for (const row of ORIGINAL_ONBOARD) for (const boundary of [row.destinationSentence, row.transferRange])
+for (const row of RECORDED_ONBOARD) for (const boundary of [row.destinationSentence, row.transferRange])
   if (boundary && (boundary[0] < row.range[0] || boundary[1] > row.range[1])) throw new Error(`Sentence outside original PA: ${row.id}`);
 if (!Number.isFinite(ONBOARD_NEXT_DELAY_S) || !Number.isFinite(ONBOARD_ARRIVAL_ADVANCE_S)) throw new Error('Missing measured timing mean');
 for (const part of VOICE_PARTS) {
@@ -34,7 +34,7 @@ for (const part of VOICE_PARTS) {
   if (!source || part.range[0] < 0 || part.range[1] > source.durationS || part.range[1] <= part.range[0]) throw new Error(`Invalid voice range: ${part.id}`);
   if (part.file && !existsSync(join('public', SOUNDBANK_DIRECTORY, part.file))) throw new Error(`Missing standalone voice: ${part.id}`);
 }
-console.log(`Verified ${SOUND_BANK.length + VOICE_PARTS.filter(p => p.file).length} local files; ${SOUND_BANK.filter(c => c.provenance === 'original').length} whole originals, ${VOICE_PARTS.length} library parts.`);
+console.log(`Verified ${SOUND_BANK.length + VOICE_PARTS.filter(p => p.file).length} local files; ${SOUND_BANK.filter(c => c.provenance === 'original').length} original recordings/slices, ${VOICE_PARTS.length} library parts.`);
 console.log(`Complete PA means: departure +${ONBOARD_NEXT_DELAY_S.toFixed(2)} s; arrival -${ONBOARD_ARRIVAL_ADVANCE_S.toFixed(2)} s.`);
 console.log('\n| 站 | 方向 | 蟠祥路 | 广兰路 | 机场 |');
 console.log('|---|---|---|---|---|');

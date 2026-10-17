@@ -4,13 +4,13 @@ import { StationAudio, StationSoundPlanner, compatibleBoth, platformAnnouncement
   isUndergroundStation, RecordedSoundPlayer, type StationAudioFrame, type StationTrain, type StationSoundCommand } from '../src/ui/stationaudio';
 import { OnboardAudio, OnboardSoundPlanner, cabinVolumes, onboardFrame, type OnboardAudioFrame } from '../src/ui/onboardaudio';
 import { VOICE_PARTS, ORIGINAL_ONBOARD, ONBOARD_DESTINATIONS, onboardAnnouncement, onboardDoorSide, VOICE_CROSSFADE_S, RECORDED_VOLUME_GAINS,
-  FIELD_1016_VOICE_PARTS, FIELD_1016_TERMINAL_CLIP, compatibleVoiceRecipe } from '../src/data/onboardbank';
+  FIELD_1016_VOICE_PARTS, FIELD_1016_TERMINAL_CLIP, compatibleVoiceRecipe, RECORDED_ONBOARD } from '../src/data/onboardbank';
 import { Audio } from '../src/ui/audio';
 import { DoorAudio, DoorSoundPlanner, doorCycleSplit, type DoorAudioFrame } from '../src/ui/dooraudio';
 import { DOOR_TAKES } from '../src/data/doorbank';
 import type { OnboardAnnouncement, SoundClip } from '../src/data/soundbank';
 import { STATIONS } from '../src/data/line2';
-import type { Snapshot, PisData } from '../src/sim/model';
+import type { Snapshot, PisData, TrainSnap } from '../src/sim/model';
 import type { Topology } from '../src/sim/topology';
 
 const station = STATIONS.findIndex(s => s.name === '江苏路');
@@ -470,11 +470,19 @@ describe('whole carriage PA, exact terminus and pre-rendered compositions', () =
   it.each(['世纪公园', '龙阳路', '张江高科', '金科路'])('keeps the recorded transfer on short route, removes it for airport at %s', station => {
     const short = clip(pa(station, 'DN', '广兰路').arrived!.clipId);
     const airport = clip(pa(station, 'DN', '浦东1号2号航站楼').arrived!.clipId);
-    expect(short.provenance).toBe('original'); expect(airport.provenance).toBe('composed');
+    expect(short.provenance).toBe('original');
     const original = ORIGINAL_ONBOARD.find(a => a.id === short.id)!;
     expect(original.transferRange).toBeDefined();
-    const remaining = VOICE_PARTS.find(p => p.id === airport.composition![0])!;
-    expect(remaining.range[1]).toBe(original.transferRange![0]);
+    if (station === '金科路') {
+      // The opposite-direction whole recording has no short-turn transfer.
+      expect(airport.provenance).toBe('original');
+      expect(airport.recordedDirection).toBe('UP');
+      expect(airport.range).toEqual([111.48, 130.2]);
+      return;
+    }
+    expect(airport.provenance).toBe('original'); expect(airport.composition).toBeUndefined();
+    expect(airport.range[0]).toBe(original.range[0]);
+    expect(airport.range[1]).toBe(original.transferRange![0]);
   });
   it('plain arrivals remain original across termini in the same direction', () => {
     expect(pa('陆家嘴', 'DN', '广兰路').arrived!.clipId).toBe(pa('陆家嘴', 'DN', '浦东1号2号航站楼').arrived!.clipId);
@@ -489,12 +497,16 @@ describe('whole carriage PA, exact terminus and pre-rendered compositions', () =
     expect(clip(a.next!.clipId).composition).not.toContain('zh-left');
     expect(clip(a.arrived!.clipId).composition).not.toContain('original-arrived-dn-gll');
   });
-  it('uses the explicitly permitted platform name for JSL in both directions and all termini', () => {
+  it('uses recorded JSL announcements first and the permitted platform name only for remaining gaps', () => {
     for (const dest of ONBOARD_DESTINATIONS) for (const dir of ['DN', 'UP'] as const) {
       const a = pa('江苏路', dir, dest);
       expect(a.missingSentences).toEqual([]);
       for (const id of [a.next!.clipId, a.arrived!.clipId]) {
-        const c = clip(id); expect(c.provenance).toBe('composed');
+        const c = clip(id);
+        if (id === a.arrived!.clipId || dir === 'DN' && dest === '浦东1号2号航站楼') {
+          expect(c.provenance).toBe('original'); expect(c.composition).toBeUndefined(); continue;
+        }
+        expect(c.provenance).toBe('composed');
         expect(c.composition).toContain('zh-name-jsl');
         expect(c.composition).toContain('jsl-proper-name');
         expect(c.composition).toContain('en-road');
@@ -515,6 +527,7 @@ describe('whole carriage PA, exact terminus and pre-rendered compositions', () =
         expect(a.missingSentences).toEqual([]);
         for (const id of [a.next!.clipId, a.arrived!.clipId]) {
           const c = clip(id);
+          if (c.provenance === 'original') { expect(c.composition).toBeUndefined(); continue; }
           expect(c.composition).toContain(`zh-name-${STATIONS.find(s => s.name === station)!.id.toLowerCase()}`);
           expect(c.composition).toContain(`en-name-${STATIONS.find(s => s.name === station)!.id.toLowerCase()}`);
         }
@@ -532,7 +545,9 @@ describe('whole carriage PA, exact terminus and pre-rendered compositions', () =
       const a = pa('北新泾', dir, dest);
       expect(a.missingSentences).toEqual([]);
       for (const id of [a.next!.clipId, a.arrived!.clipId]) {
-        const recipe = clip(id).composition!;
+        const c = clip(id);
+        if (c.provenance === 'original') { expect(c.composition).toBeUndefined(); continue; }
+        const recipe = c.composition!;
         expect(recipe).toContain('en-name-bxj');
         expect(recipe).toContain('zh-name-bxj');
         expect(recipe.indexOf('zh-name-bxj')).toBeLessThan(recipe.indexOf('en-name-bxj'));
@@ -543,11 +558,45 @@ describe('whole carriage PA, exact terminus and pre-rendered compositions', () =
     const a = pa('蟠祥路·国家会计学院', 'UP', '蟠祥路·国家会计学院');
     expect(clip(a.arrived!.clipId)).toEqual(FIELD_1016_TERMINAL_CLIP);
     expect(clip(a.arrived!.clipId).range).toEqual([907.20, 934.80]);
-    expect(clip(a.next!.clipId).composition).toContain('en-next-terminal-pxl');
-    expect(clip(a.next!.clipId).composition).toContain('en-name-pxl');
+    expect(clip(a.next!.clipId).id).toBe('field-original-next-up-pxl');
+    expect(clip(a.next!.clipId).provenance).toBe('original');
+    expect(clip(a.next!.clipId).composition).toBeUndefined();
     expect(onboardAnnouncement('蟠祥路·国家会计学院', 'DN', '广兰路', 'L')).toBeUndefined();
     expect(onboardAnnouncement('蟠祥路·国家会计学院', 'UP', '浦东1号2号航站楼', 'L')).toBeUndefined();
     expect(ORIGINAL_ONBOARD.some(row => row.id === FIELD_1016_TERMINAL_CLIP.id)).toBe(false);
+  });
+  it('uses the video next-station phrase for SHR instead of an uncertain terminus word', () => {
+    const name = VOICE_PARTS.find(p => p.id === 'zh-name-shr')!;
+    expect(name.source).toBe('cabin-reference'); expect(name.range).toEqual([179.08, 179.98]);
+    expect(clip(pa('淞虹路', 'UP', '蟠祥路·国家会计学院').next!.clipId).id).toBe('field-original-next-up-shr');
+  });
+  it('prefers every exact compatible whole recording and leaves incompatible termini composed', () => {
+    for (const row of RECORDED_ONBOARD) {
+      const destination = row.type === 'next' || row.transferRange || row.terminalOnly ? row.recordedDestination : ONBOARD_DESTINATIONS[0];
+      if (!ONBOARD_DESTINATIONS.some(d => d === destination)) continue;
+      const a = onboardAnnouncement(row.station, row.direction, destination, row.doorSide);
+      if (!a) continue;
+      const id = row.type === 'next' ? a.next?.clipId : a.arrived?.clipId;
+      expect(clip(id!).provenance).toBe('original');
+      expect(clip(id!).composition).toBeUndefined();
+    }
+    expect(clip(pa('国家会展中心', 'UP', '浦东1号2号航站楼').next!.clipId).provenance).toBe('composed');
+    expect(clip(pa('国家会展中心', 'UP', '蟠祥路·国家会计学院').next!.clipId).id).toBe('field-original-next-up-gjh');
+  });
+  it('uses both-side wording at eastbound HQ2 even when the physical snapshot supplies L', () => {
+    const st = STATIONS.findIndex(s => s.id === 'HQ2');
+    expect(onboardDoorSide(st, 'DN', '浦东1号2号航站楼')).toBe('B');
+    expect(onboardDoorSide(st, 'UP', '蟠祥路·国家会计学院')).toBe('L');
+    const a = pa('虹桥2号航站楼', 'DN', '浦东1号2号航站楼');
+    expect(clip(a.next!.clipId).composition).toContain('zh-both');
+    expect(clip(a.next!.clipId).composition).toContain('en-both');
+    expect(clip(a.next!.clipId).composition).not.toContain('zh-left');
+    expect(clip(a.arrived!.clipId).provenance).toBe('original');
+    expect(clip(a.arrived!.clipId).doorSide).toBe('B');
+    const topo = { links: [{ platform: -1, track: 'DN' }], platforms: [], stations: STATIONS.map(() => ({ platforms: { DN: 0, UP: 1 } })) } as unknown as Topology;
+    const train = { ...tr({ nextStation: st, direction: 'DN' }), link: 0, dir: 1, stopDist: 1000, task: '停站 虹桥2号航站楼', dest: '浦东1号2号航站楼', platSide: 'L' } as unknown as TrainSnap;
+    const snap = { t: 100, speed: 1, paused: false, platforms: new Uint16Array(2) } as unknown as Snapshot;
+    expect(onboardFrame(snap, train, topo, null).doorSide).toBe('B');
   });
   it('rejects different speakers within a language except the explicit JSL proper-name exception', () => {
     const zh = VOICE_PARTS.find(p => p.id === 'zh-next')!;

@@ -15,6 +15,8 @@ export type SoundKind = 'arrive' | 'depart' | 'ambience' | 'prefix' | 'station-n
   | 'door-warn-open' | 'door-warn-close' | 'door-motion-open' | 'door-motion-close'
   | 'interior-departure' | 'interior-special' | 'interior-prefix' | 'interior-name' | 'interior-suffix' | 'interior-arrival' | 'interior-rolling' | 'interior-idle';
 export type SoundDirection = 'DN' | 'UP' | 'both' | 'shared';
+/** Audio door wording; B is both sides, independent of the physical snapshot. */
+export type AnnouncementDoorSide = 'L' | 'R' | 'B';
 export interface SoundClip {
   id: string; file: string; kind: SoundKind; station: string; direction: SoundDirection;
   side: 'east' | 'west' | 'both' | 'shared';
@@ -40,8 +42,10 @@ export interface SoundClip {
   effects?: 'cabin-floor' | 'rolling-noise' | 'door-warning' | 'door-mechanism';
   provenance?: 'original' | 'composed';
   recordedDestination?: string;
+  /** Present when direction-neutral whole arrival audio is reused unchanged. */
+  recordedDirection?: 'DN' | 'UP';
   destination?: string;
-  doorSide?: 'L' | 'R';
+  doorSide?: AnnouncementDoorSide;
   /** Ordered library parts, rendered offline with 30 ms seams.
    * JSL borrows its exact proper name from platform PA by user decision. */
   composition?: readonly string[];

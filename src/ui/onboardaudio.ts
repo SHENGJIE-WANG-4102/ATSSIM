@@ -2,7 +2,7 @@
  * Original whole PA wins; exact-name, same-speaker compositions are pre-rendered.
  */
 import { SOUND_BANK, ONBOARD_ANNOUNCEMENTS, ONBOARD_NEXT_DELAY_S, ONBOARD_ARRIVAL_ADVANCE_S,
-  clipDuration, type SoundClip, type OnboardAnnouncement } from '../data/soundbank';
+  clipDuration, type SoundClip, type OnboardAnnouncement, type AnnouncementDoorSide } from '../data/soundbank';
 import { STATIONS } from '../data/line2';
 import { onboardAnnouncement, onboardDoorSide } from '../data/onboardbank';
 import { PLT, type Snapshot, type TrainSnap, type Plan } from '../sim/model';
@@ -12,7 +12,7 @@ import { RecordedSoundPlayer, automatic, audioTrain, predictStationStop, VVVF_MA
 
 export interface OnboardAudioFrame {
   t: number; rate: number; paused: boolean; muted: boolean; enabled: boolean;
-  train: StationTrain | null; willStop: boolean; destination: string; doorSide: 'L' | 'R';
+  train: StationTrain | null; willStop: boolean; destination: string; doorSide: AnnouncementDoorSide;
 }
 export function onboardFrame(snap: Snapshot, heard: TrainSnap | null, topo: Topology, plan: Plan | null): Omit<OnboardAudioFrame, 'muted' | 'enabled'> {
   const train = heard ? audioTrain(heard, heard.nextStation, topo) : null;
@@ -20,8 +20,9 @@ export function onboardFrame(snap: Snapshot, heard: TrainSnap | null, topo: Topo
   const platform = train && topo.stations[train.nextStation]?.platforms[train.direction];
   const skipped = platform !== null && platform !== undefined && !!(snap.platforms[platform] & PLT.SKIP);
   const destination = heard?.dest ?? '';
+  const paSide = onboardDoorSide(train?.nextStation ?? -1, train?.direction ?? 'DN', destination);
   return { t: snap.t, rate: snap.speed, paused: snap.paused, train, destination,
-    doorSide: heard?.platSide || onboardDoorSide(train?.nextStation ?? -1, train?.direction ?? 'DN', destination),
+    doorSide: paSide === 'B' ? 'B' : heard?.platSide || paSide,
     // A distant call can lie beyond the authority scan, with stopDist=-1.
     // The plan/worker intent still identifies it as a call for departure PA.
     willStop: !!train && train.nextStation >= 0 && planned?.stop !== false && !skipped && heard?.nextStopSkipped !== true &&

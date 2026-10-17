@@ -134,7 +134,10 @@ def main():
     previous_path = work / 'loudness.json'
     previous = json.loads(previous_path.read_text(encoding='utf-8')) if selected and previous_path.exists() else None
     # Compare cabin noise against actual original complete PA, not its target.
-    speech = [c for c in all_clips if c.get('provenance') == 'original' and c['source'] == 'ride-east']
+    # Keep the old PA reference population: direction aliases and contiguous
+    # trims must not change cabin/rolling loudness on a clean full render.
+    speech = [c for c in all_clips if c.get('provenance') == 'original' and c['source'] == 'ride-east'
+              and c['id'].startswith('original-') and not c['id'].startswith('original-slice-')]
     raw_voice = [] if previous else [float(measure(decode(c['source'], c['range']))['input_i']) for c in speech]
     voice_reference = previous['voiceReferenceLUFS'] if previous else float(np.mean(raw_voice))
     print(f'Original carriage PA reference: {voice_reference:.2f} LUFS', flush=True)
@@ -169,9 +172,15 @@ def main():
         a, before = normalise(a, -16)
         library[p['id']] = a
         if p.get('file'):
+            # Fade first, then meter the standalone word. Fading a very short
+            # normalised name afterwards can otherwise lower it by >1 LU.
+            standalone = a.copy()
+            head, tail = min(round(.015 * RATE), len(a)), min(round(.025 * RATE), len(a))
+            standalone[:head] *= np.linspace(0, 1, head)
+            standalone[-tail:] *= np.linspace(1, 0, tail)
+            standalone, _ = normalise(standalone, -16)
             run(['ffmpeg', '-v', 'error', '-y', '-f', 'f32le', '-ar', str(RATE), '-ac', '1', '-i', 'pipe:0',
-                 '-af', 'afade=t=in:d=0.015,afade=t=out:st=' + str(len(a) / RATE - .025) + ':d=0.025',
-                 '-c:a', 'libmp3lame', '-b:a', '112k', str(out / p['file'])], a.astype('<f4').tobytes())
+                 '-c:a', 'libmp3lame', '-b:a', '112k', str(out / p['file'])], standalone.astype('<f4').tobytes())
         measurements.append({'id': p['id'], 'class': 'library-' + p['language'], 'before': before,
                              'after': float(measure(a)['input_i']), 'target': -16})
     for clip in clips:

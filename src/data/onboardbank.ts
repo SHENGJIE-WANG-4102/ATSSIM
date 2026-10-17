@@ -7,7 +7,7 @@
  * Empty/missing voice parts suppress that sentence; no generated speech.
  */
 import { STATIONS } from './line2';
-import type { SoundClip } from './soundbank';
+import type { SoundClip, AnnouncementDoorSide } from './soundbank';
 export const ANNOUNCEMENT_LUFS = -16;
 export const VOICE_CROSSFADE_S = .03;
 export const RECORDED_VOLUME_GAINS = { small: .6, medium: 1, large: 1.45 } as const;
@@ -21,19 +21,20 @@ export interface VoicePart {
 export interface OriginalAnnouncement {
   id: string; station: string; direction: 'DN' | 'UP'; type: 'next' | 'arrived';
   source: SoundClip['source']; recordedDestination: string; range: [number, number];
-  confidence: SoundClip['confidence']; doorSide: 'L' | 'R';
+  confidence: SoundClip['confidence']; doorSide: AnnouncementDoorSide;
   destinationSentence?: [number, number]; destinationName?: [number, number];
   transferRange?: [number, number]; terminalOnly?: boolean;
+  recordedDirection?: 'DN' | 'UP';
   delayS?: number | null; advanceS?: number; measuredAdvance?: boolean;
 }
 export const VOICE_SOURCES = [
   // User-supplied door reference: only the two door-direction sentences.
   { id: 'door-reference', filename: '嘉定北~江苏路车内110561录音.wav', durationS: 2684.84 },
-  // User decision (D89): also use the cabin calibration video for missing BXJ.
+  // User decisions (D89/D90): use the cabin video for BXJ and corrected SHR.
   { id: 'cabin-reference', filename: 'VID_20261016_195626_DOLBY.mp4', durationS: 203.244563 },
 ] as const;
-/** D89: missing western names and terminal sentences only. No existing part
- * is replaced. 【假设】 repeated PA phrases match the stock voice separately
+/** D89/D90: missing western names, terminal sentences and corrected SHR cuts.
+ * 【假设】 repeated PA phrases match the stock voice separately
  * in each language; this is an acoustic comparison, not speaker authentication.
  * Every new cut has its own local file, independent of the original WAVs.
  * Chinese BXJ comes from the user-designated cabin video. Any suspected
@@ -46,8 +47,10 @@ export const FIELD_1016_VOICE_PARTS: readonly VoicePart[] = ([
   { id: 'en-name-hqz', language: 'en', speaker: 'onboard-en', role: 'name', name: '虹桥火车站', source: 'ride-1016-west-end', range: [548.44, 550.56], confidence: 'medium' },
   { id: 'zh-name-hq2', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '虹桥2号航站楼', source: 'ride-1016-west-end', range: [146.36, 148.20], confidence: 'medium' },
   { id: 'en-name-hq2', language: 'en', speaker: 'onboard-en', role: 'name', name: '虹桥2号航站楼', source: 'ride-1016-west-end', range: [181.56, 184.12], confidence: 'medium' },
-  { id: 'zh-name-shr', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '淞虹路', source: 'ride-1016-east-end', range: [142.07, 143.03], confidence: 'medium' },
-  { id: 'en-name-shr', language: 'en', speaker: 'onboard-en', role: 'name', name: '淞虹路', source: 'ride-1016-west-end', range: [52.08, 53.44], confidence: 'medium' },
+  { id: 'zh-name-shr', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '淞虹路', source: 'cabin-reference', range: [179.08, 179.98], confidence: 'medium' },
+  { id: 'en-name-shr', language: 'en', speaker: 'onboard-en', role: 'name', name: '淞虹路', source: 'cabin-reference', range: [197.08, 198.20], confidence: 'medium' },
+  { id: 'zh-both', language: 'zh', speaker: 'onboard-zh', role: 'both', source: 'ride-1016-east-end', range: [33.16, 34.24], confidence: 'medium' },
+  { id: 'en-both', language: 'en', speaker: 'onboard-en', role: 'both', source: 'ride-1016-east-end', range: [59.52, 61.72], confidence: 'medium' },
   { id: 'zh-name-bxj', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '北新泾', source: 'cabin-reference', range: [25.78, 26.84], confidence: 'medium' },
   { id: 'en-name-bxj', language: 'en', speaker: 'onboard-en', role: 'name', name: '北新泾', source: 'ride-1016-east-night', range: [39.70, 41.12], confidence: 'medium' },
   { id: 'zh-name-wnl', language: 'zh', speaker: 'onboard-zh', role: 'name', name: '威宁路', source: 'ride-1016-west-core', range: [173.88, 174.84], confidence: 'medium' },
@@ -210,7 +213,7 @@ export const ORIGINAL_ONBOARD: readonly OriginalAnnouncement[] = [
 ];
 export interface OnboardAnnouncement {
   station: string; direction: 'DN' | 'UP'; source: SoundClip['source'];
-  destination: string; doorSide: 'L' | 'R'; missingSentences: readonly string[];
+  destination: string; doorSide: AnnouncementDoorSide; missingSentences: readonly string[];
   next?: { clipId: string; phraseAt: number; delayS: number | null; confidence: SoundClip['confidence'] };
   arrived?: { clipId: string; phraseAt: number; advanceS: number; measuredAdvance: boolean; confidence: SoundClip['confidence'] };
 }
@@ -224,6 +227,46 @@ export const SPECIAL_ONBOARD = ORIGINAL_ONBOARD.filter(a => a.transferRange).map
   confidence: a.measuredAdvance ? a.confidence : 'low' as const,
 }));
 export const ONBOARD_DESTINATIONS = ['蟠祥路·国家会计学院', '广兰路', '浦东1号2号航站楼'] as const;
+/** User decision: use complete compatible recordings before compositions.
+ * New sources stay outside ORIGINAL_ONBOARD to preserve the old timing means.
+ * Ranges include recorded transfer/safety sentences; no word substitution.
+ * Unknown termini and suspected passenger-overlap candidates are not admitted.
+ */
+export const FIELD_ORIGINAL_ONBOARD: readonly OriginalAnnouncement[] = [
+  { id: 'field-original-next-up-lsg', station: '娄山关路', direction: 'UP', type: 'next', source: 'ride-1016-west-core', recordedDestination: '蟠祥路·国家会计学院', range: [8.20, 40.05], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-up-lsg', station: '娄山关路', direction: 'UP', type: 'arrived', source: 'ride-1016-west-core', recordedDestination: '蟠祥路·国家会计学院', range: [97.40, 114.30], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-up-wnl', station: '威宁路', direction: 'UP', type: 'next', source: 'ride-1016-west-core', recordedDestination: '蟠祥路·国家会计学院', range: [168.94, 195.00], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-up-wnl', station: '威宁路', direction: 'UP', type: 'arrived', source: 'ride-1016-west-core', recordedDestination: '蟠祥路·国家会计学院', range: [258.40, 275.20], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-up-shr', station: '淞虹路', direction: 'UP', type: 'next', source: 'cabin-reference', recordedDestination: '蟠祥路·国家会计学院', range: [173.70, 199.98], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-up-shr', station: '淞虹路', direction: 'UP', type: 'arrived', source: 'ride-1016-west-end', recordedDestination: '蟠祥路·国家会计学院', range: [49.96, 66.30], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-up-bxj', station: '北新泾', direction: 'UP', type: 'next', source: 'cabin-reference', recordedDestination: '蟠祥路·国家会计学院', range: [20.60, 46.80], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-up-bxj', station: '北新泾', direction: 'UP', type: 'arrived', source: 'cabin-reference', recordedDestination: '蟠祥路·国家会计学院', range: [91.00, 109.20], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-up-hq2', station: '虹桥2号航站楼', direction: 'UP', type: 'next', source: 'ride-1016-west-end', recordedDestination: '蟠祥路·国家会计学院', range: [140.88, 206.90], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-up-hq2', station: '虹桥2号航站楼', direction: 'UP', type: 'arrived', source: 'ride-1016-west-end', recordedDestination: '蟠祥路·国家会计学院', range: [421.90, 439.80], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-dn-hq2', station: '虹桥2号航站楼', direction: 'DN', type: 'arrived', source: 'ride-1016-east-end', recordedDestination: '未确认', range: [53.30, 73.40], doorSide: 'B', confidence: 'medium' },
+  { id: 'field-original-next-up-hqz', station: '虹桥火车站', direction: 'UP', type: 'next', source: 'ride-1016-west-end', recordedDestination: '蟠祥路·国家会计学院', range: [513.88, 534.20], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-up-hqz', station: '虹桥火车站', direction: 'UP', type: 'arrived', source: 'ride-1016-west-end', recordedDestination: '蟠祥路·国家会计学院', range: [546.40, 563.60], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-up-gjh', station: '国家会展中心', direction: 'UP', type: 'next', source: 'ride-1016-west-end', recordedDestination: '蟠祥路·国家会计学院', range: [636.90, 666.80], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-up-gjh', station: '国家会展中心', direction: 'UP', type: 'arrived', source: 'ride-1016-west-end', recordedDestination: '蟠祥路·国家会计学院', range: [734.40, 752.90], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-up-pxl', station: '蟠祥路·国家会计学院', direction: 'UP', type: 'next', source: 'ride-1016-west-end', recordedDestination: '蟠祥路·国家会计学院', range: [829.80, 863.40], doorSide: 'L', confidence: 'medium', terminalOnly: true },
+  { id: 'field-original-arrived-dn-bxj', station: '北新泾', direction: 'DN', type: 'arrived', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [37.60, 54.00], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-dn-wnl', station: '威宁路', direction: 'DN', type: 'next', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [125.48, 152.80], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-dn-wnl', station: '威宁路', direction: 'DN', type: 'arrived', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [198.40, 216.00], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-dn-lsg', station: '娄山关路', direction: 'DN', type: 'next', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [290.80, 323.40], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-dn-lsg', station: '娄山关路', direction: 'DN', type: 'arrived', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [380.40, 397.65], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-dn-zsg', station: '中山公园', direction: 'DN', type: 'next', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [477.40, 511.25], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-dn-zsg', station: '中山公园', direction: 'DN', type: 'arrived', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [577.20, 592.10], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-dn-jsl', station: '江苏路', direction: 'DN', type: 'next', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [672.48, 704.40], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-arrived-dn-jsl', station: '江苏路', direction: 'DN', type: 'arrived', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [753.60, 772.10], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-dn-jas', station: '静安寺', direction: 'DN', type: 'next', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [869.48, 904.05], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-dn-njx', station: '南京西路', direction: 'DN', type: 'next', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [1051.40, 1113.00], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-dn-rmg', station: '人民广场', direction: 'DN', type: 'next', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [1219.40, 1253.10], doorSide: 'L', confidence: 'medium' },
+  // The passenger call begins at 1431.86; the complete PA ends before it.
+  { id: 'field-original-next-dn-njd', station: '南京东路', direction: 'DN', type: 'next', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [1391.40, 1423.50], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-dn-ljz', station: '陆家嘴', direction: 'DN', type: 'next', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [1545.40, 1577.60], doorSide: 'L', confidence: 'medium' },
+  { id: 'field-original-next-dn-pdn', station: '浦东南路', direction: 'DN', type: 'next', source: 'ride-1016-east-night', recordedDestination: '浦东1号2号航站楼', range: [1727.48, 1755.80], doorSide: 'L', confidence: 'medium' },
+];
+export const RECORDED_ONBOARD = [...ORIGINAL_ONBOARD, ...FIELD_ORIGINAL_ONBOARD];
 const parts = new Map(VOICE_PARTS.map(p => [p.id, p]));
 const length = (id: string) => { const p = parts.get(id)!; return p.range[1] - p.range[0]; };
 const mean = (values: number[]) => values.reduce((a, b) => a + b, 0) / values.length;
@@ -231,9 +274,12 @@ export const ONBOARD_NEXT_DELAY_S = mean(ORIGINAL_ONBOARD.flatMap(a => a.type ==
 export const ONBOARD_ARRIVAL_ADVANCE_S = mean(ORIGINAL_ONBOARD.flatMap(a => a.type === 'arrived' && a.measuredAdvance && a.advanceS !== undefined && a.confidence !== 'low' ? [a.advanceS] : []));
 /** Layout is read only. The short-turn middle platform at GLL serves the UP
  * island; through DN service uses the DN side platform (line2.ts/D72).
- * The snapshot's platSide takes precedence when selecting a rendered variant.
+ * The snapshot supplies L/R for single-side variants. HQ2 eastbound B follows
+ * the user-confirmed platforms and recorded PA, independently of that flag.
  */
-export function onboardDoorSide(station: number, direction: 'DN' | 'UP', destination: string): 'L' | 'R' {
+export function onboardDoorSide(station: number, direction: 'DN' | 'UP', destination: string): AnnouncementDoorSide {
+  // User decision + recorded PA: HQ2 eastbound serves platforms on both sides.
+  if (STATIONS[station]?.id === 'HQ2' && direction === 'DN') return 'B';
   if (STATIONS[station]?.id === 'GLL' && destination === '广兰路') return 'L';
   return STATIONS[station]?.sidePlatform?.includes(direction) ? 'R' : 'L';
 }
@@ -255,12 +301,39 @@ const originalClip = (a: OriginalAnnouncement): SoundClip => ({ id: a.id, file: 
   kind: a.type === 'next' ? 'interior-departure' : 'interior-arrival', station: a.station,
   direction: a.direction, side: 'shared', source: a.source, range: a.range, both: false,
   confidence: a.confidence, provenance: 'original', recordedDestination: a.recordedDestination,
-  doorSide: a.doorSide });
-rendered.push(...ORIGINAL_ONBOARD.map(originalClip));
-function composed(station: string, direction: 'DN' | 'UP', destination: string, side: 'L' | 'R', type: 'next' | 'arrived', recipe: string[]): SoundClip | undefined {
+  doorSide: a.doorSide, ...(a.recordedDirection ? { recordedDirection: a.recordedDirection } : {}) });
+rendered.push(...RECORDED_ONBOARD.map(originalClip));
+function recordedClip(a: OriginalAnnouncement): SoundClip {
+  const existing = rendered.find(c => c.id === a.id);
+  if (existing) return existing;
+  const clip = originalClip(a); rendered.push(clip); return clip;
+}
+function matchingOriginal(station: string, direction: 'DN' | 'UP', destination: string, side: AnnouncementDoorSide, type: 'next' | 'arrived') {
+  const exact = RECORDED_ONBOARD.find(a => a.station === station && a.type === type && a.direction === direction && a.doorSide === side &&
+    (type === 'next' || a.transferRange || a.terminalOnly ? a.recordedDestination === destination : true));
+  if (exact) return exact;
+  // Ordinary arrivals say the station, door side and safety notices, without
+  // a direction/terminus. Reuse their complete waveform, recording its actual
+  // source direction; terminal/transfer/destination messages never qualify.
+  const neutral = type === 'arrived' ? RECORDED_ONBOARD.find(a => a.station === station && a.type === 'arrived' && a.doorSide === side &&
+    !a.transferRange && !a.destinationSentence && !a.terminalOnly) : undefined;
+  return neutral ? { ...neutral, id: `reused-${neutral.id}-${direction.toLowerCase()}`, direction, recordedDirection: neutral.direction } : undefined;
+}
+function composed(station: string, direction: 'DN' | 'UP', destination: string, side: AnnouncementDoorSide, type: 'next' | 'arrived', recipe: string[]): SoundClip | undefined {
   if (!recipe.length || recipe.some(id => !parts.has(id))) return undefined;
   if (!compatibleVoiceRecipe(recipe.map(id => parts.get(id)!), station)) throw new Error(`Incompatible PA speakers: ${station}`);
   const st = STATIONS.find(s => s.name === station)!;
+  // Removing a trailing short-turn notice leaves one contiguous recording;
+  // it does not require fragment assembly or a second library normalisation.
+  const parent = type === 'arrived' && recipe.length === 1 ? ORIGINAL_ONBOARD.find(a => a.id === recipe[0] || `${a.id}-body` === recipe[0]) : undefined;
+  if (parent) {
+    const part = parts.get(recipe[0])!;
+    const clip: SoundClip = { ...originalClip(parent), id: `original-slice-${type}-${direction.toLowerCase()}-${st.id.toLowerCase()}-${destinationId(destination)}-${side.toLowerCase()}`,
+      file: '', station, direction, doorSide: side, source: part.source, range: part.range, destination,
+      ...(parent.direction !== direction ? { recordedDirection: parent.direction } : {}) };
+    clip.file = `${clip.id}.mp3`;
+    rendered.push(clip); return clip;
+  }
   const id = `composed-${type}-${direction.toLowerCase()}-${st.id.toLowerCase()}-${destinationId(destination)}-${side.toLowerCase()}`;
   const first = parts.get(recipe[0])!;
   const confidence = recipe.some(id => parts.get(id)!.confidence === 'low') ? 'low' : 'medium';
@@ -279,11 +352,10 @@ for (let st = first; st <= last; st++) for (const direction of ['DN', 'UP'] as c
   const originals = ORIGINAL_ONBOARD.filter(a => a.station === station.name);
   const slot: OnboardAnnouncement = { station: station.name, direction, source: 'ride-east', destination, doorSide: side, missingSentences: missing };
   for (const type of ['next', 'arrived'] as const) {
-    const matching = originals.find(a => a.type === type && a.direction === direction && a.doorSide === side &&
-      (type === 'next' || a.transferRange || a.terminalOnly ? a.recordedDestination === destination : true));
+    const matching = matchingOriginal(station.name, direction, destination, side, type);
     // Do not use terminal-only GLL notices on a through service, or tell an
     // airport-bound passenger to get off and transfer to another airport train.
-    let clip = matching ? rendered.find(c => c.id === matching.id) : undefined;
+    let clip = matching ? recordedClip(matching) : undefined;
     const base = originals.find(a => a.type === type);
     if (!clip && base && !base.terminalOnly && side === base.doorSide) {
       const recipe = type === 'next'
@@ -331,13 +403,13 @@ export const FIELD_1016_TERMINAL_CLIP: SoundClip = {
   range: [907.20, 934.80], both: false, confidence: 'medium', provenance: 'original',
   recordedDestination: '蟠祥路·国家会计学院', doorSide: 'L',
 };
-// Only previously absent western slots are added; the legacy loop and all its
-// original/composed selections stay as they were. Missing names suppress the
-// affected language, allowing an independently available English sentence.
+// Western slots use the same original-first policy as the central stations.
+// Missing names suppress the affected language, allowing an independently
+// available English sentence when no usable complete recording exists.
 for (let st = 0; st < first; st++) for (const direction of ['DN', 'UP'] as const) for (const destination of ONBOARD_DESTINATIONS) {
   if (st === 0 && (direction !== 'UP' || destination !== STATIONS[0].name)) continue;
   const station = STATIONS[st], nameId = station.id.toLowerCase(), destId = destinationId(destination)!;
-  const side = onboardDoorSide(st, direction, destination), door = side === 'L' ? 'left' : 'right';
+  const side = onboardDoorSide(st, direction, destination), door = side === 'B' ? 'both' : side === 'L' ? 'left' : 'right';
   const terminal = st === 0;
   const missing: string[] = [];
   if (!parts.has(`zh-name-${nameId}`)) missing.push('中文站名／报站句');
@@ -348,6 +420,14 @@ for (let st = 0; st < first; st++) for (const direction of ['DN', 'UP'] as const
     if (terminal && type === 'arrived') {
       slot.arrived = { clipId: FIELD_1016_TERMINAL_CLIP.id, phraseAt: 907.20, advanceS: 38.80,
         measuredAdvance: false, confidence: FIELD_1016_TERMINAL_CLIP.confidence };
+      continue;
+    }
+    const original = matchingOriginal(station.name, direction, destination, side, type);
+    if (original) {
+      recordedClip(original);
+      slot.source = original.source;
+      if (type === 'next') slot.next = { clipId: original.id, phraseAt: original.range[0], delayS: original.delayS ?? null, confidence: original.confidence };
+      else slot.arrived = { clipId: original.id, phraseAt: original.range[0], advanceS: ONBOARD_ARRIVAL_ADVANCE_S, measuredAdvance: false, confidence: original.confidence };
       continue;
     }
     const recipe: string[] = [];
@@ -374,6 +454,6 @@ for (let st = 0; st < first; st++) for (const direction of ['DN', 'UP'] as const
 export const ONBOARD_RENDER_BANK: readonly SoundClip[] = rendered;
 export const ONBOARD_ANNOUNCEMENTS: readonly OnboardAnnouncement[] = announcements;
 /** Strict station + direction + terminus + actual door side lookup. */
-export function onboardAnnouncement(station: string, direction: 'DN' | 'UP', destination: string, side: 'L' | 'R', catalog = ONBOARD_ANNOUNCEMENTS) {
+export function onboardAnnouncement(station: string, direction: 'DN' | 'UP', destination: string, side: AnnouncementDoorSide, catalog = ONBOARD_ANNOUNCEMENTS) {
   return catalog.find(a => a.station === station && a.direction === direction && a.destination === destination && a.doorSide === side);
 }
